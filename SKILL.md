@@ -28,7 +28,7 @@ Invoking this skill IS the user's opt-in signal for Workflow-tool orchestration 
 ## The five-stage pipeline
 
 0. **Existing-test audit** — before writing new tests, check whether the change will make existing tests stale (new fields breaking strict shape assertions, new code paths needing new mocks); fix in the same pass. Can run in parallel with Stage 1.
-1. **RED** — driver subagent writes failing tests against current code; must report *why* each test fails (confirms failure for the right reason, not a fixture/import error).
+1. **RED** — driver subagent writes failing tests against current code; test plan must cover happy path, fail path, AND edge/collision cases implied by the feature's invariants (not just whatever case the bug report named) — an untested collision with an internally-reserved value is how bugs ship. Driver must report *why* each test fails (confirms failure for the right reason, not a fixture/import error).
 2. **GREEN** — driver subagent implements the minimum change to pass the RED tests. Sequential — depends on Stage 1's tests existing.
 3. **REFACTOR** — driver subagent cleans up once green; apply the project's three-strikes DRY rule explicitly (don't extract shared abstractions on the second occurrence of a pattern).
 
@@ -39,7 +39,7 @@ Invoking this skill IS the user's opt-in signal for Workflow-tool orchestration 
 
 ## Driver/navigator contract
 
-- Driver subagent gets: full background context (why, what files, the existing sibling pattern to mirror, expected diff shape), told explicitly NOT to touch out-of-scope files, and told what to report back (diff + test output).
+- Driver subagent gets: full background context (why, what files, the existing sibling pattern to mirror, expected diff shape), told explicitly NOT to touch out-of-scope files, and told what to report back (diff + test output). For Stage 1 (RED), the driver must be told explicitly to produce all three test categories — happy path, fail path, edge/collision case(s) — even if the originating bug report only names one.
 - Navigator subagent gets: the SAME background context (it wasn't present for the driver's run) plus the driver's claims, and a checklist to independently re-verify (re-run tests itself, re-read the diff itself, check specific correctness properties named by the plan). Navigator may delegate a fix for small issues via another subagent rather than bouncing back to the driver, per the orchestrator-only rule.
 - Independent stages (e.g. Stage 0 + Stage 1; Stage 3 + Stage 4) are dispatched as parallel calls, not sequentially, when they don't depend on each other's output. Use TaskCreate/TaskUpdate with addBlockedBy to encode the real dependency graph before dispatching.
 
@@ -84,9 +84,13 @@ phase('Audit + RED', async () => {
       prompt: `
         RED stage driver. Background: {feature background, files touched,
         sibling pattern to mirror}. Write failing tests against the CURRENT
-        code for {feature}. Do not touch files outside {scope}.
+        code for {feature}, covering all three categories: (1) happy path,
+        (2) fail path, (3) edge/collision case(s) implied by the feature's
+        invariants — even if not explicitly named in the bug report/request.
+        Do not touch files outside {scope}.
         Report: diff + test run output + why each test currently fails
-        (must fail for the right reason, not a fixture/import error).
+        (must fail for the right reason, not a fixture/import error) +
+        which of the three categories each test covers.
       `,
     }),
   ]);
@@ -100,7 +104,9 @@ phase('Audit + RED', async () => {
       background, files touched, sibling pattern}. Driver claims: ${redReport}.
       Independently re-run the new tests yourself, re-read the diff yourself,
       and confirm each test fails for the right reason (not a fixture/import
-      error). If you find a small issue, delegate the fix to another
+      error). Confirm all three categories are present: happy path, fail
+      path, and edge/collision case(s) — reject if any category is missing.
+      If you find a small issue, delegate the fix to another
       subagent rather than fixing it yourself.
       Report: PASS/FAIL verdict + evidence.
     `,
