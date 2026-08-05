@@ -43,6 +43,35 @@ Invoking this skill IS the user's opt-in signal for Workflow-tool orchestration 
 - Navigator subagent gets: the SAME background context (it wasn't present for the driver's run) plus the driver's claims, and a checklist to independently re-verify (re-run tests itself, re-read the diff itself, check specific correctness properties named by the plan). Navigator may delegate a fix for small issues via another subagent rather than bouncing back to the driver, per the orchestrator-only rule.
 - Independent stages (e.g. Stage 0 + Stage 1; Stage 3 + Stage 4) are dispatched as parallel calls, not sequentially, when they don't depend on each other's output. Use TaskCreate/TaskUpdate with addBlockedBy to encode the real dependency graph before dispatching.
 
+## One task, one file, one deliverable
+
+Every dispatched agent call names exactly ONE file to create/edit (or one tightly-scoped file set that cannot be split, e.g. a driver+its own test file in the same GREEN step) and ONE deliverable. Do not bundle "implement the fix AND write the CLI tests AND check the config wiring" into a single agent call — split into separate `agent()`/`parallel()` calls even if they're conceptually related. Symptoms of a task that isn't single-purpose: the report contains an "also I noticed X" aside about a different file, or the driver needs more than one "Report:" line to describe what it did. Split it next time.
+
+## Hard scope fence (not a suggestion)
+
+"Do not touch files outside {scope}" as a bare prose instruction is not sufficient — an agent that believes a fix requires touching another file will sometimes touch it anyway. State the fence with a named consequence in every driver/fix prompt:
+
+> HARD SCOPE FENCE: you may ONLY edit/create the file(s) named above. If you believe a file outside that list needs a change, DO NOT EDIT IT — stop, and report it under "OUT OF SCOPE — NEEDS SEPARATE FIX" with file/line/what's wrong. Touching an out-of-scope file is task failure regardless of whether your in-scope work succeeds; it will be reverted and the task re-run.
+
+Every navigator's checklist includes verifying the driver's diff touches only the named scope — `git diff --stat` against the expected file list is one line and catches this immediately.
+
+## Resuming after an interrupted or retried stage
+
+Background agents can be interrupted (user cancel, session issue) mid-stage. The Workflow tool's default behavior on resume/retry is to re-run the call from scratch with the SAME prompt — which means an interrupted driver's re-derivation work (reading source, grepping sibling patterns, re-deriving the diff) is thrown away and repeated from zero on every retry. Left unchecked this compounds: five interrupted attempts means five full re-derivations before any of them lands the actual change.
+
+Before relaunching a workflow that stalled or got interrupted mid-stage:
+
+1. **Check ground truth yourself first**: run `git status` / `git diff --stat` / the relevant test command directly (not via a subagent) to see what's actually landed in the working tree. A prior interrupted attempt may have already completed the real work — don't assume "interrupted" means "nothing happened."
+2. **If real work already landed and verified**, treat it as fact, not a claim to re-verify: paste the ACTUAL diff (`git diff` output) and the ACTUAL test output into every subsequent agent's background context, labeled as already-verified. Explicitly tell each agent: "This is done and confirmed passing — do not re-derive or re-implement it; only build on top of it." This turns a stage that would otherwise cost a full grep-heavy re-derivation into a one-line confirmation.
+3. **Only re-dispatch the stages that are genuinely incomplete**, not the whole pipeline. Use `Workflow({scriptPath, resumeFromRunId})` when the script is unchanged; write a fresh smaller script (as above) when stages need to be dropped or the background context needs the verified-diff injected.
+4. If you (the orchestrator) find and fix a small, well-understood issue yourself while doing this ground-truth check — e.g. a single test's assertion encodes the wrong invariant and the fix is a two-line edit you already have full context for — fixing it directly is faster and cheaper than a subagent round-trip for something this trivial. The orchestrator-only rule exists to prevent the main agent from doing the SKILL'S WORK inline (skipping RED/GREEN/navigator review); it isn't a mandate to spawn an agent for a one-line correction the orchestrator already fully understands and can verify with one test run.
+
+## Check-existing-precedent before asserting a new invariant (RED stage)
+
+A RED-stage test can be *wrong*, not just missing: it's easy to invent an edge/fail-path case that sounds like it should hold, without checking whether the codebase's existing tests already establish the opposite invariant for an analogous case. Concretely: a mode/flag that makes one thing "sticky" (survives even when no longer derivable) almost certainly makes an analogous thing sticky the same way — a new fail-path test that asserts de-escalation for the second thing, without checking how the first thing's existing tests behave, can encode a plausible-sounding but incorrect expectation.
+
+Before finalizing a RED test that asserts a fail/edge-case behavior, the driver must grep for existing tests exercising the SAME mode/flag on a sibling code path (e.g. the analogous method for a different entity) and reconcile the new test's expected behavior against them — not just against the bug report's literal wording. The navigator's checklist includes this same precedent check as an independent pass. If a new test's assertion contradicts an existing, passing test's established behavior for the same flag, that's a signal the new test is wrong, not that a second bug was found — resolve the contradiction before marking RED complete.
+
 ## Links out to (don't re-explain these — reference them)
 
 - **superpowers:subagent-driven-development** — general task-dispatch mechanics, briefing structure, review-loop patterns at the whole-plan level; this skill narrows that to per-TDD-step pairing.
