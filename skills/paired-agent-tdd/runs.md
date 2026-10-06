@@ -1,0 +1,4 @@
+date | run | graph | agents by node | tokens | wall-clock | note
+---|---|---|---|---|---|---
+2026-10-06 | paired fix run (generator + runbook), an internal service MR | sonnet high / opus high | 2 drivers, 2 navigators, 1 opus reviewer (5 agents) | ~564k | ~368 s | Runbook navigator reported 2 real defects the driver never fixed; opus reviewer re-read the working tree and caught those plus 2 more both navigators missed (arithmetic error in an example, stale code comment). T3 final gate earned its cost.
+2026-10-06 | second paired run (3 small assertions), an internal service MR | single sonnet-high navigator | 1 navigator | n/a | n/a | Gap-hunting checklist item ("legitimate future edits that the new check would wrongly reject") found a real false failure. Keep a gap-hunting item in every navigator checklist.
