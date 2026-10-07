@@ -1,0 +1,38 @@
+[
+  {
+    "skills": ["zero-trust-review"],
+    "query": "Do a zero-trust review of my branch against main. It touches 5 files and about 400 changed lines.",
+    "files": [],
+    "expected_behavior": [
+      "Runs triage.py once after fetching the target branch and does not read the whole diff itself",
+      "Triage selects standard mode (not quick, since the diff exceeds 150 source lines) and the lead shows the mode, groups, fired and skipped points, and the plan from graph.mjs --plan",
+      "Launches the Workflow with workflow.js and reads only the compact return",
+      "Cites each finding as path:line with a GitLab blob permalink pinned to the reviewed SHA, and does not post to the MR unless asked",
+      "Writes the report under the OS temp directory with the sections in order, ends with the report path, and sets a Verdict of APPROVE, REQUEST CHANGES or BLOCKED"
+    ]
+  },
+  {
+    "skills": ["zero-trust-review"],
+    "query": "Suggest a fix for lines 42 to 58 of src/handlers/export.py in this MR.",
+    "files": [],
+    "expected_behavior": [
+      "Anchors the suggestion at line 42 on the new side and computes the fence as suggestion:-0+16 (B = 58 - 42)",
+      "Reads suggestions.md before writing the suggestion",
+      "Reads the file at the reviewed SHA with git show and sed -n 42,58p rather than rebuilding it from the hunk, and includes every line of 42..58 verbatim at exact indentation",
+      "Does not add or drop a trailing blank line at the end of the span",
+      "Keeps judgment-call fixes as prose and declines a suggestion for a file the MR did not touch, offering only a permalink"
+    ]
+  },
+  {
+    "skills": ["zero-trust-review"],
+    "query": "Zero-trust review this large MR with 60 files and fix nothing, just report.",
+    "files": [],
+    "expected_behavior": [
+      "Triage selects deep mode for more than 40 files",
+      "When the planned total exceeds 25 agents, the lead confirms with the user before spending",
+      "If any agent returns null or a unit lands in notReviewed, treats it as not reviewed rather than as no issues and does not give the verdict APPROVE",
+      "If the run is interrupted, resumes with Workflow resumeFromRunId and unchanged args, checking the checkpoint files first, rather than restarting from zero",
+      "An unverified or disputed critical or high finding caps the verdict at REQUEST CHANGES and is reported as a question, not a fact"
+    ]
+  }
+]

@@ -1,5 +1,18 @@
 # Zero-trust checklist (30 points)
 
+## Contents
+
+- Intent: 1
+- Tests: 2-3
+- Design: 4-5
+- Security: 6-7
+- Correctness under retry and concurrency: 8-11
+- Resources and limits: 12-18
+- Runtime and platform: 19-23
+- Failure behavior: 24-26
+- Operability: 27-29
+- Grilling: 30
+
 Each point: trigger in the diff, then the hazard to assert. Always-on points: 1, 2, 3, 4, 5, 24, 25, 27, 28, 29, 30.
 All others are trigger-gated: `triage.py` fires one only when its regex matches an ADDED line of production code (comment-only lines, tests and prose docs are not scanned; see `points` in the triage JSON).
 Read only your assigned points: `Grep -n -A1 -E '^(6|7|24)\. ' <this file>` returns each point plus its Trigger line.

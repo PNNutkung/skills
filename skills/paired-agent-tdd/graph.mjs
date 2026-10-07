@@ -167,10 +167,15 @@ export const LEAD_GATHERED = [
 
 const byId = new Map(NODES.map(n => [n.id, n]));
 
+// Display labels for the `fanout` field in the diagram and tiers table.
 const FANOUT = { group: 'per group', finding: 'per finding', dimension: 'per dimension' };
+// Effort ceiling is `high` (rule R1 in SKILL.md): widen this map only from a measured run.
 const EFFORT_RANK = { low: 0, medium: 1, high: 2 };
+// Ordering used by the checker >= maker guard (rule R2).
 const MODEL_RANK = { haiku: 0, sonnet: 1, opus: 2 };
+// Tier -> model mapping from SKILL.md (T1 gathering, T2 analysis/implementation, T3 judgement).
 const TIER_MODEL = { T1: 'haiku', T2: 'sonnet', T3: 'opus' };
+// Rule R3: opus only on once-per-run or gated judge nodes.
 const OPUS_NODES = ['graph-planner', 'reviewer'];
 // The one declared R2 exception: the T3 reviewer re-reads the whole diff after it.
 const R2_EXCEPTIONS = ['refactor-navigator'];

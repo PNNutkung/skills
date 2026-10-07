@@ -176,6 +176,7 @@ const norm = f => ({
   ...f, file: f.file || '', startLine: f.startLine | 0, endLine: f.endLine || f.startLine | 0, points: f.points || [], severity: SEV[f.severity] >= 0 ? f.severity : 'low',
   title: clip(f.title, 160), hazard: clip(f.hazard, 600), failureScenario: clip(f.failureScenario, 600), evidence: clip(f.evidence, 600), suggestedFix: clip(f.suggestedFix, 600),
 })
+// 3-line window and Jaccard 0.34 (about a third of the title tokens shared) are empirical; adjust only from runs.md data
 const same = (c, f) => c.file === f.file && f.startLine <= c.endLine + 3 && c.startLine <= f.endLine + 3 && jac(c.tk, tok(f.title)) >= 0.34
 function cluster(fs, existing, prefix) {
   const out = []
@@ -201,6 +202,8 @@ function decide(c, vs) {
 }
 
 // ---------------------------------------------------------------- verification
+// The numeric arguments of ask() are per-agent tool-call caps: 25 for critical/high refute and reproduce probes (a probe needs room to run),
+// 20 for the adjudicator (reads two verdicts), 15 for the single refute on a medium. Empirical; adjust only from runs.md data.
 const agentFor = c => (/\.[mc]?[jt]sx?$/.test(c.file) ? 'typescript-reviewer' : 'python-reviewer')
 const ask = async (node, c, cap, vs) => verdict(node.replace('verifier-', ''), await run(node, verifierPrompt(node, c, cap, vs), { schema: VERDICT, label: node.replace('verifier-', '') + ':' + c.id, phase: 'Verify', agentType: agentFor(c) }))
 async function verifyCluster(c) {

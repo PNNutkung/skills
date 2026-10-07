@@ -1,0 +1,38 @@
+[
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "Add retry-with-backoff to the HTTP client in src/client.py and surface the new setting through src/config.py and src/cli.py. client imports config, cli imports client. Do it test-first.",
+    "files": [],
+    "expected_behavior": [
+      "Runs graph-planner because the touched files import one another, and derives ordered file groups",
+      "Partitions the files so each teammate owns a different set of files",
+      "Runs test-auditor before implementation",
+      "Per group, red-driver writes failing tests (happy path, fail path, edge case) and red-navigator confirms they fail for the right reason before green-driver starts",
+      "Lead gathers git diff --stat, the test output and pre-commit run (staged files only) and injects them verbatim into navigator briefs",
+      "Lead does not edit code itself; teammates do all work",
+      "integration-tester runs alongside the refactor chain, then reviewer runs on the whole diff"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "Continue the paired TDD run: the green-navigator for the config group reported two defects in the driver's implementation. What happens next?",
+    "files": [],
+    "expected_behavior": [
+      "Does not ship or proceed past the reported defects unaddressed",
+      "Runs exactly one rework pass by the maker's tier (the lead creates a task because teammates cannot spawn teammates)",
+      "Runs one re-check of the reworked output",
+      "If the re-check still fails, escalates to the T3 gate or the lead instead of looping again",
+      "Fixer or driver brief includes the hard scope fence with the out-of-scope reporting instruction"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "Fix the typo in the error message on line 42 of src/errors.py.",
+    "files": [],
+    "expected_behavior": [
+      "Does not start an agent team or the execution graph for a single-file, one-line change",
+      "Points to the tdd skill or a lone subagent instead",
+      "States that the team's cost is not justified without multi-file fan-out"
+    ]
+  }
+]

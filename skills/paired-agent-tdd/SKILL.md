@@ -1,6 +1,6 @@
 ---
 name: paired-agent-tdd
-description: Use for non-trivial, multi-file features or bugfixes that need tests, running TDD as driver/navigator teammate pairs on a Claude Code agent team, scheduled from an explicit execution graph.
+description: Runs TDD (RED/GREEN/REFACTOR) as driver/navigator teammate pairs on a Claude Code agent team, scheduled from an explicit execution graph with a review-and-fix fan-out. Use for non-trivial, multi-file features or bugfixes that need tests; not for single-file or one-line changes.
 ---
 
 # Paired Agent TDD
@@ -19,17 +19,29 @@ The graph is not prose. It lives in [`graph.mjs`](./graph.mjs) as data — nodes
 
 2. **Pick an executor.** `graph.mjs` is the source for both:
    - **Workflow-script executor** (preferred when tiering matters): per-node model AND effort. Call shape: `agent(prompt, { label, phase, model, effort, schema })`, with `model` and `effort` read from the node.
-   - **Native agent team**: model per teammate; effort is inherited from the lead and not settable per teammate. Tier by model only, and set the lead's effort (`/effort`) to that of the heaviest node you intend to run, or use the Workflow executor.
+   - **Native agent team** (default): model per teammate; effort is inherited from the lead and not settable per teammate. Tier by model only, and set the lead's effort (`/effort`) to that of the heaviest node you intend to run, or use the Workflow executor.
 
 3. **Node 18+** to run `graph.mjs`.
 
-## Cost, stated plainly
+## Progress checklist
 
-Agent teams use roughly **7x the tokens of a standard session**, because every teammate is a separate Claude instance with its own context window. On top of that, this pipeline fans out per file group, per review dimension, and per review finding.
+Copy and tick off:
 
-Do not reach for this skill reflexively. It earns its cost on a multi-file change with real invariants to protect, and wastes it on anything smaller.
+```
+- [ ] Gate: use the skill? (see When to use) / run graph-planner? (see gate)
+- [ ] File groups partitioned, one owner per file
+- [ ] test-auditor (parallel with RED): stale tests fixed
+- [ ] RED per group: red-driver -> red-navigator PASS
+- [ ] GREEN per group: green-driver -> green-navigator PASS
+- [ ] REFACTOR per group: refactor-driver -> refactor-navigator PASS
+- [ ] integration-tester (alongside REFACTOR): real-dependency run
+- [ ] reviewer(s): findings collected
+- [ ] fixer per finding, then re-check (no defect left unaddressed)
+```
 
 ## When to use
+
+Agent teams use roughly **7x the tokens of a standard session** (every teammate has its own context window), and this pipeline also fans out per file group, review dimension and finding. Do not use it reflexively; it earns its cost only on a multi-file change with real invariants to protect.
 
 - Non-trivial, multi-file change where tests are appropriate and the request implies implement-or-fix-with-tests.
 - The file set partitions into groups that can be owned independently. Teams do not isolate teammates in worktrees, so **each teammate must own a different set of files** — if two teammates would edit the same file, they belong in one sequential chain, not in parallel.
@@ -73,7 +85,7 @@ Run `node graph.mjs --check` to print the dependency layers and the critical pat
 
 Two edges carry most of the parallelism, and both are easy to lose in a well-meaning edit:
 
-- **`integration-tester` needs only `green-navigator`**, not the refactor chain. It runs *alongside* refactoring. An earlier version of this skill described that in prose while its script serialized it into a later phase — which is the exact drift `graph.mjs --check` now fails on.
+- **`integration-tester` needs only `green-navigator`**, not the refactor chain. It runs *alongside* refactoring. Prose that disagrees with the graph is the drift `graph.mjs --check` fails on.
 - **Every `fanout: 'group'` node is per file group.** Groups do not wait for each other. Group B's RED can run while group A is already in GREEN. There is no barrier between groups at any stage.
 
 ## The graph-planner node is gated
@@ -103,7 +115,7 @@ Use plain code, not an agent, for anything deterministic. Three facts are a sing
 | Full suite result | the project's test command |
 | Lint result | `pre-commit run` (staged files only — never `--all-files`) |
 
-The lead runs these and **injects the real output verbatim** into the relevant teammate's brief. The navigator then *judges* that output rather than re-running it — and critically, it can no longer "verify" a claim by trusting a driver's pasted summary, because the ground truth comes from the lead, not the driver.
+The lead runs these and **injects the real output verbatim** into the relevant teammate's brief. The navigator then *judges* that output rather than re-running it — and cannot "verify" a claim by trusting a driver's pasted summary, because the ground truth comes from the lead, not the driver.
 
 What stays with the navigator is the part that is not deterministic: did this test fail for the *right* reason, is this abstraction premature, does this assertion encode the correct invariant.
 
@@ -113,9 +125,13 @@ A verifier is always a separate node, because a model cannot reliably grade its 
 
 **Driver brief contains**: full background (why, which files, the existing sibling pattern to mirror, expected diff shape), the hard scope fence below, its ponytail level from the graph, an explicit instruction not to touch out-of-scope files, and exactly what to report (diff + test output). For `red-driver`, state explicitly that all three test categories are required — happy path, fail path, and edge/collision case — even when the originating bug report names only one.
 
-**Navigator brief contains**: the *same* background (it was not present for the driver's run), the driver's claims, the lead-gathered command output, and a checklist of properties to re-verify independently. A navigator that only restates the driver's report has done nothing. Every navigator checklist includes a gap-hunting item: "legitimate future edits that the new check would wrongly reject" (in a measured run it found a real false failure).
+**Navigator brief contains**: the *same* background (it was not present for the driver's run), the driver's claims, the lead-gathered command output, and a checklist of properties to re-verify independently. A navigator that only restates the driver's report has done nothing. Every navigator checklist includes a gap-hunting item: "legitimate future edits that the new check would wrongly reject" (see [`runs.md`](./runs.md)).
 
-**Bounded rework (R4).** A navigator FAIL or non-empty defects list triggers ONE rework pass by the maker's tier and one re-check; still failing, escalate to the T3 gate or the lead. A reported defect is never shipped unaddressed. Evidence: in a measured run a navigator reported 2 real defects that the driver never fixed; the opus reviewer's re-read of the working tree found them still present, plus 2 more both navigators missed.
+**Bounded rework (R4).** A navigator FAIL or non-empty defects list triggers ONE rework pass by the maker's tier and one re-check; still failing, escalate to the T3 gate (the final `reviewer`) or the lead. A reported defect is never shipped unaddressed. Evidence: [`runs.md`](./runs.md).
+
+Example `red-driver` brief (abridged):
+
+> Background: `parse_dates()` in `src/dates.py` must reject ISO strings with a trailing Z; mirror the setup in `tests/test_times.py`. Scope: `tests/test_dates.py` only. Write failing tests: happy path, fail path (trailing Z raises), edge case (empty string). Ponytail: ultra. Report: the diff and the failing test output.
 
 ## Hard scope fence
 
@@ -198,7 +214,7 @@ Aligned to the global subagent routing (Haiku = gathering and simple edits; Sonn
 Rules:
 
 - **R1** No tool-looping agent above effort high by default. The harness interrupts an agent silent for about 180 s and a retry restarts from zero; higher effort lengthens silent thinking. Raise a node above high only from a measurement, never on a long tool loop. (--check rejects above high; widen EFFORT_RANK in the same commit)
-- **R2** Checker >= maker (model and effort) for any node whose miss nothing downstream re-reads. The one declared exception is `refactor-navigator` (haiku), because the T3 reviewer re-reads the whole diff afterwards.
+- **R2** Checker (navigator) >= maker (driver) in model and effort, for any node whose miss nothing downstream re-reads. The one declared exception is `refactor-navigator` (haiku), because the T3 reviewer re-reads the whole diff afterwards.
 - **R3** Opus only on once-per-run or gated judge nodes.
 - **R4** Bounded rework pass on navigator FAIL (see Driver/navigator contract).
 - **R5** Move one node's model or effort at a time, only from measured runs, and log each run in [`runs.md`](./runs.md).
@@ -232,15 +248,13 @@ The one assignment to resist downgrading is `green-navigator`. It is the node th
 
 `node graph.mjs --check` prints the critical path. That chain is the run's wall-clock floor: shortening it requires removing a dependency edge, not a faster model.
 
-## Where the graph framing comes from
+Evaluation scenarios for this skill: [`evals.json`](./evals.json).
 
-The node/edge vocabulary here — nodes as agents and deterministic functions, edges as delegation, "evaluate the node, govern the edges", "default to no graph" unless the work genuinely needs fan-out or per-step model differences, "the verifier is always a separate node", "use plain code, not an agent, for anything deterministic" — comes from practitioner writing on multi-agent control graphs.
+## Terminology
 
-**It is not Andrew Ng's, and this file should not say it is.** A widely-circulated "Graph Engineering Andrew Ng Playbook" PDF has no primary source: viral posts variously credit Ng and "two Anthropic seniors" for the same document, and the PDF's own cover page states it "was independently compiled and is not affiliated with or endorsed by Anthropic or Karpathy." Ng's actual letters — *Four AI Agent Strategies* (March 2024) and *Loop Engineering* (June 2026) — use no graph, node, or edge vocabulary at all.
+Graph vocabulary (nodes, edges, "the verifier is always a separate node", "plain code for anything deterministic") comes from practitioner writing on multi-agent control graphs. It is **not Andrew Ng's** and must not be attributed to him: the circulated "playbook" PDF has no primary source, and his letters use no such vocabulary. Evaluate the node, govern the edges, and default to no graph unless the work genuinely needs fan-out or per-step model differences.
 
-This note exists so nobody re-adds the attribution after seeing the post again.
-
-Related, and worth not conflating: an **execution** graph (nodes, edges, task state — what this file is) is a different object from a **knowledge** graph (entities and their relationships, as built by codebase-indexing tools). One can inform the other, but they answer different questions, and reaching for a knowledge-graph tool to schedule work is a category error.
+An **execution** graph (nodes, edges, task state; this file) is not a **knowledge** graph (entities and relationships from codebase-indexing tools). Do not use a knowledge-graph tool to schedule work.
 
 ## Links out to — reference these, do not re-explain them
 

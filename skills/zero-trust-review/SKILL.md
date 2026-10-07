@@ -1,6 +1,6 @@
 ---
 name: zero-trust-review
-description: "Uncompromising Principal-Staff-Engineer code review of the current branch diff against its target branch, using a 30-point production-hazard checklist (security, OOM, indexing, dual-writes, cancellation, async leaks, cache stampedes, K8s drains, LLM safeguards, feature-flag parity, test flakiness), tiered and cost-capped (quick/standard/deep). Cites every finding as a GitLab blob permalink, emits applyable GitLab multi-line code suggestions for a given line range (\"suggest a fix for lines 42 to 58\"), and writes the report to the OS temp directory. Use for \"zero-trust review\", \"strict review\", \"grill this MR\", \"principal engineer review\", \"production readiness review\", \"suggest a fix for lines X to Y\", or when a reviewer must assume nothing and protect production."
+description: "Principal-Staff-Engineer-level code review of the current branch diff against its target branch, using a 30-point production-hazard checklist (security, OOM, indexing, dual-writes, cancellation, async leaks, cache stampedes, K8s drains, LLM safeguards, feature-flag parity, test flakiness), tiered and cost-capped (quick/standard/deep). Cites every finding as a GitLab blob permalink, emits applyable GitLab multi-line code suggestions for a given line range (\"suggest a fix for lines 42 to 58\"), and writes the report to the OS temp directory. Use for \"zero-trust review\", \"strict review\", \"grill this MR\", \"principal engineer review\", \"production readiness review\", \"suggest a fix for lines X to Y\", or when a reviewer must assume nothing and protect production."
 ---
 
 # Zero-Trust Review
@@ -9,11 +9,23 @@ Strict review of **only the changes in the current branch diff against the targe
 
 It runs as an **execution graph** ([`graph.mjs`](./graph.mjs)) executed by [`workflow.js`](./workflow.js). The lead gathers facts with plain code ([`triage.py`](./triage.py)); the 30-point audit lives in [`checklist.md`](./checklist.md) and agents Read only their own points. Related: `code-review` (standards + spec), `security-review` (escalate when point 6 or 7 finds a real flaw). This skill owns **production-hazard and test-integrity review**.
 
-## Cost, stated plainly
+**Requires:** Node 18+ (`graph.mjs`, `workflow.js`), python3 (`triage.py`, stdlib only), git, glab, jq, and GNU `timeout` (without it probes degrade to `unverifiable`).
 
-The previous version cost **USD 34.75** per run: 95 agents and 5.8M tokens, after a first attempt wasted 6.7M tokens on harness-interrupted retries. Details in `tiering.md` (History).
+**Terms:** *lead* = the session that coordinates; *driver* = a finding agent (`reviewer`, `gap-reviewer`); *navigator* = a verifying agent (`verifier-*`, `batch-verifier`); *finding* = one defect a driver files; *cluster* = findings merged by `dedupe`, the unit that gets verified.
 
-Levers: disjoint groups, gated points, checklist by pointer, plain-code dedupe, tiered verification, scoped tests run once, checkpoints. **Do not reach for `deep` or extra verifiers reflexively.**
+Cost levers: disjoint groups, gated points, checklist by pointer, plain-code dedupe, tiered verification, scoped tests run once, checkpoints (a full-fleet design cost 95 agents per run; figures in [`runs.md`](./runs.md)). **Do not reach for `deep` or extra verifiers reflexively.**
+
+## Progress checklist
+
+Copy and tick off:
+
+```
+- [ ] 0 Triage: mode chosen, plan shown (confirm if > 25 agents)
+- [ ] 1 Context: ticket, decisions, prior, scoped test + lint facts
+- [ ] 2 Run Workflow; read the compact return only
+- [ ] 3 Cite permalinks (post only when asked); 3b suggestions
+- [ ] 4 Report written to the temp dir, path printed, verdict set
+```
 
 ## Modes
 
@@ -23,7 +35,7 @@ Levers: disjoint groups, gated points, checklist by pointer, plain-code dedupe, 
 | `standard` | default | reviewer per group, waves of 3 (30 calls); full verification | ~10-20 agents |
 | `deep` | > 1500 source lines, > 40 files, auth/payments/migrations, or asked | standard at effort high (45 calls) + test-auditor (scoped runs) + integration-probe (throwaway container; only if 13/18/21 fired) + opus critic + <= 3 gap reviewers | ~20-35 agents |
 
-`triage.py` picks the mode; `--mode` overrides. `standard` on the measured 14-file/825-line diff plans ~14 agents (4 reviewers, 5 refuters, 5 batches of lows) versus 95.
+`triage.py` picks the mode (`standard` unless the quick or deep row matches); `--mode` overrides. Example: a 14-file/825-line diff plans ~14 agents in `standard` (4 reviewers, 5 refuters, 5 batches of lows).
 
 ## The graph
 
@@ -72,7 +84,7 @@ The lead only coordinates (triage, facts, Workflow launch, report). It never rev
 
 | Fact | Command (lead, ONCE) |
 |---|---|
-| `git diff --stat`, groups, points, mode, drift | `python3 triage.py --base origin/<target>` after `git fetch -q origin <target>` (a stale base once gave 8899 false files) |
+| `git diff --stat`, groups, points, mode, drift | `python3 triage.py --base origin/<target>` after `git fetch -q origin <target>` (a stale local base yields thousands of false files) |
 | Tests for the changed paths | the project's test command, scoped to the changed tests and modules; never the whole suite |
 | Lint | `pre-commit run --files <changed>`; never `--all-files` |
 
@@ -110,26 +122,19 @@ Re-run `deep` when a critical/high you mean to block on survives, or `notReviewe
 
 ## Iterate the graph from measurements
 
-Models, efforts and caps are a starting guess. After each run append `date | sha8 | mode | agentsByNode | tokens | wall-clock | note (USD if known)` to `runs.md`. Move one node's model or effort only from those numbers, then `node graph.mjs --write` and `node workflow.test.mjs`. The critical path is the wall-clock floor: shorten it by removing an edge, not with a faster model.
+Models, efforts and caps are a starting guess. After each run append `date | sha8 | mode | agentsByNode | tokens | wall-clock | note (USD if known)` to [`runs.md`](./runs.md). Move one node's model or effort only from those numbers (steps in [`tiering.md`](./tiering.md)). The critical path is the wall-clock floor: shorten it by removing an edge, not with a faster model. Evaluation scenarios: [`evals.json`](./evals.json).
 
 ## Tiering
 
-Each node carries a tier (T0 code, T2 sonnet, T3 opus); table, rules R1-R6 and measurements are in `tiering.md`. Key rules:
+Each node carries a tier (T0 code, T2 sonnet, T3 opus); table and rules R1-R6 are in [`tiering.md`](./tiering.md). Key rules:
 
 - Checker >= maker in model and effort where no one re-reads the miss; exceptions: batch-verifier (low clusters) and deep-mode verifiers (critic re-reads).
 - Opus only on once-per-run or gated judges (adjudicator, critic).
 - No tool-looping agent above `high`: a silent agent is interrupted at ~180 s; the retry restarts.
 
-## Voice — write like the reviewer, not the tool
+## Voice
 
-Everything that reaches GitLab (comments, discussions, summary note) and the report reads as this engineer's own review. Never name, hint at or apologize for being an AI, model, assistant, bot or "automated" review: no disclaimers, no process meta-commentary, no "As an AI...". A bot note already on the MR (CI bots, review bots) is just another comment, not "another AI".
-
-Direct, technical, specific, zero padding:
-- Lead with the defect, not a framing sentence: "`trackSavedQuery` runs after two throwing asserts — leaks the row on failure."
-- Cut hedges ("might potentially", "it appears that", "I believe"); real uncertainty is precision: say what is `UNVERIFIED` and why.
-- Cut filler ("Let's dive into", "It's worth noting", "In order to", "leverage", "utilize", "ensure that", opening "Furthermore").
-- No closing summary or "Great work!" (the Verdict is the only summary), no enthusiasm or apology: severity is the section a finding sits in, not the adjective before it.
-- Contractions, short sentences; never compress evidence: keep every file:line, permalink and verified/unverified marker.
+Everything that reaches GitLab (comments, discussions, summary note) and the report reads as this engineer's own review: direct, technical, specific, zero padding. Never name, hint at or apologize for being an AI, model, assistant, bot or "automated" review. Read [`voice.md`](./voice.md) before writing any of it.
 
 ## Step 0 — Triage
 
@@ -138,7 +143,7 @@ SK=${SK:-~/.claude/skills/zero-trust-review}; CTX=$(mktemp -d)
 glab mr view --output json > "$CTX/mr.json" 2>/dev/null
 TARGET=$(jq -r '.target_branch // "master"' "$CTX/mr.json"); git fetch -q origin "$TARGET"
 python3 $SK/triage.py --base "origin/$TARGET" > "$CTX/triage.json"
-node $SK/graph.mjs --plan <mode> <groups> 0 1 5 30
+node $SK/graph.mjs --plan <mode> <groups> 0 1 5 30   # args after mode: groups, expected critical, high, medium, low
 ```
 
 Show the user a short summary (mode, groups with lines, fired vs skipped points, drift) and the plan. **If the planned total exceeds 25 agents, confirm with the user before spending.** `--force-all` fires every gated point.
@@ -173,14 +178,9 @@ Cite findings as `path:line` | permalink | finding; **do not post** until the us
 
 ## Step 3b — Suggest the fix for a line range, do not describe it
 
-A mechanical fix is an **applyable suggestion block**, not prose; judgment calls stay prose. The fence is `suggestion:-A+B`: `A` lines above and `B` below the anchored line, replaced wholesale (one line = `-0+0`). For lines `xx..yy` anchor (`new_line`) at `xx`, `B = yy - xx`, span `B + 1` lines: 142-158 -> `-0+16`. Compute it, don't eyeball it.
+A mechanical fix is an **applyable suggestion block**, not prose; judgment calls stay prose. The fence is `suggestion:-A+B`: `A` lines above and `B` below the anchored line, replaced wholesale. For lines `xx..yy` anchor (`new_line`) at `xx` and `B = yy - xx`: 142-158 -> `-0+16`. Compute it, don't eyeball it.
 
-- **Span cap:** 100 above + 100 below (201 lines, `B <= 200`); larger is not a suggestion: report it and propose the split (point 5).
-- **Verbatim:** every line of `xx..yy`, unchanged ones too, at exact indentation. Read the file at the reviewed SHA, never rebuild it from the hunk: `git show "$SHA:$FILE" | sed -n "${XX},${YY}p" | cat -A | head` (exposes tabs vs spaces).
-- **New side only:** a hazard in a file the MR never touched can be permalinked but cannot carry a suggestion; say so.
-- **No trailing-newline drift:** don't add or drop a blank line at the end of the span.
-
-Post like Step 3 with `new_line` = `xx`; body = prose + a fence labelled `suggestion:-0+${B}` holding the real replacement. Separate threads apply together from the MR UI in one commit. The local report repeats each block under its finding, labelled with its fence (`suggestion:-0+16`, anchor L142).
+Before posting or reporting a suggestion, Read [`suggestions.md`](./suggestions.md): span cap, verbatim lines, new side only, no trailing-newline drift, posting and report format.
 
 ## Step 4 — Write the report to the OS temp directory
 

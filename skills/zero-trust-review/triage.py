@@ -28,7 +28,7 @@ GATED = {
     26: r'FEATURE_FLAGS|is_feature_enabled|app\.config|os\.getenv|ENABLE_|\bflag',
 }
 RX = {n: re.compile(r, re.I) for n, r in GATED.items()}
-CAP = 600  # max changed lines per reviewer group
+CAP = 600  # max changed lines per reviewer group (empirical; adjust only from runs.md data)
 TEST = re.compile(r'(^|/)(tests?|__tests__|specs?|e2e|cypress|playwright)/|(^|/)(test_|conftest)[^/]*$|[_.](test|spec)\.\w+$', re.I)
 FRONT = re.compile(r'\.(m?[jt]sx?|s?css|less)$', re.I)
 TS = re.compile(r'\.[mc]?[jt]sx?$', re.I)

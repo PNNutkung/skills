@@ -12,6 +12,8 @@ import { dirname, join } from 'node:path';
 // model 'code' = plain code (the lead or the workflow script), no agent. effort/ponytail apply to agents only;
 // ponytail limits the probes and fix text a node writes, never its evidence or its search.
 // fanout: group = per file group, finding = per cluster, batch = per <=LIM.batch low clusters, gap = per critic gap.
+// LIM: wave = reviewers in parallel, verifyWave = verification jobs in parallel (small so one gateway stall cannot take out the fleet),
+// batch = low clusters per batch-verifier, gaps = max critic gaps turned into gap-reviewers. Empirical; adjust only from runs.md data.
 export const LIM = { wave: 3, verifyWave: 4, batch: 8, gaps: 3 };
 export const NODES = [
   { id: 'triage', tier: 'T0', role: 'Classify the diff: groups, fired/skipped points, mode (triage.py)', needs: [], model: 'code', deliverable: 'triage JSON' },
@@ -27,7 +29,7 @@ export const NODES = [
   { id: 'gap-reviewer', tier: 'T2', role: 'Driver: review one critic gap; its findings are verified by the same policy', needs: ['critic'], model: 'sonnet', effort: 'high', ponytail: 'full', fanout: 'gap', gated: 'deep only, at most 3', deliverable: 'Findings for the gap' },
   { id: 'report', tier: 'T0', role: 'Lead writes the report from the compact return (Step 4)', needs: ['gap-reviewer'], model: 'code', deliverable: 'Report file + verdict' },
 ];
-// skip = nodes that do not run; verify = severities that get verified; merge = one reviewer for the whole diff.
+// cap = tool-call cap per agent in that mode. skip = nodes that do not run; verify = severities that get verified; merge = one reviewer for the whole diff.
 const ALL = ['critical', 'high', 'medium', 'low'];
 export const MODES = {
   quick: { use: '< 150 source lines and <= 5 files', merge: true, cap: 35, verify: ['critical', 'high'], effort: {}, skip: ['test-auditor', 'integration-probe', 'batch-verifier', 'critic', 'gap-reviewer'] },
