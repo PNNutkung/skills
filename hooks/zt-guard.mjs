@@ -79,8 +79,12 @@ function substitutions(text) {
 // Every ( ) group, $( ), backtick and <( ) gets a unique id: a segment's `scope` lists the ids of the groups around it (they run in a subshell, so a `cd`
 // inside never reaches the next command), `term` is the operator that ended it (; && || | |& & or a newline) and `fork` says it runs in a subshell of
 // its own (either side of a pipe, or a background job).
+// Bash evaluates some strings as ARITHMETIC, and arithmetic runs the command substitution inside an array subscript (x='a[$(cmd)]'; echo $((x))). What a variable
+// holds (read from a file, assigned earlier) or what a substitution prints cannot be known here, so only literal numbers and operators are accepted.
+const ARITHMETIC_LITERAL = /^(?:\s|\d|[-+*/%<>()&|^!~=,?:]|\b0[xX][0-9a-fA-F]+\b|\b\d+#[0-9a-zA-Z@_]+\b)*$/;
 let scopeSeq = 0;
 const FORKING = new Set(['&', '|', '|&']);
+const PENDING_RHS = new Set(['&&', '||', '|', '|&']);
 // `first`: nothing before it in its list (`a && b`, `a | b`) can skip it, and every group around it was entered the same way: it runs for certain
 const startsList = term => term === '' || term === ';' || term === '\n';
 
@@ -137,6 +141,7 @@ function parse(src) {
       const k = matchClose(src, i + 3, 2);
       if (k < 0) { unparsable(); return src.length; }
       if (src[k - 1] === ')' && k - 1 >= i + 3) {
+        if (!ARITHMETIC_LITERAL.test(src.slice(i + 3, k - 1))) unparsable(); // a variable or a substitution's output is evaluated as arithmetic: a[$(cmd)] runs cmd
         const cmds = substitutions(src.slice(i + 3, k - 1));
         if (cmds) for (const c of cmds) segs.push(...nested(c)); else unparsable();
         cur.word = `${cur.word ?? ''}$((…))`;
@@ -200,7 +205,11 @@ function parse(src) {
     } else if (c === '"') { cur.word ??= ''; cur.dq = true; }
     else if (c === '\\') { if (next !== '\n') cur.word = (cur.word ?? '') + (next ?? ''); i++; }
     else if (c === '#' && cur.word === null) { while (i + 1 < src.length && src[i + 1] !== '\n') i++; }
-    else if (c === '\n') { endSeg('\n'); i = readHeredocBodies(i); }
+    else if (c === '\n') {
+      const bare = cur.word === null && !cur.words.length && !cur.redirs.length && !cur.reads.length;
+      if (!(bare && PENDING_RHS.has(lastTerm))) endSeg('\n'); // after && || | |& the next line still belongs to the same list
+      i = readHeredocBodies(i);
+    }
     else if (c === ';' || c === '|' || (c === '&' && next !== '>')) {
       let op = c;
       if ((c === '&' || c === '|') && (next === c || (c === '|' && next === '&'))) { op = c + next; i++; } // && || |&
@@ -291,10 +300,14 @@ const STEERING_VARS = new Set(['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_
   'GIT_EDITOR', 'GIT_ASKPASS', 'GIT_EXEC_PATH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'PAGER', 'EDITOR', 'VISUAL',
   // which repo (and so which .git/config) git reads; the GIT_TRACE* family and GIT_REDIRECT_STDERR write files named by the variable
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG',
-  'GIT_REDIRECT_STDERR', 'CDPATH']);
+  'GIT_REDIRECT_STDERR', 'CDPATH',
+  // the shell itself and tools that read a program or config from the environment: PS4 is expanded (command substitutions included) by `set -x`; RIPGREP_CONFIG_PATH
+  // names a file of rg options such as --pre; OPENSSL_CONF / GCONV_PATH load code; locale, terminal and resolver variables name files or hosts
+  'PS4', 'PROMPT_COMMAND', 'SHELLOPTS', 'BASHOPTS', 'ENV', 'FPATH', 'RIPGREP_CONFIG_PATH', 'OPENSSL_CONF', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE', 'GCONV_PATH', 'LOCPATH',
+  'NLSPATH', 'HOSTALIASES', 'RES_OPTIONS', 'TZDIR', 'TERMINFO']);
 // whole families, so a variable nobody listed (NODE_V8_COVERAGE writes files, SSH_ASKPASS runs a program, LD_AUDIT / DYLD_* load code) cannot slip through
 const STEERING_FAMILY = /^((GIT|NODE|DOCKER|SSH|LD|DYLD|XDG|ZT|NPM|BASH)_|PYTHON|PERL|RUBY|JAVA|MALLOC)/;
-const isSteering = v => STEERING_VARS.has(v) || STEERING_FAMILY.test(v);
+const isSteering = v => STEERING_VARS.has(v) || STEERING_FAMILY.test(v) || /^[a-z_]*proxy$/i.test(v); // http_proxy, ALL_PROXY ... send git's traffic elsewhere
 
 // -> { prog, args, assigns } (prog is undefined for an assignment-only segment), { denial } for a bad wrapper option, or null when the segment
 // runs and sets nothing (`command -v`, flow-control header). assigns = names of VAR=val words in the prefix, including those after env/time/...
@@ -723,10 +736,18 @@ function dockerRun(rest) {
   if (!none) return bad('needs --network none');
   return rest[i] === undefined ? bad('needs an image') : null;
 }
+// pull: one image on the default registry (an explicit registry host such as evil.example/x or localhost:5000/x is a network destination), and no option but -q
+const REGISTRY_HOST = /^(localhost|[^/]*[.:][^/]*)\//;
+function dockerPull(rest) {
+  const images = rest.filter(a => a !== '-q' && a !== '--quiet');
+  return images.length !== 1 || images[0].startsWith('-') || REGISTRY_HOST.test(images[0])
+    ? deny('docker pull', 'is only allowed for one image on the default registry (no registry host, no option but -q)', FIX_STATE) : null;
+}
 function dockerRule(args) {
   const [sub, ...rest] = args;
   if (!sub || sub.startsWith('-')) return deny('docker with global options', 'is not allowed', FIX_STATE);
-  if (['ps', 'port', 'logs', 'inspect', 'pull'].includes(sub)) return null;
+  if (['ps', 'port', 'logs', 'inspect'].includes(sub)) return null;
+  if (sub === 'pull') return dockerPull(rest);
   if (sub === 'image') return ['ls', 'inspect'].includes(rest[0]) ? null : deny(`docker image ${rest[0] ?? ''}`.trim(), 'is not allowed', FIX_STATE);
   if (sub === 'rm') {
     const names = rest.filter(a => !a.startsWith('-'));
@@ -958,6 +979,11 @@ function builtinDenial(name, args) {
   const hit = NAME_BUILTINS.has(name) ? operandNames(args).find(isSteering) : READ_BUILTINS.has(name) ? args.find(isSteering) : undefined;
   if (hit) return deny(`setting ${hit}`, WHY_ENV);
   if (name === 'printf' && hasFlag(args, /^-v/)) return deny('printf -v', WHY_ASSIGN);
+  if (NAME_BUILTINS.has(name) && args.some(a => !/^[-+]/.test(a) && a.includes('['))) return deny(`${name} with a subscript`, 'would evaluate the subscript as arithmetic, which runs command substitutions');
+  if (['declare', 'typeset', 'local', 'readonly', 'export'].includes(name) && hasFlag(args, /^-[A-Za-z]*i/)) return deny(`${name} -i`, 'evaluates its value as arithmetic, which runs command substitutions');
+  if (['[[', '[', 'test'].includes(name) && args.some(a => a === '-v' || a === '-R' || (name === '[[' && ARITH_TEST_OPS.has(a)))) {
+    return deny(`${name} ${args.find(a => a === '-v' || a === '-R' || ARITH_TEST_OPS.has(a))}`, 'evaluates a variable name or number as arithmetic, which runs command substitutions');
+  }
   if (name === 'set' && hasFlag(args, /^-[A-Za-z]*[ao]|^\+[A-Za-z]*o/)) return deny('set -a/-o', WHY_ASSIGN);
   if (['declare', 'typeset', 'local'].includes(name) && hasFlag(args, /^-[A-Za-z]*n/)) return deny(`${name} -n`, 'creates a name reference that can assign any variable');
   if ((name === 'mapfile' || name === 'readarray') && hasFlag(args, /^-[A-Za-z]*C/)) return deny(`${name} -C`, 'would run a callback command');
@@ -970,11 +996,15 @@ const listsEnvironment = (name, args) => (name === 'set' && !args.length) || (LI
 // is changed, a later git/shell/ssh run executes what it names and this guard cannot see it any more, so the write itself is what is denied.
 const DEV_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty']);
 
+// expansions that evaluate a string: indirection, prompt expansion, a non-numeric ${x:offset} or ${a[subscript]}, the legacy $[ ]
+const EVAL_FORMS = [/\$\{!/, /\$\{[^}]*@P\}/, /\$\{[^}]*:(?![-=+?])[^}]*[A-Za-z_$]/, /\$\{[^}]*\[[^\]@*]*[A-Za-z_$][^\]]*\]/, /\$\[(?![\d\s+\-*/%()<>&|^!~=,?:]*\])/, /\$\{[^}]*$/];
+const ARITH_TEST_OPS = new Set(['-eq', '-ne', '-lt', '-le', '-gt', '-ge']);
 // reading from /dev/tcp or /dev/udp opens a socket (bash); /proc/*/environ is the whole environment
 const NET_DEVICE = /^\/dev\/(tcp|udp)\//;
 const PROC_ENVIRON = /\/proc\/.*\benviron\b/;
 
 function judge(seg, unwrapped, ctx) {
+  if (seg.words.some(w => EVAL_FORMS.some(re => re.test(w)))) return deny('a shell expansion that evaluates its value', 'can run a command (array subscripts and prompts are evaluated)', FIX_STATE);
   for (const target of seg.reads ?? []) {
     if (NET_DEVICE.test(target)) return deny(`reading ${target}`, 'would open a network connection', FIX_STATE);
     if (PROC_ENVIRON.test(target)) return deny(`reading ${target}`, 'would print the whole environment, which can hold secrets', FIX_STATE);

