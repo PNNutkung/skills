@@ -111,7 +111,7 @@ export function restore(repo, copy, srcChanges) {
 
 // Runs `command` (a shell line) in `dir` through the sandbox runner. -> { exit, sec, tail, run } where run = the id of the runner's ledger entry (ZT-RUN <id>)
 export function runIn(o, dir, command) {
-  const t0 = performance.now();
+  const t0 = performance.now(), keep = o.tail ?? TAIL; // o.tail: trailing output chars the caller needs (the RED classifier reads more than the review probes)
   const env = o.env.some(e => e.startsWith('PYTHONPATH=')) ? o.env : [...o.env, `PYTHONPATH=${dir}`]; // editable installs would import the original tree
   const argv = [o.runner, '--cwd', dir, '--rw', dir, '--timeout', String(o.timeout), ...o.ro.flatMap(p => ['--ro', p]), ...env.flatMap(e => ['--env', e]),
     '--', 'sh', '-c', command];
@@ -119,8 +119,8 @@ export function runIn(o, dir, command) {
     // the runner enforces --timeout itself (124); this is only a backstop against a hung runner
     const p = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'pipe'], timeout: (o.timeout + KILL_GRACE_SEC) * 1000, killSignal: 'SIGKILL' });
     let tail = '';
-    for (const s of [p.stdout, p.stderr]) { s.setEncoding('utf8'); s.on('data', d => (tail = (tail + d).slice(-TAIL * 4))); }
-    const end = exit => done({ exit, sec: Math.round((performance.now() - t0) / 100) / 10, tail: tail.trim().slice(-TAIL), run: /ZT-RUN (\S+) exit=/.exec(tail)?.[1] });
+    for (const s of [p.stdout, p.stderr]) { s.setEncoding('utf8'); s.on('data', d => (tail = (tail + d).slice(-keep * 4))); }
+    const end = exit => done({ exit, sec: Math.round((performance.now() - t0) / 100) / 10, tail: tail.trim().slice(-keep), run: /ZT-RUN (\S+) exit=/.exec(tail)?.[1] });
     p.on('error', e => { tail = e.message; end(1); });
     p.on('close', code => end(code ?? TIMEOUT));
   });

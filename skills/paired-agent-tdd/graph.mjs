@@ -1,340 +1,164 @@
 #!/usr/bin/env node
-// Execution graph for the paired-agent-tdd skill.
-//
-// This file is the SINGLE SOURCE OF TRUTH for the pipeline's shape. The mermaid
-// diagram and the tiers table in SKILL.md are generated from NODES below, and
-// `--check` fails if either has drifted. Edit NODES, run `node graph.mjs --write`.
-//
-// Two executors read this file. A Claude Code AGENT TEAM: the lead creates one
-// task per node instance on the shared task list and encodes `needs` as task
-// dependencies; the lead does not implement anything itself. A Workflow SCRIPT:
-// the script calls agent(prompt, { model, effort, ... }) per node.
-
+// Execution graph of paired-agent-tdd: the SINGLE SOURCE OF TRUTH for the pipeline's shape.
+// --write regenerates the diagram and the tiers table in SKILL.md and the NODE/LIM/plan table plus checkMatrix in workflow.js (a Workflow script cannot import);
+// --check fails when any of them has drifted or a guard below is broken. Edit NODES, run --write.
 import assert from 'node:assert';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { checkMatrix } from './gates.mjs';
 
-//
-// `model` is per-teammate and settable in both executors. `effort` is honoured
-// per node only by the Workflow-script executor: agent teams inherit the lead's
-// effort ("Teammates inherit the lead's effort level"), and effort is not among
-// the fields applied from a subagent definition to a teammate (tools, model,
-// body, skills, mcpServers). `model`/`effort`/`tier` values are starting guesses
-// to be moved one node at a time from measured runs (see runs.md).
-//
-// `tier` is the cost tier: T1 haiku (leads, not facts), T2 sonnet (analysis and
-// implementation with real runs), T3 opus (judgement over cross-cutting context).
-//
-// `ponytail` is the intensity each teammate's brief states. Drivers write the
-// minimum change, so they run ultra. Reviewers and the integration tester are
-// paid to be thorough, so they do not.
-//
-// `fanout` marks nodes instantiated once per unit of work rather than once per
-// run: 'group' = one per independent file group, 'finding' = one per review
-// finding, 'dimension' = one per review dimension.
+// tier: T0 code, T2 sonnet, T3 opus (policy in tiering.md). model 'code' = plain code (tdd.mjs or the lead), no agent.
+// agentType picks the agent definition: its tool list is a structural fence (navigators and the reviewer have no Edit or Write) and a smaller fixed context than
+// a general-purpose agent (measured in runs.md). outside = run by the lead before the Workflow, not by workflow.js.
+// fanout: group = one per file group (groups stream through RED and GREEN with no barrier between them).
+// LIM: pool = agents in flight at once (one rolling pool for the whole run), retry = extra attempts for a dead or null agent, rounds = repair rounds per stage (R4):
+// a driver pass, then an independent check, repeated until the check passes, stops making progress or the rounds run out. plan.rounds (1-4) overrides it per run.
+// repairs = the run-wide repair budget PER GROUP (plan.maxRepairs overrides the total): spent, a group still failing is PAUSED, not retried: `tdd.mjs resume` continues it later.
+export const LIM = { pool: 6, retry: 1, rounds: 3, repairs: 2 };
 export const NODES = [
-  {
-    id: 'graph-planner',
-    role: 'Derive the execution graph for THIS change',
-    needs: [],
-    model: 'opus',
-    effort: 'high',
-    ponytail: 'full',
-    tier: 'T3',
-    gated: true,
-    deliverable: 'File groups + their dependency edges, as JSON',
-  },
-  {
-    id: 'test-auditor',
-    role: 'Find and fix tests the change will make stale',
-    needs: [],
-    model: 'sonnet',
-    effort: 'medium',
-    ponytail: 'full',
-    tier: 'T2',
-    deliverable: 'Stale tests fixed, with a real test run proving it',
-  },
-  {
-    id: 'red-driver',
-    role: 'Write failing tests against current code',
-    needs: [],
-    model: 'sonnet',
-    effort: 'medium',
-    ponytail: 'ultra',
-    tier: 'T2',
-    fanout: 'group',
-    deliverable: 'Failing tests: happy path, fail path, edge/collision case',
-  },
-  {
-    id: 'red-navigator',
-    role: 'Verify each test fails for the right reason',
-    needs: ['red-driver'],
-    model: 'sonnet',
-    effort: 'high',
-    ponytail: 'full',
-    tier: 'T2',
-    fanout: 'group',
-    deliverable: 'PASS/FAIL verdict on the RED tests, with evidence',
-  },
-  {
-    id: 'green-driver',
-    role: 'Minimum implementation that passes the RED tests',
-    needs: ['red-navigator'],
-    model: 'sonnet',
-    effort: 'medium',
-    ponytail: 'ultra',
-    tier: 'T2',
-    fanout: 'group',
-    deliverable: 'Implementation diff + passing test run',
-  },
-  {
-    id: 'green-navigator',
-    role: 'Confirm minimal, in-scope, reusing existing patterns',
-    needs: ['green-driver'],
-    model: 'sonnet',
-    effort: 'high',
-    ponytail: 'full',
-    tier: 'T2',
-    fanout: 'group',
-    deliverable: 'PASS/FAIL verdict on the implementation, with evidence',
-  },
-  {
-    id: 'refactor-driver',
-    role: 'Clean up once green, three-strikes DRY only',
-    needs: ['green-navigator'],
-    model: 'sonnet',
-    effort: 'medium',
-    ponytail: 'ultra',
-    tier: 'T2',
-    fanout: 'group',
-    deliverable: 'Cleanup diff (or "no changes needed") + still-green run',
-  },
-  {
-    id: 'refactor-navigator',
-    role: 'Confirm no premature abstraction, behavior unchanged',
-    needs: ['refactor-driver'],
-    model: 'haiku',
-    effort: 'medium',
-    ponytail: 'full',
-    tier: 'T1',
-    fanout: 'group',
-    deliverable: 'PASS/FAIL verdict on the cleanup, with evidence',
-  },
-  {
-    id: 'integration-tester',
-    role: 'One real-dependency, no-mock test of the full path',
-    needs: ['green-navigator'],
-    model: 'sonnet',
-    effort: 'high',
-    ponytail: 'lite',
-    tier: 'T2',
-    deliverable: 'Integration test + a real run against the real dependency',
-  },
-  {
-    id: 'reviewer',
-    role: 'Review the whole diff on one assigned dimension',
-    needs: ['refactor-navigator', 'integration-tester'],
-    model: 'opus',
-    effort: 'high',
-    ponytail: 'off',
-    tier: 'T3',
-    fanout: 'dimension',
-    deliverable: 'Findings as JSON: file, line, severity, summary, fix',
-  },
-  {
-    id: 'fixer',
-    role: 'Fix exactly one review finding',
-    needs: ['reviewer'],
-    model: 'sonnet',
-    effort: 'medium',
-    ponytail: 'full',
-    tier: 'T2',
-    fanout: 'finding',
-    deliverable: 'Fix diff + a real run of the relevant tests',
-  },
+  { id: 'graph-planner', tier: 'T3', role: 'Partition the planned files into owned groups and their order', needs: [], model: 'opus', effort: 'high', ponytail: 'full', agentType: 'planner', gated: 'only when the import structure is unknown', outside: true, deliverable: 'groups + after edges for plan.json' },
+  { id: 'plan', tier: 'T0', role: 'tdd.mjs plan: validate groups, DoD and quotes, snapshot the base tree', needs: ['graph-planner'], model: 'code', deliverable: 'RUN/plan.json + Workflow args' },
+  { id: 'red-driver', tier: 'T2', role: 'Driver: failing tests, one per DoD item and kind, in the group test files', needs: ['plan'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 40, fanout: 'group', deliverable: 'Test files + matrix rows (dod, kind, test, file)' },
+  { id: 'red-gate', tier: 'T0', role: 'tdd.mjs red: every new test file fails now, and how (assertion, load error, passes already)', needs: ['red-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.red.json' },
+  { id: 'red-navigator', tier: 'T2', role: 'Navigator: right reason, right invariant, DoD kinds really tested, precedent', needs: ['red-gate'], model: 'sonnet', effort: 'high', ponytail: 'full', agentType: 'code-reviewer', cap: 25, fanout: 'group', deliverable: 'PASS/FAIL + defects' },
+  { id: 'green-driver', tier: 'T2', role: 'Driver: minimum code for the RED tests, then one cleanup only for a named duplication', needs: ['red-navigator'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 45, fanout: 'group', deliverable: 'Implementation in the group src files' },
+  { id: 'green-gate', tier: 'T0', role: 'tdd.mjs green: tests pass and exercise the change, frozen since RED, in scope, mutants, coverage', needs: ['green-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.green.json' },
+  { id: 'green-navigator', tier: 'T2', role: 'Navigator: minimal, reuses patterns, survivors are test gaps, no weakened tests', needs: ['green-gate'], model: 'sonnet', effort: 'high', ponytail: 'full', agentType: 'code-reviewer', cap: 25, fanout: 'group', deliverable: 'PASS/FAIL + defects' },
+  { id: 'integration-tester', tier: 'T2', role: 'One real-dependency test of the full path', needs: ['green-navigator'], model: 'sonnet', effort: 'high', ponytail: 'lite', agentType: 'tdd-guide', cap: 35, gated: 'only when the change crosses a process, DB or network boundary', deliverable: 'Integration test + a real run' },
+  { id: 'final-gate', tier: 'T0', role: 'tdd.mjs final: all group tests together, existing tests that mention the changed modules, scope, whole-diff patch', needs: ['green-navigator', 'integration-tester'], model: 'code', deliverable: 'RUN/gates/final.json + diff/final.patch' },
+  { id: 'reviewer', tier: 'T3', role: 'Review the whole diff once: DoD, test integrity, security, reuse, stale text', needs: ['final-gate'], model: 'opus', effort: 'high', ponytail: 'off', agentType: 'code-reviewer', cap: 40, deliverable: 'Findings with a quote and a proof' },
+  { id: 'fixer', tier: 'T2', role: 'Fix every finding of one group, nothing else', needs: ['reviewer'], model: 'sonnet', effort: 'medium', ponytail: 'full', agentType: 'tdd-guide', cap: 35, fanout: 'group', gated: 'only for groups with findings', deliverable: 'Fixes + a real run of the group tests' },
+  { id: 'final-verifier', tier: 'T1', role: 'Courier: re-run the final gate after the fixers and name each problem with its file', needs: ['fixer'], model: 'haiku', effort: 'low', ponytail: 'off', agentType: 'code-reviewer', cap: 6, gated: 'only after fixers ran', deliverable: 'ok + problems (leads: the gate file is the fact)' },
+  { id: 'verify', tier: 'T0', role: 'tdd.mjs verify: DoD closure from the gates, fixes still present, reviewer proofs (proofcheck)', needs: ['final-verifier'], model: 'code', deliverable: 'dod-matrix.md + verify.json' },
 ];
-
-// Deterministic facts the LEAD gathers with one command and injects verbatim
-// into a teammate's brief. A teammate must never be asked to re-derive these,
-// and must never be trusted to self-report them: "use plain code, not an agent,
-// for anything deterministic."
-export const LEAD_GATHERED = [
-  { fact: 'scope fence check', command: 'git diff --stat' },
-  { fact: 'full suite result', command: "the project's test command" },
-  { fact: 'lint result', command: 'pre-commit run (staged files only)' },
-];
-
 const byId = new Map(NODES.map(n => [n.id, n]));
+const SKILL_CAP = 14000;
 
-// Display labels for the `fanout` field in the diagram and tiers table.
-const FANOUT = { group: 'per group', finding: 'per finding', dimension: 'per dimension' };
-// Effort ceiling is `high` (rule R1 in SKILL.md): widen this map only from a measured run.
-const EFFORT_RANK = { low: 0, medium: 1, high: 2 };
-// Ordering used by the checker >= maker guard (rule R2).
-const MODEL_RANK = { haiku: 0, sonnet: 1, opus: 2 };
-// Tier -> model mapping from SKILL.md (T1 gathering, T2 analysis/implementation, T3 judgement).
-const TIER_MODEL = { T1: 'haiku', T2: 'sonnet', T3: 'opus' };
-// Rule R3: opus only on once-per-run or gated judge nodes.
-const OPUS_NODES = ['graph-planner', 'reviewer'];
-// The one declared R2 exception: the T3 reviewer re-reads the whole diff after it.
-const R2_EXCEPTIONS = ['refactor-navigator'];
-
-/** Nodes grouped into dependency layers. Everything in a layer runs at once. */
+/** Nodes grouped into dependency layers. Everything in a layer can run at once. */
 export function layers() {
-  const remaining = new Set(NODES.map(n => n.id));
-  const done = new Set();
-  const out = [];
-  while (remaining.size) {
-    const ready = [...remaining].filter(id =>
-      byId.get(id).needs.every(d => done.has(d)),
-    );
-    if (!ready.length) throw new Error(`cycle among: ${[...remaining]}`);
+  const left = new Set(byId.keys()), done = new Set(), out = [];
+  while (left.size) {
+    const ready = [...left].filter(id => byId.get(id).needs.every(d => done.has(d)));
+    if (!ready.length) throw new Error(`cycle among: ${[...left]}`);
     out.push(ready);
-    for (const id of ready) {
-      remaining.delete(id);
-      done.add(id);
-    }
+    ready.forEach(id => { left.delete(id); done.add(id); });
   }
   return out;
 }
 
-/** Longest dependency chain — the run's wall-clock floor, in node hops. */
+/** Longest dependency chain: the wall-clock floor of one group, in node hops. */
 export function criticalPath() {
-  const depth = new Map();
-  const walk = id => {
-    if (depth.has(id)) return depth.get(id);
-    const needs = byId.get(id).needs;
-    const d = needs.length ? 1 + Math.max(...needs.map(walk)) : 1;
-    depth.set(id, d);
-    return d;
-  };
-  const chain = [];
-  let cur = NODES.map(n => n.id).reduce((a, b) => (walk(a) >= walk(b) ? a : b));
+  const depth = new Map(), walk = id => depth.get(id) ?? (depth.set(id, 1 + Math.max(0, ...byId.get(id).needs.map(walk))), depth.get(id));
+  let cur = [...byId.keys()].reduce((a, b) => (walk(a) >= walk(b) ? a : b)), chain = [];
   while (cur) {
     chain.unshift(cur);
     const needs = byId.get(cur).needs;
-    cur = needs.length
-      ? needs.reduce((a, b) => (walk(a) >= walk(b) ? a : b))
-      : null;
+    cur = needs.length ? needs.reduce((a, b) => (walk(a) >= walk(b) ? a : b)) : null;
   }
   return chain;
 }
 
+/** Agents of one run when every first pass is right: g groups, integration 0|1, findingGroups = groups that end up with review findings. Repair rounds are not counted (see worst()). */
+export function plan(g, integration, findingGroups) {
+  const counts = { 'red-driver': g, 'red-navigator': g, 'green-driver': g, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0 };
+  return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
+}
+/**
+ * The ceiling of BUILD agents. Per group, when every check fails until the rounds run out: RED = 1 driver + 1 matrix rework + (1 + R) checks + R reworks, GREEN = 1 driver +
+ * (1 + R) checks + up to 2 makers a round = 5 + 5R. Run-wide, the repair budget B (every rework or repair round, the matrix rework included) bounds the rest: the first pass of
+ * every group is 4 agents (2 makers, 2 checks) and each repair is at most 2 makers + 1 check, so 4g + 3B. The smaller of the two holds. Not counted: the reviewer, the fixers,
+ * up to 3 final couriers with their fixers, and one retry (LIM.retry) of any agent that dies.
+ */
+export const worst = (g, rounds = LIM.rounds, budget = LIM.repairs * g) => Math.min(g * (5 + 5 * rounds), 4 * g + 3 * budget);
+// The design this one replaced, as an ESTIMATE (not measured): auditor + 6 agents per group + integration tester + 3 dimension reviewers + one fixer per finding.
+const oldTotal = (g, findings) => 1 + 6 * g + 1 + 3 + findings;
+
 export function mermaid() {
-  const lines = ['graph TD'];
-  for (const n of NODES) {
-    const tags = [`${n.model}/${n.effort}`];
-    if (n.fanout) tags.push(FANOUT[n.fanout]);
-    if (n.gated) tags.push('gated');
-    lines.push(`  ${n.id}["${n.id}<br/><i>${tags.join(' · ')}</i>"]`);
-  }
-  for (const n of NODES) {
-    for (const d of n.needs) lines.push(`  ${d} --> ${n.id}`);
-  }
-  return lines.join('\n');
+  const tags = n => [n.model === 'code' ? 'code' : `${n.model}/${n.effort}`, n.fanout && 'per group', n.gated && 'gated'].filter(Boolean).join(' · ');
+  return ['graph TD', ...NODES.map(n => `  ${n.id}["${n.id}<br/>${tags(n)}"]`), ...NODES.flatMap(n => n.needs.map(d => `  ${d} --> ${n.id}`))].join('\n');
 }
-
 export function tiersTable() {
-  const rows = NODES.map(n => {
-    const gate = [n.fanout && FANOUT[n.fanout], n.gated && 'gated'].filter(Boolean);
-    return `| ${n.id} | ${n.tier} | ${n.model} | ${n.effort} | ${n.ponytail} | ${gate.join(', ') || '-'} |`;
-  });
-  return [
-    '| node | tier | model | effort | ponytail | gate/fanout |',
-    '|---|---|---|---|---|---|',
-    ...rows,
-  ].join('\n');
+  return ['| node | tier | model | effort | agent type | ponytail | calls | gate/fanout |', '|---|---|---|---|---|---|---|---|',
+    ...NODES.filter(n => n.model !== 'code').map(n => `| ${n.id} | ${n.tier} | ${n.model} | ${n.effort} | ${n.agentType} | ${n.ponytail} | ${n.cap ?? '-'} | ${[n.fanout && 'per group', n.gated].filter(Boolean).join(', ') || '-'} |`)].join('\n');
 }
 
+const nodesJs = () => [
+  'const NODE = {', ...NODES.filter(n => n.model !== 'code' && !n.outside).map(n => `  '${n.id}': ${JSON.stringify({ model: n.model, effort: n.effort, ponytail: n.ponytail, agentType: n.agentType, cap: n.cap })},`), '}',
+  `const LIM = ${JSON.stringify(LIM)}`, plan.toString(),
+].join('\n');
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SKILL = join(HERE, 'SKILL.md');
-
-// Each generated block in SKILL.md: marker name + body renderer.
 const TARGETS = [
-  { name: 'graph', body: () => `\`\`\`mermaid\n${mermaid()}\n\`\`\`` },
-  { name: 'tiers', body: tiersTable },
+  { file: 'SKILL.md', open: '<!-- GENERATED:graph -->', close: '<!-- /GENERATED:graph -->', body: () => `\`\`\`mermaid\n${mermaid()}\n\`\`\`` },
+  { file: 'SKILL.md', open: '<!-- GENERATED:tiers -->', close: '<!-- /GENERATED:tiers -->', body: tiersTable },
+  { file: 'workflow.js', open: '// GENERATED:nodes (node graph.mjs --write)', close: '// /GENERATED:nodes', body: nodesJs },
+  { file: 'workflow.js', open: '// GENERATED:matrix (node graph.mjs --write)', close: '// /GENERATED:matrix', body: () => checkMatrix.toString() },
 ];
-
-const markers = t => [`<!-- GENERATED:${t.name} -->`, `<!-- /GENERATED:${t.name} -->`];
-const block = t => `${markers(t)[0]}\n\n${t.body()}\n\n${markers(t)[1]}`;
-
-function embedded(md, t) {
-  const [open, close] = markers(t);
-  const start = md.indexOf(open);
-  const end = md.indexOf(close);
-  assert.ok(start !== -1 && end !== -1, `SKILL.md is missing the ${open} block`);
-  return md.slice(start, end + close.length);
+const read = t => readFileSync(join(HERE, t.file), 'utf8');
+const block = t => `${t.open}\n\n${t.body()}\n\n${t.close}`;
+function current(t) {
+  const txt = read(t), s = txt.indexOf(t.open), e = txt.indexOf(t.close);
+  assert.ok(s !== -1 && e !== -1, `${t.file} is missing the ${t.open} block`);
+  return txt.slice(s, e + t.close.length);
 }
 
 function check() {
-  // Every edge points at a node that exists.
-  for (const n of NODES) {
-    for (const d of n.needs) {
-      assert.ok(byId.has(d), `${n.id} needs unknown node "${d}"`);
-    }
-  }
-  // Acyclic, and every node is reachable in some layer.
+  NODES.forEach(n => n.needs.forEach(d => assert.ok(byId.has(d), `${n.id} needs unknown node "${d}"`)));
   const l = layers();
   assert.equal(l.flat().length, NODES.length, 'some node never became ready');
-
-  // The parallelism this graph exists to buy, asserted so a future edit that
-  // silently re-serializes the pipeline fails here instead of in production.
-  assert.ok(
-    !byId.get('integration-tester').needs.includes('refactor-navigator'),
-    'integration-tester must not wait on the refactor chain',
-  );
-  assert.ok(
-    l.some(layer => layer.length > 1),
-    'no layer runs anything in parallel',
-  );
-
-  // Tiering guards: a silent edit to model/effort/tier fails here.
-  for (const n of NODES) {
-    assert.ok(Object.hasOwn(EFFORT_RANK, n.effort), `${n.id}: effort must be low|medium|high, got "${n.effort}"`);
-    assert.ok(Object.hasOwn(MODEL_RANK, n.model), `${n.id}: unknown model "${n.model}"`);
-    assert.ok(Object.hasOwn(TIER_MODEL, n.tier), `${n.id}: tier must be T1|T2|T3, got "${n.tier}"`);
-    assert.equal(TIER_MODEL[n.tier], n.model, `${n.id}: tier ${n.tier} implies model ${TIER_MODEL[n.tier]}, got ${n.model}`);
-    assert.ok(
-      n.model !== 'opus' || OPUS_NODES.includes(n.id),
-      `${n.id}: opus only on ${OPUS_NODES.join(', ')}`,
-    );
+  // Shape guards: a future edit that re-inflates or re-serializes the pipeline fails here, not in production.
+  assert.ok(['plan', 'red-gate', 'green-gate', 'final-gate', 'verify'].every(id => byId.get(id).model === 'code'), 'deterministic nodes must be plain code, not agents');
+  assert.ok(!NODES.some(n => /^(test-auditor|refactor-)/.test(n.id)), 'the auditor is the final gate (existing tests, run for real) and cleanup is one step of green-driver: neither is an agent again without a measured reason (runs.md)');
+  assert.ok(NODES.filter(n => n.id === 'reviewer').length === 1 && !byId.get('reviewer').fanout, 'one reviewer reads the whole diff once; per-dimension reviewers each re-read it');
+  assert.deepEqual(byId.get('integration-tester').needs, ['green-navigator'], 'integration-tester needs green only, never a cleanup chain');
+  assert.deepEqual(byId.get('red-driver').needs, ['plan'], 'every group starts RED at once: nothing but the plan gates it');
+  for (const s of ['red', 'green']) {
+    assert.deepEqual(byId.get(`${s}-navigator`).needs, [`${s}-gate`], `${s}-navigator starts from the ${s} gate facts`);
+    assert.deepEqual(byId.get(`${s}-gate`).needs, [`${s}-driver`], `the ${s} gate runs right after its driver`);
   }
-  // R2, checker >= maker in model and effort: every navigator against its maker
-  // (needs[0]) except the declared exceptions, plus integration-tester against green-driver.
-  const atLeast = (checker, maker) =>
-    MODEL_RANK[checker.model] >= MODEL_RANK[maker.model] &&
-    EFFORT_RANK[checker.effort] >= EFFORT_RANK[maker.effort];
-  const pairs = NODES.filter(n => n.id.endsWith('-navigator') && !R2_EXCEPTIONS.includes(n.id)).map(n => [n, byId.get(n.needs[0])]);
-  pairs.push([byId.get('integration-tester'), byId.get('green-driver')]);
-  for (const [checker, maker] of pairs) {
-    assert.ok(maker, `${checker.id}: maker node not found`);
-    assert.ok(atLeast(checker, maker), `${checker.id} must be >= ${maker.id} in model and effort (checker >= maker)`);
-  }
-
-  // Generated blocks in SKILL.md match this file.
-  const md = readFileSync(SKILL, 'utf8');
-  for (const t of TARGETS) {
-    assert.equal(embedded(md, t), block(t), `SKILL.md ${t.name} block is stale — run --write`);
-  }
-
+  assert.ok(NODES.filter(n => n.fanout).every(n => n.fanout === 'group'), 'work fans out per file group only');
+  assert.ok(LIM.pool >= 1 && LIM.pool <= 8, 'pool above 8 risks the gateway stall that once killed 9 reviewers; raise it only from runs.md data');
+  assert.ok(Number.isInteger(LIM.rounds) && LIM.rounds >= 1 && LIM.rounds <= 4, 'R4: repair rounds are bounded (1-4); a stuck group is stopped earlier by the stall check, never retried forever');
+  assert.equal(byId.get('final-verifier').model, 'haiku', 'the final verifier only runs one gate and copies its lines: a courier, not a judge');
+  assert.deepEqual(byId.get('verify').needs, ['final-verifier'], 'the lead\'s verify comes after the last fix has been re-checked');
+  // Tiering guards (tiering.md): valid efforts, no node above high, tier agrees with model, opus only on the planner and the reviewer, checker >= maker.
+  const EFFORT = { low: 0, medium: 1, high: 2 }, MODEL = { haiku: 0, sonnet: 1, opus: 2 }, TIER = { T0: 'code', T1: 'haiku', T2: 'sonnet', T3: 'opus' };
+  NODES.forEach(n => {
+    assert.equal(TIER[n.tier], n.model, `${n.id}: tier ${n.tier} requires model ${TIER[n.tier]}, got ${n.model}`);
+    if (n.model === 'code') return;
+    assert.ok(n.effort in EFFORT, `${n.id}: effort must be low|medium|high`);
+    assert.ok(n.model !== 'opus' || ['graph-planner', 'reviewer'].includes(n.id), `${n.id}: opus only on graph-planner and reviewer`);
+    assert.ok(n.agentType && (n.cap !== undefined || n.outside), `${n.id}: agentType and cap are required`);
+  });
+  const atLeast = (c, m) => MODEL[byId.get(c).model] >= MODEL[byId.get(m).model] && EFFORT[byId.get(c).effort] >= EFFORT[byId.get(m).effort];
+  [['red-navigator', 'red-driver'], ['green-navigator', 'green-driver'], ['integration-tester', 'green-driver']].forEach(([c, m]) => assert.ok(atLeast(c, m), `${c} must be >= ${m} in model and effort (checker >= maker)`));
+  // Structural fences: whoever judges cannot edit.
+  assert.ok(['red-navigator', 'green-navigator', 'reviewer', 'final-verifier'].every(id => byId.get(id).agentType === 'code-reviewer'), 'navigators, the reviewer and the final verifier use the read-only agent type');
+  assert.ok(['red-driver', 'green-driver', 'fixer', 'integration-tester'].every(id => byId.get(id).agentType === 'tdd-guide'), 'makers use the TDD agent type');
+  assert.equal(plan(3, 0, 1).total, 15, '3 groups: 12 build agents + 1 reviewer + 1 fixer + 1 final verifier');
+  assert.equal(plan(3, 0, 0).total, 13, 'no findings: no fixer and no final verifier');
+  assert.equal(worst(3, 3, 99), 60, '3 groups, 3 repair rounds, no run-wide limit: at most 60 build agents (20 per group, reached by a script test with a navigator that never passes)');
+  assert.equal(worst(3, 3), 30, 'with the default budget (2 repairs per group) the same change is capped at 4 x 3 + 3 x 6 = 30');
+  assert.ok(Number.isInteger(LIM.repairs) && LIM.repairs >= 1 && LIM.repairs <= 4, 'the run-wide repair budget is 1-4 per group');
+  TARGETS.forEach(t => assert.equal(current(t), block(t), `${t.file} block ${t.open} is stale - run: node graph.mjs --write`));
+  assert.ok(Buffer.byteLength(readFileSync(join(HERE, 'SKILL.md'))) <= SKILL_CAP, `SKILL.md is over ${SKILL_CAP} bytes: move long text into briefs.md or probes.md`);
   const cp = criticalPath();
-  console.log(`ok — ${NODES.length} nodes, ${l.length} layers`);
-  console.log(`critical path (${cp.length} hops): ${cp.join(' -> ')}`);
-  for (const [i, layer] of l.entries()) {
-    console.log(`  layer ${i + 1}: ${layer.join(', ')}`);
-  }
+  console.log(`ok - ${NODES.length} nodes, ${l.length} layers, embedded blocks current`);
+  console.log(`critical path (${cp.length} hops, ${cp.filter(id => byId.get(id).model !== 'code').length} of them agents): ${cp.join(' -> ')}`);
+  l.forEach((layer, i) => console.log(`  layer ${i + 1}: ${layer.join(', ')}`));
 }
 
-function write() {
-  let md = readFileSync(SKILL, 'utf8');
-  for (const t of TARGETS) md = md.replace(embedded(md, t), () => block(t));
-  writeFileSync(SKILL, md);
-  console.log('SKILL.md generated blocks updated');
+// importable (tdd.mjs reads LIM and worst): the command line runs only when this file is the program
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  const [cmd, ...a] = process.argv.slice(2);
+  if (cmd === '--check') check();
+  else if (cmd === '--write') { TARGETS.forEach(t => writeFileSync(join(HERE, t.file), read(t).replace(current(t), () => block(t)))); console.log('SKILL.md diagram and tiers, workflow.js node table and checkMatrix updated'); }
+  else if (cmd === '--mermaid') console.log(mermaid());
+  else if (cmd === '--plan' && a.length >= 3 && a.length <= 5) {
+    const [g, integ, fg, rounds = LIM.rounds, maxRepairs = LIM.repairs * g] = a.map(Number), { counts, total } = plan(g, integ, fg);
+    console.log(`plan: ${g} group(s), integration ${integ}, ${fg} group(s) with findings`);
+    Object.entries(counts).filter(([, n]) => n).forEach(([id, n]) => console.log(`  ${id.padEnd(19)} ${n}`));
+    console.log(`  total ${total} agents when every first pass is right (+ the graph-planner if used); at most ${worst(g, rounds, maxRepairs)} build agents (${maxRepairs} repair passes for the run, ${rounds} rounds per stage; ${worst(g, rounds, 99)} without that budget); a group still failing is paused and continues with \`tdd.mjs resume\`; the reviewer, fixers and couriers come on top`);
+    console.log(`  the old design is estimated at ${oldTotal(g, 4)} for the same change (NOT measured)`);
+  } else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings> [rounds] [maxRepairs]');
 }
-
-const arg = process.argv[2];
-if (arg === '--check') check();
-else if (arg === '--write') write();
-else if (arg === '--mermaid') console.log(mermaid());
-else console.log('usage: node graph.mjs --check | --write | --mermaid');

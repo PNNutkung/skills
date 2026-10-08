@@ -63,8 +63,12 @@ export function writeSafe(runDir, file, text, o) {
   try { writeSync(fd, text); } finally { closeSync(fd); }
 }
 
-/** Create <tmp>/zt-review-<uid>/<name> (0700) and the per-user marker; returns the run dir. Throws 'unsafe ...' instead of using a dir we do not own. */
-export function activate(name, o = {}) {
+/**
+ * Create <tmp>/zt-review-<uid>/<name> (0700), WITHOUT the marker; returns its real path. The ledger tools (sandbox-run, proofcheck) accept an explicit --run or
+ * $ZT_RUN_DIR only under that per-user base. A caller that is not a review (paired-agent-tdd) uses this: the marker would put the review-only guard hook on its agents.
+ * Throws 'unsafe ...' instead of using a dir we do not own.
+ */
+export function createRunDir(name, o = {}) {
   if (!/^[A-Za-z0-9._-]{1,120}$/.test(name) || name === '.' || name === '..') throw new Error('bad run name');
   const uid = me(o), base = join(o.tmp || tmpdir(), 'zt-review' + (uid === undefined ? '' : '-' + uid));
   mkdirSync(base, { recursive: true, mode: 0o700 });
@@ -72,6 +76,12 @@ export function activate(name, o = {}) {
   const run = join(base, name);
   try { mkdirSync(run, { mode: 0o700 }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
   if (!checkRunDir(run, o)) throw new Error('unsafe run dir ' + run);
+  return realpathSync(run);
+}
+
+/** createRunDir plus the per-user marker (which turns the plugin guard on for subagents); returns the run dir. */
+export function activate(name, o = {}) {
+  const run = createRunDir(name, o);
   const md = markerDir(o.env);
   mkdirSync(md, { recursive: true, mode: 0o700 });
   if (!safeDir(md, o)) throw new Error('unsafe marker dir ' + md);

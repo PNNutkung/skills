@@ -91,6 +91,12 @@ test('a javascript `!` is not dropped inside != or !==, and generics/arrows are 
   assert.equal(byOp(ms)['ne-eq'], 'const ok = a === b && c != d;');
 });
 
+test('javascript and c-like block-comment lines are never mutated, the code after them is', () => {
+  const js = '/**\n * a == b and 2 + 3\n * returns a - 1\n */\nconst x = a == b;\n/* c == d */\n';
+  assert.deepEqual([...new Set(gen('a.js', js).map(m => m.line))], [5]);
+  assert.deepEqual(gen('a.go', '// a == b\n/* a == b */\n * a == b\n', [1, 2, 3]), []);
+});
+
 test('unknown file types and import lines produce nothing', () => {
   assert.deepEqual(gen('a.md', 'a == b and c\n'), []);
   assert.deepEqual(gen('a.py', 'import os\nfrom a import b\n'), []);
