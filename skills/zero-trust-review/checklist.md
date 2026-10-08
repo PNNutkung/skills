@@ -26,14 +26,14 @@ Read only your assigned points: `Grep -n -A1 -E '^(6|7|24)\. ' <this file>` retu
 
 2. **Coverage depth** — per new or modified function *and branch*: happy path; every explicit error case, unexpected payload, upstream failure, null/empty state; boundary and off-by-one, empty collections, timeouts, extreme thresholds, type coercion. A contract, DB, or API change needs an integration or E2E test proving it end to end. Flag any mock so permissive it mocks out the behavior under test.
    Trigger: always-on (every diff).
-3. **Test integrity and flakiness** — `assertNotNull(res)` or `assertTrue(true)` instead of asserting state mutation and exact payload; `Thread.sleep()` or `setTimeout()` instead of deterministic polling (Awaitility, a predicate poll); wall-clock or timezone dependence instead of an injected clock; static singletons, global state, or a test DB mutated with no teardown; existing assertions *weakened* to force green; new `@Ignore`/`skip`/commented-out tests; untouched tests now asserting behavior the diff contradicts.
+3. **Test integrity and flakiness** — `assertNotNull(res)` or `assertTrue(true)` instead of asserting state mutation and exact payload; `Thread.sleep()` or `setTimeout()` instead of deterministic polling (Awaitility, a predicate poll); wall-clock or timezone dependence instead of an injected clock; static singletons, global state, or a test DB mutated with no teardown; existing assertions *weakened* to force green; new `@Ignore`/`skip`/commented-out tests; untouched tests now asserting behavior the diff contradicts. FACTS carry the real-run probe: a `no-signal` test (passes with the change reverted), a `fails-on-head` or `nondeterministic` one is a finding with that output as proof; `unverifiable` means say so, never "tests pass".
    Trigger: always-on (every diff).
 
 ## Design
 
 4. **DRY and reuse** — duplicated validation, regex, constants, or mappings *within* the diff; hand-rolled parsing, string handling, date formatting, HTTP retry, or validation where a project helper or installed library already exists. Name the existing helper and its signature.
    Trigger: always-on (every diff).
-5. **Refactor boundary** — if accommodating this cleanly needs restructuring, do **not** bless a sloppy merge and do **not** approve bundling a large refactor here. Propose the specific split as a separate MR.
+5. **Refactor boundary** — if accommodating this cleanly needs restructuring, do **not** bless a sloppy merge and do **not** approve bundling a large refactor here. Propose the specific split as a separate change request.
    Trigger: always-on (every diff).
 
 ## Security
@@ -95,7 +95,7 @@ Read only your assigned points: `Grep -n -A1 -E '^(6|7|24)\. ' <this file>` retu
 
 ## Operability
 
-27. **Operational readiness** — OpenAPI, Protobuf, or GraphQL schema updated alongside the code; new config keys, flags, and env vars documented with safe production defaults; the MR or docs explain how a 3am on-call engineer triages and mitigates the alert this can fire.
+27. **Operational readiness** — OpenAPI, Protobuf, or GraphQL schema updated alongside the code; new config keys, flags, and env vars documented with safe production defaults; the change request or docs explain how a 3am on-call engineer triages and mitigates the alert this can fire.
    Trigger: always-on (every diff).
 28. **Backward compatibility** — public endpoints, RPC methods, or event payloads breaking consumers *during the rolling-update window*; migrations non-destructive (no `NOT NULL` without a default, no immediate rename, no unsafe index lock); an explicit dual-read/dual-write or deprecation path for changed contracts.
    Trigger: always-on (every diff).
