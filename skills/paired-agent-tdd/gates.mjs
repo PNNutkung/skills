@@ -157,8 +157,7 @@ export function pickAffected(testPaths, textOf, srcPaths, own, cap = 12) {
  * cannot have failed at RED, so it never credits a pair; a group whose last GREEN gate was not ok credits nothing.
  */
 export function closure(plan, rows, red, green, greenOk = {}) {
-  const kindsOf = id => (plan.dod.find(d => d.id === id)?.kinds ?? KINDS);
-  const valid = Object.fromEntries(plan.groups.map(g => [g.id, checkMatrix(g.dod.map(id => ({ id, kinds: kindsOf(id) })), rows[g.id] ?? [], g.tests).good.filter(r => !r.late)]));
+  const valid = Object.fromEntries(plan.groups.map(g => [g.id, checkMatrix(g.dod.map(id => ({ id, kinds: [] })), rows[g.id] ?? [], g.tests).good.filter(r => !r.late)]));
   const items = plan.dod.map(d => {
     const need = d.kinds ?? KINDS, groups = plan.groups.filter(g => g.dod.includes(d.id));
     const kinds = Object.fromEntries(need.map(k => {

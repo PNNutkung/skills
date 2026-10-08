@@ -103,7 +103,7 @@ export function generateMutants(path, text, lines, { perLine = PER_LINE } = {}) 
   for (let n = 1; n <= src.length; n++) {
     if (!wanted.has(n) || docs.has(n)) continue;
     const original = src[n - 1], masked = mask(original, lang);
-    if (!masked.trim() || /^\s*@/.test(masked) || IMPORT[lang].test(masked)) continue;
+    if (!masked.trim() || /^\s*@/.test(masked) || IMPORT[lang].test(masked) || (lang !== 'p' && /^\s*(\/\*|\*)/.test(masked))) continue; // a block-comment line is prose, never code
     const seen = new Set();
     let count = 0;
     for (const [op, langs, apply] of OPS) {

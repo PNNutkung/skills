@@ -160,6 +160,12 @@ test('closure: missing rows, tests that never failed, and tests that do not pass
   assert.match(md, /Gaps: /);
 });
 
+test('checkMatrix: the same test name in two different files is two tests', () => {
+  const two = ['tests/a.py', 'tests/b.py'];
+  const r = verdict([row('AC1', 'happy', 'test_ac1_x', 'tests/a.py'), row('AC1', 'fail', 'test_ac1_x', 'tests/b.py')], two, [{ id: 'AC1', kinds: ['happy', 'fail'] }]);
+  assert.deepEqual(r, { missing: [], bad: [] });
+});
+
 test('closure: a row that checkMatrix would refuse never credits a pair, even when its file passed', () => {
   const p = plan();
   p.dod[1].kinds = ['happy'];
