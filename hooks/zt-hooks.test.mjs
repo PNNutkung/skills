@@ -340,6 +340,33 @@ const BYPASS_DENY = [
   `cd ${T}/exists || cd ${T}/other; touch evil`, `cd ${T}/exists && echo; cd ${T}/gone; touch evil`, `rm -rf ${T}/exists; cd ${T}/exists; touch evil`, `mv ${T}/exists ${T}/e2; cd ${T}/exists; touch evil`,
   `export CDPATH=${T}; cd exists; touch evil`, `CDPATH=${T} cd exists; touch evil`, `cd -; touch evil`, `cd; touch evil`, `cd "$X"; touch evil`,
   `cd ${T}/x && mkdir d; touch evil`, `cd ${T}/x && ls; touch evil`, `cd ${T}/x && ls | head; touch evil`, `popd; touch evil`, `cd ${T}/x && (cd ..); touch evil`,
+  // round 2: a cd that may not run (conditional, in a compound, behind a pipe or `&`), takes options or extra words, or is backgrounded together with its `&&` list
+  `false && cd ${T}; touch evil`, `true || cd ${T}; touch evil`, `test -d /nonexistent && cd ${T}; touch evil`, `if false; then cd ${T}; fi; touch evil`, `for i in; do cd ${T}; done; touch evil`,
+  `while false; do cd ${T}; done; touch evil`, `until true; do cd ${T}; done; touch evil`, `case x in y) cd ${T};; esac; touch evil`, `cd ${T}/nonexist && cd ${T}; touch evil`,
+  `{ cd ${T}; } | touch evil`, `{ cd ${T}; } & touch evil`, `{ cd ${T}; } | cat; touch evil`, `for i in 1; do cd ${T}; done | cat; touch evil`, `! cd ${T}; touch evil`,
+  `cd -z ${T}; touch evil`, `cd -x ${T}; touch evil`, `cd -P ${T}; touch evil`, `cd -L ${T}; touch evil`, `cd -- ${T}; touch evil`, `cd ${T} x; touch evil`, `cd ${T} ${T}; touch evil`,
+  `pushd -n ${T}; touch evil`, `pushd -n ${T} >/dev/null; echo hi > evil`, `pushd ${T} ${T}; touch evil`, `popd -n; touch evil`, `popd +0; touch evil`,
+  `cd -P ${T}/link-to-etc/..; touch evil`, `cd ${T} && sleep 1 & touch evil`, `cd ${T} && (touch a) & touch evil`, `cd ${T} && touch a | cat & touch evil`, `cd ${T}/x && git log &\ntouch evil`,
+  `echo a && cd ${T}; touch evil`, `echo a || cd ${T}; touch evil`, `true && true && cd ${T}; touch evil`, `cd ${T}/nonexist || cd ${T}; touch evil`,
+  // `..` after a symlink is resolved by the kernel from the link's TARGET, not lexically
+  `touch ${T}/link-to-etc/../x`, `echo x > ${T}/link-to-etc/../x`, `rm ${T}/link-to-etc/../x`, `cp a ${T}/lnk-self/../x`, `mkdir ${T}/lnk-self/../x`, `tee ${T}/lnk-self/../x`, `sed -i s/a/b/ ${T}/lnk-self/../x`,
+  `mv ${T}/a ${T}/lnk-self/../x`, `sort -o ${T}/lnk-self/../x f`, `cp -t ${T}/lnk-self/.. a`,
+  // the whole environment: jq env / $ENV, awk ENVIRON, /proc/*/environ read or redirected
+  `jq -n env`, `jq -n '$ENV'`, `jq 'env | keys' f`, `jq -n 'env.HOME'`, `jq -n '$ENV.PATH'`, `awk 'BEGIN{for(k in ENVIRON) print k}'`, `gawk 'BEGIN{print ENVIRON["X"]}'`, `mawk 'BEGIN{print ENVIRON["X"]}'`,
+  `cat /proc/self/environ`, `cat /proc/1/environ`, `tr '\\0' '\\n' < /proc/self/environ`, `head -c 100 < /proc/self/environ`, `grep -a X /proc/self/task/1/environ`, `strings /proc/self/environ`,
+  // reading from a network pseudo-device through a redirect
+  `cat < /dev/tcp/127.0.0.1/1`, `cat </dev/udp/1.2.3.4/53`, `grep x < /dev/tcp/h/80`, `exec 3< /dev/tcp/127.0.0.1/80`, `head -1 0</dev/tcp/h/80`,
+  // git: no ref writes (tag/branch create, delete, move, force; reflog expire/delete; fetch into a local ref)
+  `git tag evil`, `git tag -d evil`, `git tag -a x -m y`, `git tag -f x`, `git tag -s x`, `git tag -v x`, `git tag --delete x`, `git tag x HEAD`, `git tag -m msg x`,
+  `git branch evil`, `git branch -D old`, `git branch -d old`, `git branch -m a b`, `git branch -M a`, `git branch -f main HEAD~1`, `git branch -c a b`, `git branch --delete x`, `git branch --move a b`,
+  `git branch --track x origin/x`, `git branch --copy a b`, `git branch -f x`, `git branch evil HEAD`, `git branch --force x y`, `git branch --create-reflog x`,
+  `git reflog expire --expire=now --all`, `git reflog delete HEAD@{0}`, `git reflog --expire=now`, `git reflog --stale-fix`, `git reflog --rewrite`, `git reflog --updateref`,
+  `git fetch origin main:main`, `git fetch origin +HEAD:refs/heads/main`, `git fetch origin 'refs/heads/*:refs/heads/*'`, `git fetch origin main:mr7`, `git fetch upstream 'refs/heads/*:refs/remotes/upstream/*'`,
+  `git fetch origin +refs/heads/a:refs/heads/b`, `git fetch -f origin x:y`,
+  // the environment-variable families that steer node, git, ssh, docker and the loaders (prefix match, not a list that can fall behind)
+  `NODE_V8_COVERAGE=/etc node ${NOTE} done --unit u`, `NODE_PATH=/x node ${NOTE} done --unit u`, `SSH_ASKPASS=x git fetch origin`, `GIT_ATTR_SOURCE=x git log`, `DYLD_FRAMEWORK_PATH=/x git log`,
+  `LD_AUDIT=x git log`, `PYTHONPATH=x git log`, `DOCKER_BUILDKIT=1 docker ps`, `export NODE_V8_COVERAGE=/etc`, `GIT_AUTHOR_NAME=x git log`, `env NODE_EXTRA_CA_CERTS=/x git log`, `SSH_AUTH_SOCK=/x git fetch origin`,
+  `ZT_SOMETHING_NEW=1 git log`, `XDG_DATA_HOME=/x git log`, `MALLOC_CONF=x git log`, `PERL5OPT=x git log`, `RUBYOPT=x git log`, `JAVA_TOOL_OPTIONS=x git log`,
   // (6) mv/cp -t / --target-directory in every spelling: attached, `=`, bundled, abbreviated, ledger/run-folder targets
   `mv --target-directory=/etc ${T}/f`, `mv -t/etc ${T}/f`, `mv -t /etc ${T}/f`, `mv --target-directory /etc ${T}/f`, `mv --target=/etc ${T}/f`, `mv --t=/etc ${T}/f`, `mv -ft/etc ${T}/f`,
   `cp -t/etc a`, `cp -at /etc a`, `cp -rt/etc a`, `cp -pt /etc a`, `cp --target-directory=/etc a`, `cp --target-directory /etc a`, `cp --target=/etc a`, `cp --targ /etc a`,
@@ -373,14 +400,19 @@ const BYPASS_ALLOW = [
   `cp -r a ${T}/b`, `cp -a /work/repo/a ${T}/x`, `cp -t ${T}/d a`, `cp -t${T}/d a`, `cp --target-directory=${T}/d a`, `cp --target-directory ${T}/d a`, `cp -rt ${T}/d a b`, `cp -v -p a ${T}/c`, `cp -n a ${T}/c`,
   `cp -R -L a ${T}/c`, `cp -rp a ${T}/c`, `cp --recursive --preserve=mode a ${T}/c`, `cp -f -i a ${T}/c`, `cp -- a ${T}/c`, `cp -T a ${T}/c`, `cp -u a b ${T}/d`,
   `mv -f ${T}/a ${T}/b`, `mv -t ${T}/d ${T}/a ${T}/b`, `mv --target-directory=${T}/d ${T}/a`, `mv -v -n ${T}/a ${T}/b`, `mv -ft ${T}/d ${T}/a`, `mv -- ${T}/a ${T}/b`, `mv -T ${T}/a ${T}/b`, `mv -i -u ${T}/a ${T}/b`,
-  `git fetch origin refs/merge-requests/7/head`, `git fetch -q origin main`, `git fetch origin main:mr7`, `git fetch`, `git fetch --all`, `git fetch --depth 1 origin main`, `git fetch --depth=1 origin`,
-  `git ls-remote origin`, `git ls-remote --heads origin main`, `git ls-remote`, `git fetch upstream 'refs/heads/*:refs/remotes/upstream/*'`, `git fetch -p origin`, `git fetch origin +refs/heads/a:refs/heads/b`,
+  `git fetch origin refs/merge-requests/7/head`, `git fetch -q origin main`, `git fetch`, `git fetch --all`, `git fetch --depth 1 origin main`, `git fetch --depth=1 origin`,
+  `git ls-remote origin`, `git ls-remote --heads origin main`, `git ls-remote`, `git fetch -p origin`,
   `git fetch -j 4 origin`, `git fetch --filter=blob:none origin`, `git remote show origin`,
   // cwd tracking that stays exact: `;` / newline after a cd to a directory that EXISTS, `&&` chains, groups, pushd/popd pairs, builtin wrappers
   `cd ${T}/exists; touch f`, `cd ${T}/exists\ntouch f`, `cd ${T}/x && touch f`, `(cd ${T}/x && touch f)`, `(cd ${T}/x); touch ${T}/abs`, `cd ${T}/x && touch a && touch b`,
-  `cd ${T}/exists && touch a; touch b`, `cd ${T}/x && mkdir d && cd d && touch f`, `pushd ${T}/x && touch f`, `cd ${T}/x && (cd sub && touch f) && touch g`, `cd /work/repo && git log`,
+  `cd ${T}/exists && touch a; touch b`, `pushd ${T}/x && touch f`, `echo hi; cd ${T}/x && touch f`, `cd ${T}; touch f`, `(cd ${T}/x && touch f); touch ${T}/abs`, `cd /work/repo && git log`,
   `(cd /work/repo && git log -1)`, `cd ${T}/x && ls | head`, `command cd ${T}/x && touch f`, `builtin cd ${T}/x && touch f`, `time cd ${T}/x && touch f`, `cd ${T}/exists && touch a | cat`,
   `cd ${T}/exists; (cd /work/repo && git log); touch f`, `(cd ${T}/exists; touch f)`, `cd ${T}/exists && { touch f; touch g; }`, `cd ${T}/exists/..; touch evil-but-inside-temp`, `echo $(cd ${T}/x && pwd); touch ${T}/abs`,
+  `git branch --list 'feat/*'`, `git branch -l`, `git branch --show-current`, `git branch -r --contains HEAD`, `git branch --merged main`, `git branch -a --sort=-committerdate`, `git branch -avv`, `git branch --no-merged main`,
+  `git tag --list 'v1*'`, `git tag -n`, `git tag -n5 -l`, `git tag --contains HEAD`, `git tag --sort=-v:refname`, `git tag --points-at HEAD`, `git tag -l --format='%(refname)'`, `git reflog`, `git reflog show HEAD`,
+  `git reflog -5`, `git reflog exists refs/heads/main`, `git reflog show --date=iso -3`,
+  `jq .env file.json`, `jq '.a.env' f`, `jq '.[] | .name' f`, `jq -r '.items[].id' f`, `awk '{print $1}' f`, `cat < ${R}/exec.jsonl`, `wc -l < f`, `grep x < f`,
+  `cd ${T}; touch f`, `cd ${T}\ntouch f`, `cd ${T} && touch f`, `(cd ${T} && touch f)`, `cd ${T} && ls | head`, `cd ${T} && touch a && touch b; touch ${T}/abs`,
   `sort -u f`, `sort -k2,2 -t: -n f`, `sort -nr f`, `sort -rn -k3 f`, `sort --unique --reverse f`, `sort --key=2 --field-separator=: f`, `sort -c f`, `sort -V f`, `sort -h f`, `sort -f -d -b f`,
 ];
 for (const c of BYPASS_ALLOW) test(`guard allows after the allow-lists: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'allow'));
@@ -533,7 +565,7 @@ test('guard error input: command is not a string', () => silent(bash(42)));
 test('guard error input: no tool_input', () => silent(drive(GUARD, FX, { agent_id: 'a' })));
 test('guard internal error: exit 0 silent, one line in RUN/hook-errors.log', () => {
   const fx = fixture();
-  silent(bash('rm x', fx, { cwd: 123 })); // path.resolve(123, ...) throws inside the decision
+  silent(bash('cd x', fx, { cwd: 123 })); // path.resolve(123, ...) throws inside the decision (the cd is followed)
   const log = readFileSync(join(fx.run, 'hook-errors.log'), 'utf8');
   assert.equal(log.trim().split('\n').length, 1);
   assert.match(log, /zt-guard/);

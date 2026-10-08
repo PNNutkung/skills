@@ -81,6 +81,8 @@ function substitutions(text) {
 // its own (either side of a pipe, or a background job).
 let scopeSeq = 0;
 const FORKING = new Set(['&', '|', '|&']);
+// `first`: nothing before it in its list (`a && b`, `a | b`) can skip it, and every group around it was entered the same way: it runs for certain
+const startsList = term => term === '' || term === ';' || term === '\n';
 
 // Returns [{ words, redirs, term, scope, fork }]: one entry per simple command; words have quotes removed, redirs are the WRITE targets (> >> >| &> >&file).
 // Substitutions leave a "$(…)" placeholder word in the outer command and their own commands become separate segments.
@@ -90,21 +92,24 @@ function parse(src) {
   const heredocs = [];
   let lastTerm = '';
   let groupClosed = false; // the last thing seen was the `)` of a plain ( ) group: the next operator belongs to the group as a whole
-  const fresh = () => ({ words: [], redirs: [], word: null, pending: null, dq: false });
+  const fresh = () => ({ words: [], redirs: [], reads: [], word: null, pending: null, dq: false });
   let cur = fresh();
 
   const endWord = () => {
     if (cur.word === null) return;
     if (!cur.pending) cur.words.push(cur.word);
-    else if (cur.pending.write && !/^(\d+|-)$/.test(cur.word)) cur.redirs.push(cur.word);
+    else if (!/^(\d+|-)$/.test(cur.word)) (cur.pending.write ? cur.redirs : cur.reads).push(cur.word);
     cur.word = null;
     cur.pending = null;
   };
   const endSeg = term => {
     endWord();
-    if (cur.words.length || cur.redirs.length || (groupClosed && term)) {
+    if (cur.words.length || cur.redirs.length || cur.reads.length || (groupClosed && term)) {
       const ended = term ?? ';';
-      segs.push({ words: cur.words, redirs: cur.redirs, term: ended, scope: stack.map(f => f.id), fork: FORKING.has(ended) || FORKING.has(lastTerm) });
+      segs.push({
+        words: cur.words, redirs: cur.redirs, reads: cur.reads, term: ended, scope: stack.map(f => f.id), fork: FORKING.has(ended) || FORKING.has(lastTerm),
+        first: startsList(lastTerm) && stack.every(f => startsList(f.lastTerm)),
+      });
     }
     groupClosed = false;
     if (term) lastTerm = term;
@@ -126,7 +131,7 @@ function parse(src) {
     return parse(c).map(sg => ({ ...sg, scope: [...outer, id, ...(sg.scope ?? [])] }));
   };
   // anything the guard cannot parse with confidence becomes a segment whose "program" is unknown, hence denied
-  const unparsable = () => segs.push({ words: ['<unparsable-substitution>'], redirs: [], term: ';', scope: stack.map(f => f.id), fork: false });
+  const unparsable = () => segs.push({ words: ['<unparsable-substitution>'], redirs: [], reads: [], term: ';', scope: stack.map(f => f.id), fork: false, first: false });
   const dollarParen = i => {
     if (src[i + 2] === '(') { // $(( arithmetic )) is not a command itself, but its body can hold $( ), backticks and <( ), which run
       const k = matchClose(src, i + 3, 2);
@@ -287,7 +292,9 @@ const STEERING_VARS = new Set(['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_
   // which repo (and so which .git/config) git reads; the GIT_TRACE* family and GIT_REDIRECT_STDERR write files named by the variable
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG',
   'GIT_REDIRECT_STDERR', 'CDPATH']);
-const isSteering = v => STEERING_VARS.has(v) || /^GIT_(CONFIG_(KEY|VALUE)_\d+|TRACE\w*)$/.test(v);
+// whole families, so a variable nobody listed (NODE_V8_COVERAGE writes files, SSH_ASKPASS runs a program, LD_AUDIT / DYLD_* load code) cannot slip through
+const STEERING_FAMILY = /^((GIT|NODE|DOCKER|SSH|LD|DYLD|XDG|ZT|NPM|BASH)_|PYTHON|PERL|RUBY|JAVA|MALLOC)/;
+const isSteering = v => STEERING_VARS.has(v) || STEERING_FAMILY.test(v);
 
 // -> { prog, args, assigns } (prog is undefined for an assignment-only segment), { denial } for a bad wrapper option, or null when the segment
 // runs and sets nothing (`command -v`, flow-control header). assigns = names of VAR=val words in the prefix, including those after env/time/...
@@ -337,15 +344,37 @@ function realish(p) {
   }
 }
 
-// -> { path (real), leaf (real parent + leaf name, symlink leaf not followed), tail (glob part, if any) } or null when not knowable statically
-function locate(p, ctx) {
+// The kernel resolves a path one component at a time: `..` after a symlink climbs from the link's TARGET, so `tmp/link/../x` is NOT `tmp/x`. A component that
+// does not exist yet ends the walk (the rest is joined lexically: nothing can be opened through it).
+function physical(abs) {
+  let cur = '/';
+  const parts = abs.split('/').filter(x => x && x !== '.');
+  for (let k = 0; k < parts.length; k++) {
+    if (parts[k] === '..') { cur = dirname(cur); continue; }
+    const next = join(cur, parts[k]);
+    try { cur = realpathSync(next); } catch { return join(next, ...parts.slice(k + 1)); }
+  }
+  return cur;
+}
+
+// -> { path (real), leaf (real parent + leaf name, symlink leaf not followed), tail (glob part, if any) } or null when not knowable statically.
+// `logical` is the `cd` view (bash/zsh drop `name/..` textually before resolving links); every file operand uses the kernel's view.
+function locate(p, ctx, logical = false) {
   const s = p.replace(TMPDIR_VAR, ctx.tmp).replace(/^~(?=\/|$)/, ctx.home);
   if (/[$`]|^~/.test(s) || (!isAbsolute(s) && ctx.cwd === null)) return null;
   const parts = s.split('/');
   const g = parts.findIndex(x => GLOB.test(x));
   const head = g < 0 ? s : parts.slice(0, g).join('/') || (isAbsolute(s) ? '/' : '.');
-  const abs = resolve(ctx.cwd ?? '/', head);
-  return { path: realish(abs), leaf: join(realish(dirname(abs)), basename(abs)), tail: g < 0 ? [] : parts.slice(g) };
+  const tail = g < 0 ? [] : parts.slice(g);
+  if (logical) {
+    const abs = resolve(ctx.cwd ?? '/', head);
+    return { path: realish(abs), leaf: join(realish(dirname(abs)), basename(abs)), tail };
+  }
+  const raw = isAbsolute(head) ? head : `${ctx.cwd ?? '/'}/${head}`;
+  const slash = raw.lastIndexOf('/');
+  const base = raw.slice(slash + 1);
+  const path = physical(raw);
+  return { path, leaf: base === '' || base === '.' || base === '..' ? path : join(physical(raw.slice(0, slash) || '/'), base), tail };
 }
 
 const strictlyInside = (p, root) => p.startsWith(root + sep);
@@ -569,6 +598,40 @@ function gitWhereDenial(dir, ctx) {
 const GIT_REMOTE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
 const GIT_REMOTE_VALUE_OPTS = new Set(['--depth', '--deepen', '--shallow-since', '--shallow-exclude', '-j', '--jobs', '--filter', '--negotiation-tip', '-o', '--server-option', '--refmap', '--sort']);
 const GIT_ADDRESS = /:\/\/|::|^[^\s/:@]+@[^\s/:]+:/;
+// branch and tag may only LIST (creating, deleting, moving, forcing, signing or verifying writes refs of the repo under review); reflog may only show
+const GIT_LISTING = {
+  branch: { letters: 'arvliq', longs: ['--all', '--remotes', '--verbose', '--list', '--show-current', '--color', '--no-color', '--column', '--no-column', '--abbrev', '--no-abbrev', '--ignore-case', '--quiet', '--omit-empty'],
+    values: ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format'] },
+  tag: { letters: 'lni', longs: ['--list', '--color', '--no-color', '--column', '--no-column', '--ignore-case', '--omit-empty'],
+    values: ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format'] },
+};
+function gitListingDenial(sub, rest) {
+  if (sub === 'reflog') {
+    return rest.some(a => a === 'expire' || a === 'delete' || /^--(expire|expire-unreachable|stale-fix|rewrite|updateref)(=|$)/.test(a))
+      ? deny('git reflog', 'may only show: expire and delete rewrite the reflog of the repo under review', FIX_STATE) : null;
+  }
+  const spec = GIT_LISTING[sub];
+  if (!spec) return null;
+  const bad = a => deny(`git ${sub} ${a}`.trim(), 'may only list: other forms create, move, delete, force, sign or verify refs of the repo under review', FIX_STATE);
+  let listing = false;
+  const names = [];
+  for (let k = 0; k < rest.length; k++) {
+    const a = rest[k];
+    if (a === '--') { names.push(...rest.slice(k + 1)); break; }
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const name = eq < 0 ? a : a.slice(0, eq);
+      if (name === '--list') listing = true;
+      if (spec.values.includes(name)) { if (eq < 0) k++; } else if (!spec.longs.includes(name)) return bad(a);
+    } else if (a.length > 1 && a[0] === '-') {
+      for (const ch of a.slice(1)) {
+        if (ch === 'l') listing = true;
+        if (!spec.letters.includes(ch) && !(sub === 'tag' && /\d/.test(ch))) return bad(a);
+      }
+    } else names.push(a);
+  }
+  return names.length && !listing ? bad(names[0]) : null;
+}
 function gitRemoteDenial(sub, rest) {
   if (sub !== 'fetch' && sub !== 'ls-remote') return null;
   const positional = [];
@@ -578,7 +641,9 @@ function gitRemoteDenial(sub, rest) {
     if (a.startsWith('-') && a.length > 1) { if (GIT_REMOTE_VALUE_OPTS.has(a)) k++; } else positional.push(a);
   }
   const bad = positional.some((p, idx) => (idx === 0 ? !GIT_REMOTE_NAME.test(p) : GIT_ADDRESS.test(p)));
-  return bad ? deny(`git ${sub}`, 'may only name a configured remote (a bare word such as origin), never a URL, address or path', FIX_STATE) : null;
+  if (bad) return deny(`git ${sub}`, 'may only name a configured remote (a bare word such as origin), never a URL, address or path', FIX_STATE);
+  // `src:dst` writes (or overwrites) a local ref; a bare refspec only fills FETCH_HEAD
+  return sub === 'fetch' && positional.slice(1).some(p => p.includes(':')) ? deny('git fetch src:dst', 'would write a local branch or tag of the repo under review', FIX_STATE) : null;
 }
 function gitRule(args, ctx) {
   let cwd = ctx.cwd;
@@ -615,7 +680,7 @@ function gitRule(args, ctx) {
   }
   if (sub === 'remote' && GIT_REMOTE_WRITERS.has(args[i + 1])) return deny(`git remote ${args[i + 1]}`, 'would write the repo config (remote URLs, hooks)', FIX_STATE);
   if (sub === 'branch' && hasFlag(args.slice(i + 1), GIT_BRANCH_CONFIG_WRITERS)) return deny('git branch (upstream/description)', 'would write the repo config', FIX_STATE);
-  const remoteDenied = gitRemoteDenial(sub, args.slice(i + 1));
+  const remoteDenied = gitRemoteDenial(sub, args.slice(i + 1)) ?? gitListingDenial(sub, args.slice(i + 1));
   if (remoteDenied) return remoteDenied;
   const denied = [...GIT_DENIED_LONG, ...(sub === 'archive' ? ['--remote'] : [])];
   const end = args.indexOf('--');
@@ -798,6 +863,8 @@ const RULES = {
   sed: sedRule,
   find: args => (hasFlag(args, /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/) ? deny('find -exec/-delete', 'would run commands or modify files') : null),
   rg: args => (hasFlag(args, /^--(pre|hostname-bin)(=|$)/) ? deny('rg --pre', 'would run a program') : null),
+  // jq `env` and `$ENV` hold the whole environment; a field named .env, or a path such as ./env.json, is fine
+  jq: args => (args.some(a => /\$ENV\b|(^|[^\w.$@"'/])env($|[^\w])/.test(a)) ? deny('jq env', 'would print the whole environment, which can hold secrets', FIX_STATE) : null),
   sort: sortRule,
 };
 // awk programs are inspected as text. Denied: system(), any `|` outside strings and /regex/ literals (print | cmd, cmd | getline, |&), a `>` or `>>`
@@ -845,7 +912,7 @@ function awkProgram(args) {
 const awkRule = args => {
   const program = awkProgram(args);
   const { pipe, redirect } = awkScan(program ?? '');
-  const bad = program === null || /\bsystem\s*\(|@(load|include)/.test(program) || pipe || redirect;
+  const bad = program === null || /\bsystem\s*\(|@(load|include)|\bENVIRON\b/.test(program) || pipe || redirect;
   return bad ? deny('awk', 'would run commands or write files, or uses an option other than -F, -v and one program', FIX_STATE) : null;
 };
 for (const name of ['awk', 'gawk', 'mawk', 'nawk']) RULES[name] = awkRule;
@@ -903,7 +970,15 @@ const listsEnvironment = (name, args) => (name === 'set' && !args.length) || (LI
 // is changed, a later git/shell/ssh run executes what it names and this guard cannot see it any more, so the write itself is what is denied.
 const DEV_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty']);
 
+// reading from /dev/tcp or /dev/udp opens a socket (bash); /proc/*/environ is the whole environment
+const NET_DEVICE = /^\/dev\/(tcp|udp)\//;
+const PROC_ENVIRON = /\/proc\/.*\benviron\b/;
+
 function judge(seg, unwrapped, ctx) {
+  for (const target of seg.reads ?? []) {
+    if (NET_DEVICE.test(target)) return deny(`reading ${target}`, 'would open a network connection', FIX_STATE);
+    if (PROC_ENVIRON.test(target)) return deny(`reading ${target}`, 'would print the whole environment, which can hold secrets', FIX_STATE);
+  }
   for (const target of seg.redirs) {
     if (isProtected(target, ctx)) return deny(`redirecting into ${basename(target)}`, WHY_RUN_WRITE, FIX_STATE);
     if (!DEV_TARGETS.has(target) && !underTemp(target, ctx)) return deny(`redirecting into ${target}`, 'writes outside the temp dir', FIX_STATE);
@@ -918,6 +993,7 @@ function judge(seg, unwrapped, ctx) {
   const builtin = builtinDenial(name, args);
   if (builtin) return builtin;
   if (listsEnvironment(name, args)) return deny(name, 'would print the whole environment, which can hold secrets', FIX_STATE);
+  if (args.some(a => PROC_ENVIRON.test(a))) return deny(name ?? prog, 'would print the whole environment, which can hold secrets', FIX_STATE);
   if (name === null) return deny(prog, 'is a local executable and would run repo code');
   if (STDIN_ARGS.has(name)) return deny(prog, 'is not allowed', 'Reason: arguments supplied on stdin cannot be checked: pass the files explicitly.');
   if (name === 'node') return nodeRule(args, ctx);
@@ -928,30 +1004,41 @@ function judge(seg, unwrapped, ctx) {
 }
 
 // ---------- where the next command runs ----------
-// ctx.cwd = the shell's directory (null = not known statically: relative paths then cannot be judged and are denied). Rules, each closing a way for the
-// guard to believe in a directory the shell is not in:
-//  - a ( ) group, $( ), backtick or <( ) is a subshell: its cd/pushd/popd are undone when it ends;
-//  - either side of a pipe and a background job (`cd d & cmd`, `cd d | cmd`) are subshells: their cd never reaches the next command;
-//  - env/nice/timeout/nohup/... start a process, so `env cd d` is not the builtin and changes nothing;
-//  - a cd can fail: afterwards the new directory is certain only if it exists now (and nothing earlier in the command rm'd or mv'd it); otherwise it is
-//    believed only for commands that run when the cd succeeded, i.e. the rest of its `&&` chain (a pipe stays in the chain), then it is forgotten.
+// ctx.cwd = the shell's directory (null = not known statically: relative paths then cannot be judged and are denied). The guard only believes a directory
+// change it can prove, and forgets it otherwise (a deny-list of ways a cd can fail to happen can never be complete):
+//  - the cd must be SURE TO RUN: first in its list (nothing before it in `a && cd`, `a || cd` can skip it), not behind a compound keyword anywhere earlier in
+//    the command (if/while/until/for/select/case/`{`/`!`: the body may not run, or may run in a subshell on a pipe), and not on either side of a pipe or
+//    before `&` (those are subshells);
+//  - it must be the builtin (env/nice/timeout/nohup/... cd start a process and change nothing) with exactly ONE plain argument (no -P/-L/-e/--/-n, no extra
+//    word: those can make it fail or do something else);
+//  - a ( ) group, $( ), backtick or <( ) is a subshell: its cd/pushd/popd are undone when it ends; so is a whole `&&` list ended by `&`;
+//  - a cd can still fail: the new directory is then certain only if it exists now (and nothing earlier in the command rm'd or mv'd it); otherwise it holds
+//    only for the rest of its `&&` chain (a pipe stays in the chain) and is forgotten at the chain's end.
 const DIR_BUILTINS = new Set(['cd', 'pushd', 'popd']);
 const CHAIN_TERMS = new Set(['&&', '|', '|&']);
+const COMPOUND_WORDS = new Set(['if', 'while', 'until', 'for', 'select', 'case', 'function', '{', '!']);
 const isDirectory = p => { try { return statSync(p).isDirectory(); } catch { return false; } };
+const snapshot = ctx => ({ cwd: ctx.cwd, dirs: [...ctx.dirs], assumed: ctx.assumed });
 
 function trackDir(unwrapped, seg, ctx) {
   const name = unwrapped?.prog === undefined ? null : programName(unwrapped.prog);
   if (name === 'rm' || name === 'mv') ctx.destructive = true;
   if (!DIR_BUILTINS.has(name) || unwrapped.external || seg.fork) return;
   const args = unwrapped.args;
-  const target = args.find(a => !a.startsWith('-'));
-  const where = target === undefined ? null : locate(target, ctx);
-  let next = where && !where.tail.length && !args.some(a => /^[+-]\d+$/.test(a)) ? where.path : null;
-  if (name === 'popd') next = args.length ? null : (ctx.dirs.pop() ?? null);
-  else if (name === 'pushd') { if (next === null) ctx.dirs = []; else ctx.dirs.push(ctx.cwd); }
+  const plain = name === 'popd' ? args.length === 0 : args.length === 1 && !args[0].startsWith('-');
+  const sure = seg.first && !ctx.compound && plain;
+  let next = null;
+  if (sure && name === 'popd') next = ctx.dirs.pop() ?? null;
+  else if (sure) {
+    const where = locate(args[0], ctx, true);
+    next = where && !where.tail.length ? where.path : null;
+    if (name === 'pushd' && next !== null) ctx.dirs.push(ctx.cwd);
+  }
+  if (next === null) ctx.dirs = [];
   const certain = next !== null && !ctx.destructive && isDirectory(next);
-  ctx.cwd = certain || (next !== null && seg.term === '&&') ? next : null;
-  ctx.assumed = next !== null && !certain && seg.term === '&&';
+  const chained = next !== null && seg.term === '&&';
+  ctx.cwd = certain || chained ? next : null;
+  ctx.assumed = chained && !certain;
 }
 // a chain ends at ; || & or a newline: what a failed cd would have left behind is then possible again
 function endChain(seg, ctx) {
@@ -959,19 +1046,23 @@ function endChain(seg, ctx) {
 }
 
 function decide(command, ctx) {
-  Object.assign(ctx, { dirs: [], assumed: false, destructive: false });
+  Object.assign(ctx, { dirs: [], assumed: false, destructive: false, compound: false });
   const frames = []; // the ( ) groups the previous segment was inside, with the state to restore when each ends
+  const lists = []; // per group depth: the state when the current list began, restored if the whole list is sent to the background with `&`
   for (const seg of parse(command)) {
     const scope = seg.scope ?? [];
     let keep = 0;
     while (keep < frames.length && keep < scope.length && frames[keep].id === scope[keep]) keep++;
     while (frames.length > keep) Object.assign(ctx, frames.pop().saved);
-    for (const id of scope.slice(keep)) frames.push({ id, saved: { cwd: ctx.cwd, dirs: [...ctx.dirs], assumed: ctx.assumed } });
+    for (const id of scope.slice(keep)) frames.push({ id, saved: snapshot(ctx) });
+    if (seg.first) lists[scope.length] = snapshot(ctx);
+    if (COMPOUND_WORDS.has(seg.words[0])) ctx.compound = true;
     const unwrapped = unwrap(seg.words);
     const verdict = judge(seg, unwrapped, ctx);
     if (verdict) return verdict;
     trackDir(unwrapped, seg, ctx);
     endChain(seg, ctx);
+    if (seg.term === '&' && lists[scope.length]) Object.assign(ctx, lists[scope.length]);
   }
   return null;
 }
