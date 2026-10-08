@@ -18,6 +18,7 @@ export function validatePlan(plan, ticketText) {
   if (plan?.integration !== undefined && !(relPath(plan.integration?.file) && squash(plan.integration?.goal))) bad('integration needs a relative file and a goal');
   if (plan?.rounds !== undefined && !(Number.isInteger(plan.rounds) && plan.rounds >= 1 && plan.rounds <= 4)) bad('rounds must be an integer from 1 to 4 (repair rounds per stage before a group is blocked)');
   if (plan?.maxRepairs !== undefined && !(Number.isInteger(plan.maxRepairs) && plan.maxRepairs >= 0 && plan.maxRepairs <= 40)) bad('maxRepairs must be an integer from 0 to 40 (repair passes for the whole run; groups still failing then are paused, not blocked)');
+  if (plan?.smoke !== undefined && !(Array.isArray(plan.smoke) && plan.smoke.length >= 1 && plan.smoke.length <= 3 && plan.smoke.every(relPath))) bad('smoke must list 1 to 3 relative test files that already pass at the base (plan runs one first: it proves the sandbox and the test command work)');
   for (const n of plan?.link ?? []) if (!relPath(n)) bad(`link ${JSON.stringify(n)} must be a normalized relative path inside the repo`);
   for (const p of plan?.ro ?? []) if (typeof p !== 'string' || !p.startsWith('/')) bad(`ro ${JSON.stringify(p)} must be an absolute path`);
   for (const e of plan?.env ?? []) if (!/^[A-Za-z_]\w*=/.test(String(e))) bad(`env ${JSON.stringify(e)} must be K=V`);
@@ -95,9 +96,9 @@ export function checkMatrix(items, rows, files) {
 
 const NO_TESTS = /collected 0 items|no tests ran|no tests found|0 tests? (ran|found|passed)/i;
 const LOAD_ERROR = /ModuleNotFoundError|ImportError|Cannot find module|ERR_MODULE_NOT_FOUND|SyntaxError|error TS\d+|cannot find symbol|undefined reference|error during collection|ERROR collecting/i;
-/** RED means "fails now". The class says how: an assertion (fails), a load error before any assertion (fails-to-load), or not at all (passes-already). */
+/** RED means "fails now". The class says how: an assertion (fails), a load error before any assertion (fails-to-load), or not at all (passes-already). Exit 86 (no sandbox) and 127 (the command cannot start) say nothing about the test. */
 export function classifyRed({ exit, tail }) {
-  if (exit === 86) return 'unverifiable';
+  if (exit === 86 || exit === 127) return 'unverifiable';
   if (exit === 124) return 'timeout';
   if (exit === 0) return 'passes-already';
   if (NO_TESTS.test(tail || '')) return 'no-tests';

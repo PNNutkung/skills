@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,7 +68,7 @@ function fixture(t, { files = {}, plan = {}, fake = {} } = {}) {
   fx.gate = name => JSON.parse(readFileSync(join(fx.run, 'gates', name), 'utf8'));
   return fx;
 }
-const planned = (t, opts) => { const fx = fixture(t, opts); const r = fx.plan(); assert.equal(r.status, 0, r.err); return fx; };
+const planned = (t, opts) => { const fx = fixture(t, opts); const r = fx.plan(opts?.flags ?? []); assert.equal(r.status, 0, r.err); return fx; };
 const TEST_ALPHA = '# test_ac1_happy\ngrep -q new src/alpha.txt\n';
 const TEST_BETA = '# test_ac2_happy\ngrep -q new src/alpha.txt && grep -q beta src/beta.txt\n';
 
@@ -152,7 +152,7 @@ test('red: the gate classifies a load error apart from an assertion failure', t 
 });
 
 test('red: no sandbox (86) is unverifiable, never a pass', t => {
-  const fx = planned(t, { fake: { exit: 86 } });
+  const fx = planned(t, { fake: { exit: 86 }, flags: ['--skip-preflight'] });
   put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
   const r = fx.tdd('red', ['--group', 'a']);
   assert.match(r.out, /ok=false/);
@@ -468,13 +468,194 @@ test('resume: the gate records whether it ran with --retest; the saved rows only
   assert.match(r.out, /a: green-check \(code exists, no fresh GREEN gate\)/, 'a pruned snapshot makes the gate stale for that group only');
 });
 
-test('resume: an environment failure (no sandbox, a timeout) is a warning, not a reason to spend makers', t => {
-  const fx = planned(t, { fake: { exit: 86 } });
+test('resume: a gate that says unverifiable is the sandbox, not the code: the group is on env and no agent is spent; once a gate runs again it routes normally', t => {
+  const fx = planned(t, { fake: { exit: 86 }, flags: ['--skip-preflight'] });
   put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
   fx.tdd('red', ['--group', 'a']);
   const r = resumeOf(fx);
-  assert.match(r.out, /WARNING a: a gate says unverifiable or timeout: fix the sandbox before spending agents on it/);
-  assert.equal(JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).warnings.length, 1);
+  assert.match(r.out, /a: env \(the RED gate says unverifiable or timeout: the sandbox, not the code\. Fix it, then run `node [^`]*tdd\.mjs red --run [^`]* --group a` again; no agent is spent until a gate has run\)/);
+  const c = JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8'));
+  assert.deepEqual([c.groups.a.next, c.groups.b.next, c.warnings.length, c.maxRepairs], ['env', 'red', 1, 2], 'a group on env gets no budget: only b can spend (2 for one group)');
+  writeFileSync(join(fx.stub, 'config.json'), '{}'); // the sandbox is fixed
+  fx.tdd('red', ['--group', 'a']);
+  resumeOf(fx);
+  assert.equal(continueOf(fx).a.next, 'red-check', 'the fresh gate speaks: RED holds, one navigator looks at it');
+});
+
+test('resume: a timeout is the code when plan proved the sandbox, the environment when it did not', t => {
+  const proven = planned(t);
+  put(proven.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  writeFileSync(join(proven.stub, 'config.json'), JSON.stringify({ exit: 124 }));
+  proven.tdd('red', ['--group', 'a']);
+  resumeOf(proven);
+  assert.deepEqual([continueOf(proven).a.next, continueOf(proven).a.defects[0].what], ['red-fix', 'RED gate: tests/test_alpha.sh is timeout: it timed out'], 'a test that hangs after a passing preflight is a test defect');
+  const bare = fixture(t);
+  assert.equal(bare.plan(['--skip-preflight']).status, 0);
+  put(bare.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  writeFileSync(join(bare.stub, 'config.json'), JSON.stringify({ exit: 124 }));
+  bare.tdd('red', ['--group', 'a']);
+  resumeOf(bare);
+  assert.equal(continueOf(bare).a.next, 'env', 'nothing proved the sandbox: a timeout may be the machine');
+});
+
+test('resume: the GREEN probe says a timeout as unverifiable (timeout): the code\'s after a proven sandbox, the environment otherwise; an exit 127 is the environment at GREEN too', t => {
+  const hang = (fx, flags = []) => {
+    put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+    fx.tdd('red', ['--group', 'a']);
+    put(fx.repo, { 'src/alpha.txt': 'new\n' });
+    writeFileSync(join(fx.stub, 'config.json'), JSON.stringify({ exit: 124 }));
+    fx.tdd('green', ['--group', 'a', ...flags]);
+    assert.deepEqual([fx.gate('a.green.json').tests[0].verdict, fx.gate('a.green.json').tests[0].reason], ['unverifiable', 'timeout']);
+    resumeOf(fx);
+    return continueOf(fx).a;
+  };
+  const proven = hang(planned(t));
+  assert.equal(proven.next, 'green-fix', 'plan proved the sandbox: a hanging test or code is a defect for a maker');
+  assert.match(proven.defects[0].what, /unverifiable \(timeout\)/);
+  const bare = fixture(t);
+  assert.equal(bare.plan(['--skip-preflight']).status, 0);
+  assert.equal(hang(bare).next, 'env', 'nothing proved the sandbox');
+  const gone = planned(t);
+  put(gone.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  gone.tdd('red', ['--group', 'a']);
+  put(gone.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\nexit 127\n', 'src/alpha.txt': 'new\n' });
+  gone.tdd('green', ['--group', 'a', '--retest']);
+  assert.deepEqual([gone.gate('a.green.json').tests[0].verdict, gone.gate('a.green.json').tests[0].reason], ['unverifiable', 'the test command cannot start (exit 127)']);
+  resumeOf(gone);
+  assert.equal(continueOf(gone).a.next, 'env', 'a command that cannot start is the environment, never a test to repair');
+  const failing = planned(t);
+  put(failing.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  failing.tdd('red', ['--group', 'a']);
+  failing.tdd('green', ['--group', 'a']); // the code is still the old one: the test fails with the group's code, with a plain exit 1
+  assert.equal(failing.gate('a.green.json').tests[0].verdict, 'fails-on-head', 'only exit 127 is relabelled: an ordinary failure stays a failure');
+  resumeOf(failing);
+  assert.equal(continueOf(failing).a.next, 'green-fix');
+});
+
+test('plan: preflight tries tests, not the files around them: __init__, conftest, helpers and other languages are skipped, a file that holds no test says nothing', t => {
+  const noise = { 'tests/__init__.sh': 'exit 9\n', 'tests/conftest.sh': 'exit 9\n', 'tests/fixtures/data.sh': 'exit 9\n', 'tests/test_other.py': 'exit 9\n', 'scripts/run.sh': 'exit 9\n', 'tests/test_real.sh': 'true\n' };
+  const fx = fixture(t, { files: noise });
+  const r = fx.plan();
+  assert.equal(r.status, 0, r.err);
+  assert.deepEqual(fx.gate('preflight.json').tried.map(x => x.file), ['tests/test_real.sh'], 'a test-named file of the groups\' kind goes first, and one pass ends it');
+  const sized = fixture(t, { files: { 'tests/test_aaa.sh': `exit 9\n# ${'x'.repeat(200)}\n`, 'tests/test_zzz.sh': 'true\n' } });
+  assert.equal(sized.plan().status, 0);
+  assert.deepEqual(sized.gate('preflight.json').tried.map(x => x.file), ['tests/test_zzz.sh'], 'among the tests named like one, the smallest goes first');
+  const capped = fixture(t, { files: { 'tests/test_f1.sh': 'exit 9\n', 'tests/test_f2.sh': 'exit 9\n', 'tests/test_f3.sh': 'exit 9\n' } }); // the 4th candidate, existing_alpha.sh, would pass
+  const c = capped.plan();
+  assert.equal(c.status, 3, 'three tries and no more: a plan is not held up by a fourth run');
+  capped.run = /--run (\S+) reuses/.exec(c.err)[1]; // the run folder of the refused plan keeps the evidence
+  assert.deepEqual(capped.gate('preflight.json').tried.map(x => x.file), ['tests/test_f1.sh', 'tests/test_f2.sh', 'tests/test_f3.sh']);
+  const own = fixture(t, { plan: { dod: [{ id: 'AC1', text: 'alpha', source: 'assumed', kinds: ['happy'] }], groups: [{ id: 'a', tests: ['tests/existing_alpha.sh'], src: ['src/alpha.txt'], dod: ['AC1'], after: [] }] } });
+  assert.equal(own.plan().status, 0);
+  assert.deepEqual([own.gate('preflight.json').verdict, own.gate('preflight.json').tried], ['skipped', []], 'a file the plan owns is the change under test, never the proof of the sandbox');
+  const empty = fixture(t, { files: { 'tests/test_empty.sh': 'echo "collected 0 items"; exit 5\n' } });
+  assert.equal(empty.plan().status, 0);
+  assert.deepEqual(empty.gate('preflight.json').tried.map(x => [x.file, x.empty]), [['tests/test_empty.sh', true], ['tests/existing_alpha.sh', undefined]], 'no test collected is skipped as a candidate, the next one proves the sandbox');
+  const only = fixture(t, { files: { 'tests/existing_alpha.sh': null, 'tests/test_empty.sh': 'echo "collected 0 items"; exit 5\n' } });
+  const o = only.plan();
+  assert.equal(o.status, 0, o.err);
+  assert.equal(only.gate('preflight.json').verdict, 'skipped', 'nothing ran a test: not evidence of a broken environment');
+  assert.match(o.err, /PREFLIGHT ok=true verdict=skipped\n  no existing test at the base ran a test: set plan\.smoke/, 'a skipped proof says so, so nobody mistakes it for a verified sandbox');
+});
+
+test('plan: every try timing out, or a command that cannot start, stops the plan with its own verdict', t => {
+  for (const [exit, verdict] of [[124, 'timeout'], [127, 'unverifiable']]) {
+    const r = fixture(t, { fake: { exit } }).plan();
+    assert.equal(r.status, 3, String(exit));
+    assert.match(r.err, new RegExp(`PREFLIGHT ok=false verdict=${verdict}`));
+  }
+});
+
+test('plan: preflight runs a test that passes at the base through the sandbox before anything else; the verdict travels in the args', t => {
+  const fx = fixture(t);
+  const r = fx.plan();
+  assert.equal(r.status, 0, r.err);
+  assert.match(r.err, /PREFLIGHT ok=true verdict=ok: tests\/existing_alpha\.sh passed in the sandbox/);
+  assert.deepEqual([fx.gate('preflight.json').ok, fx.gate('preflight.json').tried.map(x => x.file)], [true, ['tests/existing_alpha.sh']]);
+  assert.equal(JSON.parse(r.out.trim()).preflight, 'ok');
+  const again = fx.tdd('preflight');
+  assert.match(again.out, /^PREFLIGHT ok=true verdict=ok/, 'the same check as a command: re-run it after fixing the environment');
+});
+
+test('plan: a sandbox that cannot run the tests stops the plan (exit 3, nothing printed) and --skip-preflight is the explicit way past', t => {
+  const fx = fixture(t, { fake: { exit: 86 } });
+  const r = fx.plan();
+  assert.equal(r.status, 3);
+  assert.match(r.err, /PREFLIGHT ok=false verdict=unverifiable[\s\S]*tests\/existing_alpha\.sh: exit 86[\s\S]*--skip-preflight/);
+  assert.equal(r.out, '', 'no Workflow args exist for an unproven environment');
+  const skip = fixture(t, { fake: { exit: 86 } }).plan(['--skip-preflight']);
+  assert.equal(skip.status, 0, skip.err);
+  assert.equal(JSON.parse(skip.out.trim()).preflight, 'skipped');
+});
+
+test('plan: no usable sandbox at all exits 3 before anything is created', t => {
+  const fx = fixture(t);
+  const dead = join(fx.stub, 'dead-runner.mjs');
+  writeFileSync(dead, 'process.exit(1);\n');
+  const r = fx.plan(['--runner', dead]);
+  assert.equal(r.status, 3);
+  assert.match(r.err, /no usable sandbox/);
+  assert.deepEqual(readdirSync(fx.tmp), [], 'no scratch dir, no run folder');
+});
+
+test('plan: tests that fail at the base mean a wrong command or environment (exit 3); plan.smoke names tests that do pass; no test at the base is skipped, not failed', t => {
+  const failing = { 'tests/existing_alpha.sh': 'exit 3\n' };
+  const broken = fixture(t, { files: failing }).plan();
+  assert.equal(broken.status, 3);
+  assert.match(broken.err, /PREFLIGHT ok=false verdict=broken\n  a test that should pass at the base fails here[\s\S]*tests\/existing_alpha\.sh: exit 3/);
+  const named = fixture(t, { files: { ...failing, 'tests/existing_ok.sh': 'true\n' }, plan: { smoke: ['tests/existing_ok.sh'] } });
+  const n = named.plan();
+  assert.equal(n.status, 0, n.err);
+  assert.deepEqual(named.gate('preflight.json').tried.map(x => x.file), ['tests/existing_ok.sh'], 'plan.smoke replaces the guess');
+  const none = fixture(t, { files: { 'tests/existing_alpha.sh': null } });
+  const s = none.plan();
+  assert.equal(s.status, 0, s.err);
+  assert.match(s.err, /PREFLIGHT ok=true verdict=skipped/);
+});
+
+test('resume: the repair budget of the next run is decided here and travels in continue.json; the plan\'s own maxRepairs no longer applies', t => {
+  const fx = planned(t, { plan: { maxRepairs: 0 } });
+  const r = resumeOf(fx);
+  assert.match(r.out, /next run: repair budget 4 \(2 for each of the 2 group\(s\) that still work\), at most 20 build agents; the plan's own maxRepairs no longer applies; change it: --max-repairs N/, 'worst(2 groups, 3 rounds, 4 repairs) = min(2 x 20, 4 x 2 + 3 x 4)');
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).maxRepairs, 4);
+  assert.match(resumeOf(fx, ['--max-repairs', '1']).out, /next run: repair budget 1, at most 11 build agents/, 'an explicit budget is not described as the default: 4 x 2 + 3 x 1');
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).maxRepairs, 1);
+  assert.match(resumeOf(fx, ['--max-repairs=40']).out, /next run: repair budget 40,/, '40 is the top of the range');
+  for (const bad of ['-1', '41', 'x', '1.5']) assert.equal(fx.tdd('resume', [`--max-repairs=${bad}`]).status, 2, bad);
+});
+
+test('resume: a group that stalled and is unchanged since is on hold (no agent); --retry, --hint and --escalate spend on purpose; an edit clears the hold', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  fx.tdd('red', ['--group', 'a']);
+  dod(fx, 'red');
+  put(fx.repo, { 'src/alpha.txt': 'new\n' });
+  fx.tdd('green', ['--group', 'a']);
+  const weak = { cls: 'gap', what: 'the edge test only checks truthiness' }, ret = join(fx.dir, 'return.json');
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'blocked', reason: 'GREEN made no progress: the same defects came back after repair round 1: x', green: { verdict: 'FAIL', defects: [weak] } } } }));
+  const r = resumeOf(fx, ['--ret', ret]);
+  assert.match(r.out, /a: hold \(STALLED last run \(made no progress\): the same defects came back after a repair and no file was touched since[\s\S]*--hint a="\.\.\."[\s\S]*--escalate a[\s\S]*--retry a\)/);
+  assert.deepEqual([continueOf(fx).a.next, continueOf(fx).a.defects, JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).maxRepairs], ['hold', [weak], 2], 'a held group gets no budget: only b works');
+  resumeOf(fx, ['--ret', ret, '--retry', 'b', '--retry', 'a']);
+  assert.deepEqual([continueOf(fx).a.next, continueOf(fx).a.stalled, continueOf(fx).a.hint, continueOf(fx).a.escalate], ['green-fix', true, undefined, undefined], 'a forced retry is told the last repair changed nothing');
+  resumeOf(fx, ['--ret', ret, '--hint', 'a=use grep -c, not -q', '--hint', 'b=check the other file', '--escalate', 'a', '--escalate', 'b']);
+  assert.deepEqual([continueOf(fx).b.hint, continueOf(fx).b.escalate], ['check the other file', true], 'the flags repeat: one per group');
+  assert.deepEqual([continueOf(fx).a.next, continueOf(fx).a.hint, continueOf(fx).a.escalate], ['green-fix', 'use grep -c, not -q', true]);
+  const srcTime = statSync(join(fx.repo, 'src/alpha.txt')).mtime;
+  utimesSync(ret, srcTime, srcTime); // the return was saved at the very moment of the last edit: nothing is later than it
+  for (const f of ['tests/test_alpha.sh', 'src/alpha.txt']) utimesSync(join(fx.repo, f), srcTime, srcTime);
+  assert.equal(resumeOf(fx, ['--ret', ret]).out.includes('a: hold'), true, 'a file as old as the return is not an edit made after it');
+  const longAgo = new Date(Date.now() - 60000);
+  utimesSync(ret, longAgo, longAgo); // the return was saved a minute ago: every edit below is later
+  put(fx.repo, { 'src/alpha.txt': 'newer\n' });
+  resumeOf(fx, ['--ret', ret]);
+  assert.equal(continueOf(fx).a.next, 'green-check', 'the code changed since: the gate is stale and a navigator looks again, nothing is held');
+  fx.tdd('green', ['--group', 'a']); // the lead re-ran the gate after the edit: it is fresh again
+  const again = resumeOf(fx, ['--ret', ret]);
+  assert.match(again.out, /a: green-fix \(the last navigator reported defects the gate cannot see; STALLED last run, but files were edited since: a repair may work now\)/, 'a fresh gate does not hide the edit: the hold is lifted by a file touched after the return, not by the gate');
+  assert.equal(fx.tdd('resume', ['--hint', 'a=']).status, 2);
+  assert.equal(fx.tdd('resume', ['--retry', 'zzz']).status, 2);
 });
 
 test('resume: the same row or the same defect from two sources is kept once', t => {

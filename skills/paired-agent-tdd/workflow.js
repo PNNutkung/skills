@@ -54,6 +54,7 @@ const A = args || {}
 const dry = A.mode === 'plan'
 for (const k of ['repo', 'base', 'cmd', 'skillDir', 'runDir']) if (!A[k]) return { error: 'args must be the JSON that `tdd.mjs plan` prints; missing ' + k }
 const G = Array.isArray(A.groups) ? A.groups : [], DOD = Array.isArray(A.dod) ? A.dod : []
+if (A.sandbox === 'none') return { error: 'no sandbox: every gate would say unverifiable and no agent could judge anything. Fix it, then run `tdd.mjs plan` again' }
 if (!G.length || !DOD.length) return { error: 'args need at least one group and one DoD item' }
 const byId = Object.fromEntries(G.map(g => [g.id, g]))
 const loops = (id, seen) => (seen.includes(id) ? true : (byId[id] ? (byId[id].after || []).some(d => loops(d, seen.concat(id))) : false))
@@ -69,8 +70,12 @@ const TDD = 'node ' + A.skillDir + '/tdd.mjs'
 const ROUNDS = Number.isInteger(A.rounds) && A.rounds >= 1 && A.rounds <= 4 ? A.rounds : LIM.rounds // repair rounds per stage; plan.rounds overrides the default
 const RESUME = A.resume && A.resume.groups ? A.resume : null // RUN/continue.json, written by `tdd.mjs resume` from the gate files
 if (RESUME && (RESUME.base !== A.base || (RESUME.run && RESUME.run.replace(/\/$/, '') !== String(A.runDir).replace(/\/$/, '')))) return { error: 'args.resume is from another run (its base or run folder differs): run `tdd.mjs resume` again' }
-const ACTIVE = G.filter(g => !(RESUME && RESUME.groups[g.id] && RESUME.groups[g.id].next === 'done')).length // a group carried over as done costs nothing and gets no budget
-const BUDGET = Number.isInteger(A.maxRepairs) && A.maxRepairs >= 0 && A.maxRepairs <= 40 ? A.maxRepairs : LIM.repairs * ACTIVE // repair passes for the WHOLE run; spent, a failing group is paused
+const ACTIVE = G.filter(g => !(RESUME && RESUME.groups[g.id] && ['done', 'env', 'hold'].includes(RESUME.groups[g.id].next))).length // a group carried over, held or stopped on the environment spends nothing and gets no budget
+const okBudget = n => Number.isInteger(n) && n >= 0 && n <= 40
+// repair passes for the WHOLE run; spent, a failing group is paused. A continued run takes its budget from continue.json (`tdd.mjs resume --max-repairs N`, a visible decision), so the
+// plan's own value, fixed before the first run, can no longer pause it again at once.
+const BUDGET = RESUME && okBudget(RESUME.maxRepairs) ? RESUME.maxRepairs : okBudget(A.maxRepairs) ? A.maxRepairs : LIM.repairs * ACTIVE
+if (RESUME && okBudget(RESUME.maxRepairs) && okBudget(A.maxRepairs) && A.maxRepairs !== RESUME.maxRepairs) log('args.maxRepairs (' + A.maxRepairs + ') is ignored: the continue file sets this run\'s repair budget (' + RESUME.maxRepairs + '); change it with tdd.mjs resume --max-repairs N')
 const SHARE = ACTIVE ? Math.floor(BUDGET / ACTIVE) : 0 // every group is guaranteed this many; beyond it a group draws only on what the groups still running have not got coming
 let repairsLeft = BUDGET
 const used = {}
@@ -103,7 +108,7 @@ const INT = { type: 'integer' }
 const ROW = { type: 'object', properties: { dod: STR, kind: { enum: ['happy', 'fail', 'edge'] }, test: STR, file: STR }, required: ['dod', 'kind', 'test', 'file'] }
 const OOS = { type: 'array', items: { type: 'object', properties: { file: STR, line: INT, why: STR }, required: ['file', 'why'] } }
 const REUSE = { enum: ['codebase', 'docs', 'oss', 'none'] }
-const DEFECT = { type: 'object', properties: { cls: { enum: ['test', 'impl', 'gap', 'scope'] }, file: STR, line: INT, what: STR, fix: STR }, required: ['cls', 'what'] }
+const DEFECT = { type: 'object', properties: { cls: { enum: ['test', 'impl', 'gap', 'scope', 'env'] }, file: STR, line: INT, what: STR, fix: STR }, required: ['cls', 'what'] }
 const GATE = { gateOk: { type: 'boolean' }, gateRuns: INT, remaining: { type: 'array', items: DEFECT } } // what the maker's own loop ended on (remaining = what it could not fix): a claim, kept for the record and used only to skip a check of a failure it admits
 const RED_DRIVER = { type: 'object', properties: { matrix: { type: 'array', items: ROW }, files: { type: 'array', items: STR }, outOfScope: OOS, reuse: REUSE, notes: STR, ...GATE }, required: ['matrix', 'files', 'reuse'] }
 const GREEN_DRIVER = { type: 'object', properties: { files: { type: 'array', items: STR }, cleanup: STR, reuse: REUSE, testDefects: OOS, testGaps: OOS, outOfScope: OOS, notes: STR, ...GATE }, required: ['files', 'reuse'] }
@@ -131,6 +136,8 @@ const itemsOf = g => g.dod.map(id => { const d = DOD.find(x => x.id === id) || {
 const dodLines = g => itemsOf(g).map(i => i.id + ' [' + i.kinds.join(',') + '] ' + clip(i.text, 220)).join('\n')
 const head = (g, role, node) => 'ROLE: ' + role + ' (group ' + g.id + ').' + pony(NODE[node].ponytail) + '\n' + WHERE + '\nGOAL: ' + clip(g.goal, 400) + (g.mirror ? '\nMIRROR the existing pattern in ' + g.mirror : '')
 const defectLines = ds => ds.map(d => '- [' + (d.cls || 'defect') + '] ' + (d.file ? d.file + (d.line ? ':' + d.line : '') + ' ' : '') + clip(d.what, 300) + (d.fix ? ' | fix: ' + clip(d.fix, 200) : '')).join('\n')
+// What the lead added when it continued a stalled group (`tdd.mjs resume --retry G | --hint G=text`): the last repair of these defects changed nothing the check could see.
+const leadNote = g => { const L = RESUME && RESUME.groups[g.id]; return L && (L.hint || L.stalled) ? 'LEAD NOTE: ' + (L.stalled ? 'the last repair of these defects changed nothing the check could see: do not repeat it, look for a different cause. ' : '') + (L.hint ? 'The lead says: ' + clip(L.hint, 600) : '') : '' }
 const gateCmd = (stage, g, extra) => TDD + ' ' + stage + ' --run ' + RUN + ' --group ' + g.id + (extra || '')
 const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'"
 const dodCmd = (g, stage, rows) => TDD + ' dod --run ' + RUN + ' --group ' + g.id + ' --stage ' + stage + (rows ? rows.filter(r => !r.late).map(r => ' --row ' + shq([r.dod, r.kind, r.test, r.file].join(':'))).join('') : " --row 'ID:kind:test:file'")
@@ -138,7 +145,7 @@ const dodCmd = (g, stage, rows) => TDD + ' dod --run ' + RUN + ' --group ' + g.i
 // that is making progress (and everything after it), a false "different" only costs a round, so the line and most of the text are part of the key.
 const sig = ds => (ds || []).map(d => [d.cls || '', d.file || '', d.line || '', String(d.what || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 200)].join('|')).sort().join('\n')
 // The loop every maker runs on itself with the SAME commands its navigator will run, so "done" is something it saw in a real run, not a feeling.
-const KEEP = 'KEEP EDITING until the gate says ok; never stop at a first draft. Every gate command is a real run in the sandbox. At most 3 gate runs; return gateOk (true only when every command printed ok=true) and gateRuns.'
+const KEEP = 'KEEP EDITING until the gate says ok; never stop at a first draft. Every gate command is a real run in the sandbox. At most 3 gate runs; return gateOk (true only when every command printed ok=true) and gateRuns. A verdict `unverifiable` (the sandbox or the test command cannot run; `unverifiable (timeout)` is not that: a test or code that hangs is yours to fix) is the environment, never the code: edit nothing for it, return gateOk=false and remaining = one {cls env, what}.'
 const ADMIT = ' If you stop with gateOk=false, list under `remaining` every reason you could not fix ({cls impl|test|gap, file, line, what}; a surviving mutant is cls gap): the next pass starts from that list, so no check is spent on a failure you already know.'
 const ALONE = 'Another maker edits the other file set of this group right now: run only your own test files, never the gate; the check runs it after you both finish.'
 const redLoop = g => KEEP + ' Write the tests, run each file once and read why it fails, then run `' + gateCmd('red', g) + '` and `' + dodCmd(g, 'red') + '` (one --row per test you wrote). Anything but ok=true (a class other than fails or fails-to-load, a DoD gap, a row naming a test that is not in its file): fix the tests, run both again.' + ADMIT
@@ -154,7 +161,7 @@ function strengthenPrompt(g, o) {
     'DEFINITION OF DONE:\n' + dodLines(g),
     gaps.length ? 'These mutants SURVIVED, so no test pins that code. Add or sharpen tests so each one would fail; every new test must PASS on the current code. Never weaken, skip or delete a test. Name new tests with their DoD id set apart by non-alphanumerics (test_ac1_edge_...).\n' + defectLines(gaps) : '',
     back.length ? 'The frozen tests changed since RED, or a DoD pair is no longer closed. Undo that: compare each test file with the version the RED gate saw (`git show <snapshot>:<file>`, snapshot = the "snapshot" field of ' + RUN + '/gates/' + g.id + '.red.json) and put back every test that was removed, skipped, loosened or renamed; tests added on purpose stay.\n' + defectLines(back) : '',
-    FENCE(g.tests), TOOLS, PRECEDENT, o.solo === false ? ALONE : strengthenLoop(g, gaps.length > 0 || o.retest),
+    leadNote(g), FENCE(g.tests), TOOLS, PRECEDENT, o.solo === false ? ALONE : strengthenLoop(g, gaps.length > 0 || o.retest),
     'RETURN: matrix = one row per NEW test {dod, kind, test, file}; files; outOfScope; reuse; gateOk; gateRuns; remaining; notes (<= 400 chars). ' + cap('red-driver'),
   ].filter(Boolean).join('\n\n')
 }
@@ -165,7 +172,7 @@ function redPrompt(g, o) {
     'DEFINITION OF DONE (one test per item and kind; every test name MUST contain its item id set apart by non-alphanumerics, e.g. test_ac1_happy_...; one test serves one item and kind only; a kind you cannot test is a defect to report, not to skip):\n' + dodLines(g),
     FENCE(g.tests), TOOLS, RESEARCH, PRECEDENT,
     'Each new test must fail for the RIGHT reason: an assertion about behavior that does not exist yet, not a typo.',
-    o.defects ? 'FIX EXACTLY THESE DEFECTS FROM THE CHECK (and nothing else):\n' + defectLines(o.defects) : '', redLoop(g),
+    o.defects ? 'FIX EXACTLY THESE DEFECTS FROM THE CHECK (and nothing else):\n' + defectLines(o.defects) : '', leadNote(g), redLoop(g),
     'RETURN: matrix = one row per test {dod, kind, test, file} (test = the exact function name); files = test files touched; outOfScope; reuse; gateOk; gateRuns; remaining; notes (<= 400 chars). ' + cap('red-driver'),
   ].filter(Boolean).join('\n\n')
 }
@@ -176,11 +183,11 @@ function greenPrompt(g, o) {
     'THE TESTS ARE FROZEN: ' + g.tests.join(', ') + '. Never edit, skip, loosen or delete a test to get green; a test that is wrong goes under testDefects (file, line, why).',
     FENCE(g.src), TOOLS, RESEARCH,
     o.defects ? '' : 'After GREEN, at most ONE cleanup pass, only for a duplicated block (3+ copies) or dead code you added; otherwise cleanup = "none".' + (o.solo === false ? '' : ' Run the gate again after it.'),
-    o.defects ? 'FIX EXACTLY THESE DEFECTS FROM THE CHECK (and nothing else):\n' + defectLines(o.defects) : '', o.solo === false ? ALONE : greenLoop(g, o.retest),
+    o.defects ? 'FIX EXACTLY THESE DEFECTS FROM THE CHECK (and nothing else):\n' + defectLines(o.defects) : '', leadNote(g), o.solo === false ? ALONE : greenLoop(g, o.retest),
     'RETURN: files = source files touched; cleanup; reuse; testDefects; testGaps; outOfScope; gateOk; gateRuns; remaining; notes (<= 400 chars). ' + cap('green-driver'),
   ].filter(Boolean).join('\n\n')
 }
-const NAV_TAIL = 'RETURN: verdict PASS|FAIL; defects = only what MUST be fixed, each {cls test|impl|gap|scope, file, line, what, fix}, at most 6 (anything softer goes in notes); gateOk = true only if every command printed ok=true; notes <= 400 chars. A claim you did not see in command output or in a file you read is not a fact. '
+const NAV_TAIL = 'RETURN: verdict PASS|FAIL; defects = only what MUST be fixed, each {cls test|impl|gap|scope|env, file, line, what, fix}, at most 6 (anything softer goes in notes); a gate verdict `unverifiable` (not `unverifiable (timeout)`, which is a hanging test or code: cls impl or test) is the sandbox, not the code: report that ONE defect as cls env and nothing else; gateOk = true only if every command printed ok=true; notes <= 400 chars. A claim you did not see in command output or in a file you read is not a fact. '
 function redNavPrompt(g, rows, chk, recheck, n) {
   return [
     head(g, 'navigator: verify the RED tests; you did not write them, so judge them independently', 'red-navigator'),
@@ -246,7 +253,7 @@ const state = {}, spent = {}
 const reserved = g => G.reduce((n, h) => n + (h.id !== g.id && state[h.id] && state[h.id].state === 'running' ? Math.max(0, SHARE - (spent[h.id] || 0)) : 0), 0)
 const takeRepair = g => (repairsLeft > 0 && ((spent[g.id] || 0) < SHARE || repairsLeft > reserved(g)) ? (repairsLeft--, spent[g.id] = (spent[g.id] || 0) + 1, true) : false)
 const waiting = new Map(G.map(g => { let res; const p = new Promise(r => { res = r }); return [g.id, { p, res }] }))
-const as = (node, prompt, schema, label) => runR(node, prompt, { schema, label, phase: 'Build' }, label)
+const as = (node, prompt, schema, label, model) => runR(node, prompt, { schema, label, phase: 'Build', ...model }, label) // model: {model, effort} of an escalated repair (`tdd.mjs resume --escalate G`)
 const gaps = chk => chk.missing.map(m => ({ cls: 'gap', what: 'DoD ' + m.dod + ' has no ' + m.kind + ' test (a test whose name contains ' + m.dod + ')' })).concat(chk.bad.map(b => ({ cls: 'test', what: 'matrix row ' + b.row.dod + '/' + b.row.kind + ' ' + b.row.test + ' cannot count: ' + b.why })))
 const needsWork = n => n.verdict !== 'PASS' || (n.defects || []).length > 0 || n.gateOk === false // a PASS that admits a command printed ok=false is not a pass
 
@@ -268,6 +275,9 @@ async function build(g) {
   const admit = r => (r && r.gateOk === false && Array.isArray(r.remaining) && r.remaining.length ? r.remaining.slice(0, 6) : null)
   let chk = checkMatrix(items, st.matrix, g.tests), driver = {}, retest = !!(R && R.retest) // retest: set by a strengthening pass (cls gap) only, never by an unsanctioned edit
   const testDefects = [], tdKey = t => JSON.stringify([t.file, t.line, t.why])
+  // `tdd.mjs resume` read the gate files and said: the sandbox is broken (env) or the same defects already stalled (hold). Nothing is spent until the lead changes that.
+  if (R && (R.next === 'env' || R.next === 'hold')) return stop('paused', (R.next === 'env' ? 'environment, not code: ' : 'held: ') + clip(R.why, 400)) // paused, not blocked: nothing is reviewed until the lead has decided
+  const mk = R && R.escalate ? { model: 'opus', effort: 'high' } : undefined // the lead asked for one stronger maker on this group's repairs
 
   // A stage is a loop, not a shot: check on fresh gate facts, send the defects to the maker, check again; it ends on a pass, on the same defects coming back (no progress),
   // after ROUNDS repairs (blocked), or when the run-wide repair budget is spent (paused: `tdd.mjs resume` continues it). Labels: :rework / :recheck, then :rework2 / :recheck2.
@@ -282,10 +292,12 @@ async function build(g) {
         pending = defectsOf(nav, o.cls)
       }
       st[key] = { ...st[key], verdict: 'FAIL', defects: pending }
+      const env = pending.find(d => d.cls === 'env') // the sandbox, not the code: a repair cannot fix it and none is spent
+      if (env) return stop('paused', 'environment, not code (' + key.toUpperCase() + '): ' + clip(env.what, 200) + ' | fix the sandbox, run tdd.mjs preflight, then tdd.mjs resume: no repair was spent')
       const W = key.toUpperCase(), why = clip(pending[0].what, 200)
       if (n >= ROUNDS) return stop('blocked', W + ' still failing its check after ' + n + ' repair round(s): ' + why)
       if (before && sig(pending) === sig(before)) return stop('blocked', W + ' made no progress: the same defects came back after repair round ' + n + ': ' + why)
-      if (!takeRepair(g)) return stop('paused', (repairsLeft > 0 ? 'the rest of the run-wide repair budget (' + BUDGET + ') is reserved for the groups still running' : 'the run-wide repair budget (' + BUDGET + ') is spent') + ' after ' + n + ' repair round(s), still failing: ' + clip(pending[0].what, 140) + ' | continue with tdd.mjs resume and a larger args.maxRepairs')
+      if (!takeRepair(g)) return stop('paused', (repairsLeft > 0 ? 'the rest of the run-wide repair budget (' + BUDGET + ') is reserved for the groups still running' : 'the run-wide repair budget (' + BUDGET + ') is spent') + ' after ' + n + ' repair round(s), still failing: ' + clip(pending[0].what, 140) + ' | continue with tdd.mjs resume (it sets the next budget: --max-repairs N)')
       st[key].reworks = n + 1
       before = pending
       pending = await o.repair(pending, n + 1)
@@ -295,7 +307,7 @@ async function build(g) {
     cls: 'test',
     check: (n, before) => as('red-navigator', redNavPrompt(g, st.matrix, chk, before, n), NAV, lab('red-navigator', g.id, 'recheck', n)),
     repair: async (defects, k) => {
-      const again = await as('red-driver', redPrompt(g, { defects }), RED_DRIVER, lab('red-driver', g.id, 'rework', k))
+      const again = await as('red-driver', redPrompt(g, { defects }), RED_DRIVER, lab('red-driver', g.id, 'rework', k), mk)
       if (again) { st.matrix = again.matrix || st.matrix; st.files = again.files || st.files; chk = checkMatrix(items, st.matrix, g.tests); driver = drv(again) }
       return admit(again)
     },
@@ -309,8 +321,8 @@ async function build(g) {
       const tests = weak.length + changed.length // a gap is strengthened; a frozen test that was changed or a DoD pair that no longer closes is RESTORED, and its gate run stays without --retest
       const solo = !(tests && code.length) // two makers on one group must not both run its gate on a half-edited tree
       const jobs = []
-      if (code.length) jobs.push(() => as('green-driver', greenPrompt(g, { defects: code, solo, retest }), GREEN_DRIVER, lab('green-driver', g.id, 'rework', k)))
-      if (tests) jobs.push(() => as('red-driver', redPrompt(g, { strengthen: weak, restore: changed, solo, retest }), RED_DRIVER, lab('red-driver', g.id, 'strengthen', k)))
+      if (code.length) jobs.push(() => as('green-driver', greenPrompt(g, { defects: code, solo, retest }), GREEN_DRIVER, lab('green-driver', g.id, 'rework', k), mk))
+      if (tests) jobs.push(() => as('red-driver', redPrompt(g, { strengthen: weak, restore: changed, solo, retest }), RED_DRIVER, lab('red-driver', g.id, 'strengthen', k), mk))
       const res = await parallel(jobs) // different files (src vs tests): safe side by side
       const fixedCode = (res[0] && code.length ? res[0] : {}), added = (res[code.length ? 1 : 0] || {}).matrix || []
       for (const t of fixedCode.testDefects || []) if (!testDefects.some(x => tdKey(x) === tdKey(t))) testDefects.push(t)
@@ -456,7 +468,7 @@ const boardMd = ['# paired-agent-tdd ' + sha8, 'Run folder: ' + RUN, '', '| grou
 const postmortemMd = ['# Postmortem ' + sha8, '', failed.length ? 'Failed jobs: ' + failed.length : 'No failed jobs.',
   ...failed.flatMap(f => ['', '## ' + f.id + ' (' + f.node + ', ' + f.attempts + ' attempts): ' + f.reason, '- DO: run `' + TDD + ' resume --run ' + RUN + '` (it reads RUN/gates, no agent) and continue with args.resume; `resumeFromRunId` with unchanged args also works in the same session.', "- DON'T: restart from zero or redo files a gate already shows done."]),
   ...notDone.map(n => '\nNot done: ' + n),
-  ...(notDone.length ? ['', 'Continue without re-reading anything: `' + TDD + ' resume --run ' + RUN + ' --ret return.json` writes ' + RUN + '/continue.json from the gate files; run the Workflow again with args.resume = its content (done groups cost nothing, the others restart where they stopped).'] : [])].join('\n')
+  ...(notDone.length ? ['', 'Continue without re-reading anything: `' + TDD + ' resume --run ' + RUN + ' --ret return.json` writes ' + RUN + '/continue.json from the gate files; run the Workflow again with args.resume = its content (done groups cost nothing, the others restart where they stopped; its maxRepairs is the next run\'s budget, change it with --max-repairs N; a group on hold or env needs your decision first).'] : [])].join('\n')
 return {
   mode: 'standard',
   counts: { groups: G.length, done: doneIds.length, findings: clusters.length, fixedGroups: Object.keys(fixes).length },

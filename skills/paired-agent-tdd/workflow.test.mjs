@@ -564,4 +564,37 @@ assert.deepEqual([r.calls.filter(c => /^red-driver:a:rework/.test(c.o.label)).le
 r = await play({ groups: [grp('a')] });
 assert.deepEqual([r.out.groups.a.red.reworks, r.out.groups.a.green.reworks], [0, 0], 'a group that needed nothing spent nothing');
 
-console.log('ok - paired-agent-tdd workflow.js: 26 scenarios');
+// 27 environment, hold, hint, escalation and the budget of a continued run
+assert.match((await play({ sandbox: 'none' })).out.error, /no sandbox/, 'with no sandbox every gate says unverifiable: no agent is started');
+assert.equal((await play({ sandbox: 'stub', preflight: 'ok' })).out.error, undefined);
+r = await play({ groups: [grp('a')] }, { 'red-navigator:a': () => FAIL('env', 'RED gate: tests/test_a.py is unverifiable') });
+assert.deepEqual([r.by('red-driver:a:rework').length, r.out.groups.a.state, r.out.stats.repairsLeft], [0, 'paused', BASE.maxRepairs], 'a navigator that names the environment stops the group at once: no repair is spent on it');
+assert.match(r.out.groups.a.reason, /^environment, not code \(RED\): RED gate: tests\/test_a\.py is unverifiable[\s\S]*tdd\.mjs preflight[\s\S]*no repair was spent/);
+r = await play({ groups: [grp('a')] }, { 'red-driver:a': { ...stuck, remaining: [{ cls: 'env', what: 'sandbox is unverifiable' }] } });
+assert.deepEqual([r.by('red-navigator:a').length, r.by('red-driver:a:rework').length, r.out.groups.a.state], [0, 0, 'paused'], 'a maker that reports the environment as what remains is believed: nothing is spent after it');
+assert.match(r.calls[0].prompt, /A verdict `unverifiable`[\s\S]*unverifiable \(timeout\)` is not that[\s\S]*never the code[\s\S]*cls env/, 'makers are told, and told that a hanging test is theirs');
+assert.match((await play({ groups: [grp('a')] })).by('red-navigator:a')[0].prompt, /gate verdict `unverifiable` \(not `unverifiable \(timeout\)`[^)]*\) is the sandbox, not the code: report that ONE defect as cls env/, 'navigators are told');
+r = await only(ent('env', { why: 'the RED gate says unverifiable: the sandbox, not the code. Fix it' }));
+assert.deepEqual([r.out.stats.total, r.out.groups.a.state, r.n.reviewer], [0, 'paused', undefined], 'an env entry costs no agent at all');
+assert.match(r.out.groups.a.reason, /^environment, not code: the RED gate says unverifiable/);
+r = await play({ groups: [grp('a'), grp('b', { after: ['a'] }), grp('c')], dod: BASE.dod, maxRepairs: undefined, ...cont({ a: ent('hold', { why: 'STALLED last run: the same defects came back' }), b: ent('red', { matrix: rows(BASE.groups[1]) }), c: ent('red', { matrix: rows(BASE.groups[2]) }) }) });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.b.state, r.out.groups.c.state, r.out.stats.repairBudget, r.n.reviewer], ['paused', 'blocked', 'done', 4, undefined], 'a held group blocks what waits for it, the rest goes on, a held group gets no budget (2 each for b and c), and nothing is reviewed until the change is whole');
+assert.match(r.out.groups.a.reason, /^held: STALLED last run/);
+const gfix = { defects: [{ cls: 'impl', file: 'tests/test_a.py', what: 'tests/test_a.py is fails-on-head' }] };
+r = await only(ent('green-fix', { ...gfix, stalled: true, hint: 'use the existing parse helper in src/util.py' }));
+assert.match(r.by('green-driver:a:rework')[0].prompt, /LEAD NOTE: the last repair of these defects changed nothing the check could see[\s\S]*The lead says: use the existing parse helper in src\/util\.py/, 'a forced retry and a hint reach the maker');
+assert.equal(/LEAD NOTE/.test((await only(ent('green-fix', gfix))).by('green-driver:a:rework')[0].prompt), false, 'no hint, no stall mark: the prompt is unchanged');
+const noteOf = async o => (await only(ent('green-fix', { ...gfix, ...o }))).by('green-driver:a:rework')[0].prompt;
+assert.deepEqual([/changed nothing/.test(await noteOf({ hint: 'try X' })), /The lead says: try X/.test(await noteOf({ hint: 'try X' }))], [false, true], 'a hint alone is only the hint');
+assert.deepEqual([/changed nothing/.test(await noteOf({ stalled: true })), /The lead says/.test(await noteOf({ stalled: true }))], [true, false], 'a forced retry alone is only the stall mark');
+r = await only(ent('green-fix', { ...gfix, escalate: true }));
+assert.deepEqual([r.by('green-driver:a:rework')[0].o.model, r.by('green-driver:a:rework')[0].o.effort, r.by('green-navigator:a:recheck')[0].o.model], ['opus', 'high', 'sonnet'], 'one stronger maker on the repair, the check stays what it was');
+assert.equal((await only(ent('green-fix', gfix))).by('green-driver:a:rework')[0].o.model, 'sonnet');
+const withBudget = (maxRepairs, args = {}) => play({ groups: [grp('a')], maxRepairs: 0, resume: { version: 1, base: 'b'.repeat(40), maxRepairs, groups: { a: ent('green-fix', gfix) } }, ...args });
+r = await withBudget(3);
+assert.deepEqual([r.out.stats.repairBudget, r.out.groups.a.state, r.by('green-driver:a:rework').length], [3, 'done', 1], 'the continue file decides the budget: the plan\'s 0 in the args no longer pauses the run at once');
+assert.ok(r.logs.some(m => /args\.maxRepairs \(0\) is ignored: the continue file sets this run's repair budget \(3\)/.test(m)), 'an args.maxRepairs that is overruled says so');
+assert.equal((await withBudget(99)).out.stats.repairBudget, 0, 'an out-of-range value in the file falls back to the args');
+assert.equal((await withBudget(undefined, { maxRepairs: undefined })).out.stats.repairBudget, 2, 'an older continue file with no budget falls back to the default');
+
+console.log('ok - paired-agent-tdd workflow.js: 27 scenarios');

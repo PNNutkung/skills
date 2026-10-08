@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // T0 gates of paired-agent-tdd: plain code, no model. They turn "the driver says it is done" into facts the navigator and the reviewer judge.
-//   node tdd.mjs plan   --plan plan.json                 validate, snapshot the base tree, create the run folder RUN, print the Workflow args (JSON)
+//   node tdd.mjs plan   --plan plan.json [--skip-preflight]  validate, snapshot the base tree, create the run folder RUN, prove the sandbox runs the repo's tests (preflight), print the Workflow args (JSON)
+//   node tdd.mjs preflight --run RUN                       a test that already passes at the base must pass in the sandbox: the environment works before an agent is paid
 //   node tdd.mjs red    --run RUN --group G               the group's NEW tests must FAIL now (class: assertion | load error | passes already)
 //   node tdd.mjs green  --run RUN --group G [--retest]    the group's tests pass, exercise the change, did not change since RED, stay in scope; mutants; coverage
 //   node tdd.mjs dod    --run RUN --group G --stage red|green --row ID:kind:test:file ...   the group's DoD pairs from its gate file and the working tree (instant, no run)
-//   node tdd.mjs resume --run RUN [--ret return.json] [--group G]   where each group stands, from the gate files; writes RUN/continue.json (args.resume of the Workflow)
+//   node tdd.mjs resume --run RUN [--ret return.json] [--group G] [--max-repairs N] [--retry G] [--hint G=text] [--escalate G]   where each group stands, from the gate files; writes RUN/continue.json (args.resume of the Workflow)
 //   node tdd.mjs final  --run RUN [--again]               every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch (--again: a re-run after fixes)
 //   node tdd.mjs verify --run RUN --ret return.json       DoD closure from the gate files, fixes still present, reviewer proofs (proofcheck.mjs)
 //   node tdd.mjs snap   --run RUN --on REV [--files a,b]  print the sha of REV + those working-tree files (no --files: the whole working tree)
@@ -15,11 +16,12 @@
 // the review-only guard hook must not restrict the agents that write the code. Gates write RUN/gates/*.json and RUN/diff/*.patch.
 // Exit: 0 (results are data, read `ok`); 2 usage or invalid plan; 3 no trusted run dir; 1 other error.
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { LIM, worst } from './graph.mjs';
 import { changedCoverage, classifyRed, closure, closureMarkdown, defectsFromGreen, defectsFromRed, groupClosure, outOfScope, parseLcov, parseNumstat, parseRow, pickAffected, redOk, validatePlan } from './gates.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -133,6 +135,41 @@ const say = rows => process.stdout.write(`${rows.join('\n').slice(0, SUMMARY_MAX
 const clipTail = t => (t ?? '').replace(/\s+/g, ' ').trim().slice(-TAIL_SHOWN);
 const spread = (map, n = 6) => map.slice(0, n).map(([f, ls]) => `${f}:${ls.slice(0, 6).join(',')}`).join(' ');
 
+// ---------------------------------------------------------------- preflight
+/**
+ * Before an agent is paid: can the sandbox run this repo's tests at all? A test that already passes at the base must pass here. Without it a broken environment (a wrong
+ * command, a missing venv, no runner) looks like a valid RED ("fails-to-load") and every verdict after it stands on sand. plan.smoke names the tests to try, else the smallest
+ * existing tests at the base. A tiny test can pass in a broken environment: this proves the command starts and a real test passes, not that every import resolves.
+ * -> { ok, verdict: ok | skipped (no test at the base to try) | unverifiable (86 or 127) | timeout | broken, tried, rows }
+ */
+const SMOKE_TRIES = 3;
+const TEST_NAME = /(^|\/)(test_[^/]*|[^/]*[_.-](test|tests|spec)\.[^/.]+|[^/]*Tests?\.[^/.]+)$/;
+const NOT_A_TEST = /(^|\/)(__init__|conftest|setup|helpers?|fixtures?|mocks?|utils?|common)(\.[^/]*)?$|\/(fixtures?|mocks?|__snapshots__)\//i; // under tests/ but never one
+async function preflight(ctx) {
+  const { plan } = ctx, mine = new Set(planFiles(plan));
+  const listed = names(git(plan.repo, ['ls-tree', '-r', '-l', '-z', plan.base])).map(l => { const [meta, ...p] = l.split('\t'); return { size: Number(meta.trim().split(/\s+/)[3]) || 0, path: p.join('\t') }; });
+  const exts = new Set(plan.groups.flatMap(g => g.tests.map(f => extname(f)))); // the runner of plan.cmd runs the groups' kind of file, not any file under tests/
+  const rank = p => (TEST_NAME.test(p) ? 0 : 1); // a file that is named like a test first, then the other candidates: smallest first
+  const found = listed.filter(f => lib.TEST.test(f.path) && !lib.DOC.test(f.path) && !NOT_A_TEST.test(f.path) && exts.has(extname(f.path)) && !mine.has(f.path))
+    .sort((a, b) => rank(a.path) - rank(b.path) || a.size - b.size || a.path.localeCompare(b.path)).map(f => f.path);
+  const candidates = (plan.smoke ?? found).slice(0, SMOKE_TRIES), tried = [], dir = candidates.length ? await tree(ctx, plan.base, 'pre') : null;
+  try {
+    for (const file of candidates) {
+      if (!has(plan.repo, plan.base, file)) { tried.push({ file, exit: null, tail: 'not a file at the base' }); continue; }
+      const r = await runFile(ctx, dir, file);
+      tried.push({ file, exit: r.exit, sec: r.sec, run: r.run, tail: clipTail(r.tail), ...(r.exit !== 0 && classifyRed(r) === 'no-tests' ? { empty: true } : {}) });
+      if (r.exit === 0 || r.exit === 86 || r.exit === 127) break; // it works, or it cannot start: another file would say the same
+    }
+  } finally { if (dir) discard(dir); }
+  const pass = tried.find(t => t.exit === 0), real = tried.filter(t => !t.empty), codes = real.map(t => t.exit); // a file that holds no test says nothing about the environment
+  const verdict = !candidates.length || (!pass && !real.length) ? 'skipped' : pass ? 'ok' : codes.every(c => c === 86 || c === 127) ? 'unverifiable' : codes.every(c => c === 124) ? 'timeout' : 'broken';
+  const ok = verdict === 'ok' || verdict === 'skipped', out = { kind: 'preflight', ok, verdict, base: plan.base, tried };
+  writeGate(ctx, 'preflight.json', out);
+  const why = { skipped: 'no existing test at the base ran a test: set plan.smoke to prove the sandbox, or accept that a broken environment can look like a valid RED', unverifiable: 'the sandbox cannot start the test command (exit 86: no sandbox; 127: command not found)', timeout: 'every try timed out: raise plan.timeout, or name a faster test in plan.smoke', broken: 'a test that should pass at the base fails here: a wrong cmd, a missing venv or dependency, or a service the test needs. Fix it, or name tests that do pass in plan.smoke' };
+  return { ...out, rows: [`PREFLIGHT ok=${ok} verdict=${verdict}${pass ? `: ${pass.file} passed in the sandbox (${pass.sec}s, run ${pass.run})` : ''}`, ...(ok && verdict === 'ok' ? [] : [`  ${why[verdict]}`]),
+    ...(pass ? [] : tried.map(t => `  ${t.file}: exit ${t.exit ?? '-'}${t.run ? `, run ${t.run}` : ''}${t.tail ? `: ...${t.tail}` : ''}`))] };
+}
+
 // ---------------------------------------------------------------- gates
 async function red(ctx, gid) {
   const { plan } = ctx, g = group(plan, gid);
@@ -165,7 +202,7 @@ async function green(ctx, gid, retest) {
     mut.off ? { reason: 'switched off in the plan' } : child(ctx, 'mutate.mjs', baseDeps, snap, g.tests, 'gm', ['--max', String(mut.max ?? MUTATION.max), '--budget', String(mut.budget ?? MUTATION.budget), ...kill]),
     coverage(ctx, g, snap, baseDeps),
   ]);
-  const tests = (probe.tests ?? []).map(t => ({ file: t.file, verdict: t.verdict, reason: t.reason, head: t.head?.exit, base: t.base?.exit, nondeterministic: t.flake?.nondeterministic }));
+  const tests = (probe.tests ?? []).map(t => { const cannotStart = t.verdict === 'fails-on-head' && t.head?.exit === 127; return { file: t.file, verdict: cannotStart ? 'unverifiable' : t.verdict, reason: cannotStart ? 'the test command cannot start (exit 127)' : t.reason, head: t.head?.exit, base: t.base?.exit, nondeterministic: t.flake?.nondeterministic }; }); // 127 is the environment, as at RED
   const survivors = (mutants.mutants ?? []).filter(m => m.result === 'survived').map(m => ({ id: m.id, file: m.file, line: m.line, op: m.op, before: m.before, after: m.after, run: m.run, quote: m.quote }));
   const reasons = [];
   if (probe.error) reasons.push(`test probe: ${probe.error}`);
@@ -196,6 +233,8 @@ function gateAge(ctx, g, stage) {
   if (gate?.snapshot) { try { stale = parseNumstat(git(plan.repo, ['diff', '--numstat', gate.snapshot, cur, '--', ...files])).changed; } catch { stale = ['(the gate snapshot is gone)']; } } // a pruned snapshot is a stale gate, not a crash
   return { gate, cur, stale };
 }
+const isTimeout = t => t.verdict === 'timeout' || (t.verdict === 'unverifiable' && t.reason === 'timeout'); // the GREEN probe reports a timeout as unverifiable (timeout)
+const mtime = f => { try { return statSync(f).mtimeMs; } catch { return 0; } };
 const rowText = r => [r.dod, r.kind, r.test, r.file].join(':');
 
 /**
@@ -234,11 +273,17 @@ function dod(ctx, gid, stage, rowTexts) {
  * Workflow as args.resume so a failed, blocked, paused or killed run continues instead of starting over:
  *   done = judged PASS last run (needs --ret) and its gates are fresh and ok and its DoD pairs close;  green-check = gates fresh and ok, nobody judged them;
  *   green-fix = the GREEN gate is fresh and not ok (its defects are read off the gate);  green = RED passed, no code yet;  red-fix / red-check / red likewise for RED.
+ *   env = the live gate says unverifiable (or timeout, when plan never proved the sandbox): the sandbox, not the code; no agent is spent until a gate runs again;
+ *   hold = the same defects stalled the last run and nothing changed since: the same repair would stall again; --retry G, --hint G=text or --escalate G spends on purpose.
  * With --group it only prints that group (an agent that replaces a dead one runs it first, instead of exploring the tree).
+ * The next run's repair budget is decided HERE (--max-repairs N, else LIM.repairs per group that still has work) and travels in continue.json, not in the plan.
  */
-function resume(ctx, retPath, only) {
-  const { plan } = ctx;
+function resume(ctx, retPath, only, flags = {}) {
+  const { plan } = ctx, retry = new Set(flags.retry ?? []), escalate = new Set(flags.escalate ?? []), hints = flags.hints ?? {};
+  for (const id of [...retry, ...escalate, ...Object.keys(hints)]) group(plan, id);
+  const preOk = readGate(ctx, 'preflight.json')?.verdict === 'ok'; // plan proved the sandbox runs this repo's tests: a timeout after that is the code's
   let ret = null;
+  const retTime = retPath ? mtime(resolve(retPath)) : 0;
   if (retPath) { try { ret = JSON.parse(readFileSync(resolve(retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); } }
   const groups = {}, lines = [], warnings = [];
   const merge = (...lists) => { const seen = new Set(); return lists.flat().filter(d => !seen.has(d.what) && seen.add(d.what)).slice(0, 6); };
@@ -249,10 +294,13 @@ function resume(ctx, retPath, only) {
     const fz = green.gate?.frozen, retest = !!prev?.retest || !!green.gate?.retest || (!!fz?.changed?.length && fz.removed === 0); // tests only GREW since RED: a strengthening, which --retest sanctions
     // what the last NAVIGATOR said is evidence the gates cannot give (a tautology, a token edge test): it stands while the files the gate judged have not changed since
     const knownRed = prev?.red?.verdict === 'FAIL' ? prev.red.defects ?? [] : [], knownGreen = prev?.green?.verdict === 'FAIL' ? prev.green.defects ?? [] : [], redPassed = prev?.red?.verdict === 'PASS';
-    const staleRed = red.stale.length ? (matrix.length ? 'red-check' : 'red') : null, env = [red.gate, green.gate].some(gt => (gt?.tests ?? []).some(t => t.verdict === 'unverifiable' || t.verdict === 'timeout'));
+    const staleRed = red.stale.length ? (matrix.length ? 'red-check' : 'red') : null;
+    const live = green.gate && !green.stale.length ? green : red, liveStage = live === green ? 'green' : 'red'; // the gate that speaks for the tree now
+    const env = !live.stale.length && (live.gate?.tests ?? []).some(t => (isTimeout(t) ? !preOk : t.verdict === 'unverifiable'));
     let next, why, defects = [];
     // A fresh GREEN verdict outranks a stale RED one: the tests grow after GREEN on purpose (a strengthening), so the RED gate file is out of date in every healthy run.
-    if (!red.gate) { next = 'red'; why = 'no RED gate on record'; }
+    if (env) { next = 'env'; why = `the ${liveStage.toUpperCase()} gate says unverifiable${preOk ? '' : ' or timeout'}: the sandbox, not the code. Fix it, then run \`node ${join(HERE, 'tdd.mjs')} ${liveStage} --run ${ctx.run} --group ${g.id}\` again; no agent is spent until a gate has run`; warnings.push(`${g.id}: ${why}`); }
+    else if (!red.gate) { next = 'red'; why = 'no RED gate on record'; }
     else if (green.gate && !green.stale.length) {
       defects = merge(knownGreen, green.gate.ok ? [] : defectsFromGreen(green.gate).filter(d => !(retest && /^tests changed since RED/.test(d.what))));
       if (defects.length || !green.gate.ok) { next = 'green-fix'; why = knownGreen.length ? 'the last navigator reported defects the gate cannot see' : 'the GREEN gate is fresh and not ok'; }
@@ -265,14 +313,25 @@ function resume(ctx, retPath, only) {
     else if (knownRed.length) { next = 'red-fix'; why = 'the last navigator reported defects the gate cannot see'; defects = merge(knownRed); }
     else if (redPassed) { next = 'green'; why = 'RED passed (a navigator said so), no code yet'; }
     else { next = 'red-check'; why = 'the RED gate is ok but no navigator has passed it'; }
-    if (/made no progress/.test(prev?.reason ?? '')) why += '; STALLED last run: the same repair will probably stall again, read the defects before spending';
-    if (env) warnings.push(`${g.id}: a gate says unverifiable or timeout: fix the sandbox before spending agents on it`);
-    groups[g.id] = { next, why, matrix, files: prev?.files ?? [], defects, retest };
-    lines.push(`  ${g.id}: ${next} (${why})${defects.length ? `; ${defects.length} defect(s), first: ${defects[0].what.slice(0, 140)}` : ''}`);
+    // the same defects came back after a repair and the files are still what that run left: the same repair would stall again, so the lead decides to spend (a change by hand
+    // makes the gate stale, which routes elsewhere and never reaches this)
+    const note = {}, stalled = /made no progress/.test(prev?.reason ?? '');
+    const edited = stalled && [...g.tests, ...g.src].some(f => mtime(join(plan.repo, f)) > retTime); // a file touched after the return was saved: someone changed something, whatever the gate says now
+    if (stalled && /-fix$/.test(next) && !edited) {
+      if (retry.has(g.id) || escalate.has(g.id) || hints[g.id]) note.stalled = true; // the repair is told the last one changed nothing
+      else { next = 'hold'; why = `STALLED last run (made no progress): the same defects came back after a repair and no file was touched since, so the same repair would stall again. Change something, or spend on purpose: --hint ${g.id}="..." | --escalate ${g.id} (one opus maker) | --retry ${g.id}`; }
+    } else if (stalled) why += edited ? '; STALLED last run, but files were edited since: a repair may work now' : '; STALLED last run: read the defects before spending';
+    if (hints[g.id]) note.hint = hints[g.id];
+    if (escalate.has(g.id)) note.escalate = true;
+    groups[g.id] = { next, why, matrix, files: prev?.files ?? [], defects, retest, ...note };
+    lines.push(`  ${g.id}: ${next}${note.escalate ? ' [opus]' : ''}${note.hint ? ' [hint]' : ''} (${why})${defects.length ? `; ${defects.length} defect(s), first: ${defects[0].what.slice(0, 140)}` : ''}`);
   }
-  const todo = Object.entries(groups).filter(([, v]) => v.next !== 'done').length;
-  if (!only) writeSafe(ctx.run, join(ctx.run, 'continue.json'), `${JSON.stringify({ version: 1, base: plan.base, run: ctx.run, groups, warnings })}\n`);
-  say([`RESUME ${only ?? 'run'}: ${todo} of ${Object.keys(groups).length} group(s) need work${only ? '' : `; ${join(ctx.run, 'continue.json')} written: pass its content as args.resume to the Workflow`}`, ...lines, ...warnings.map(w => `  WARNING ${w}`)]);
+  const todo = Object.entries(groups).filter(([, v]) => v.next !== 'done').length, working = Object.values(groups).filter(v => !['done', 'env', 'hold'].includes(v.next)).length;
+  const maxRepairs = flags.maxRepairs ?? LIM.repairs * working;
+  if (!only) writeSafe(ctx.run, join(ctx.run, 'continue.json'), `${JSON.stringify({ version: 1, base: plan.base, run: ctx.run, maxRepairs, groups, warnings })}\n`);
+  say([`RESUME ${only ?? 'run'}: ${todo} of ${Object.keys(groups).length} group(s) need work${only ? '' : `; ${join(ctx.run, 'continue.json')} written: pass its content as args.resume to the Workflow`}`,
+    ...(only ? [] : [working ? `  next run: repair budget ${maxRepairs}${flags.maxRepairs === undefined ? ` (${LIM.repairs} for each of the ${working} group(s) that still work)` : ''}, at most ${worst(working, plan.rounds ?? LIM.rounds, maxRepairs)} build agents; the plan's own maxRepairs no longer applies; change it: --max-repairs N` : '  next run: no group spends an agent until a hold or an env stop is cleared']),
+    ...lines]);
 }
 
 async function coverage(ctx, g, snap, base) {
@@ -360,7 +419,7 @@ async function verify(ctx, retPath) {
 }
 
 // ---------------------------------------------------------------- plan command
-function cmdPlan(o) {
+async function cmdPlan(o) {
   let plan;
   try { plan = JSON.parse(readFileSync(resolve(o.plan ?? ''), 'utf8')); } catch (e) { fail(2, `--plan must be a plan.json file: ${e.message}`); }
   let ticket;
@@ -374,6 +433,8 @@ function cmdPlan(o) {
   if (notSource.length) fail(2, `src files the probes never count as source (a test-like path, a data or config file): ${notSource.join(', ')}; the group could never be judged green. Move them out of src.`);
   const marker = readMarker({ env: process.env });
   if (marker) fail(3, `a zero-trust-review run is still active (${marker}): its guard hook would deny the test commands of the agents that write code. Finish it or run: node ${join(ZT, 'note.mjs')} deactivate`);
+  const runner = resolve(o.runner ?? join(ZT, 'sandbox-run.mjs')), backend = lib.backendOf(runner);
+  if (backend === 'none') fail(3, `no usable sandbox (${runner} --check failed): every gate would be unverifiable, and the code of a change request never runs bare. Fix it (see zero-trust-review) and run plan again`);
   const scratch = plan.scratch ? resolve(plan.scratch) : join(realpathSync(tmpdir()), `pat-${process.pid}-${Date.now().toString(36)}`);
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const real = realpathSync(scratch);
@@ -386,26 +447,38 @@ function cmdPlan(o) {
   const full = { ...plan, repo, scratch: real, base, run };
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   writeSafe(run, join(run, 'plan.json'), `${JSON.stringify(full)}\n`);
-  const backend = lib.backendOf(resolve(o.runner ?? join(ZT, 'sandbox-run.mjs')));
-  const args = { ...full, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend };
+  const pre = o['skip-preflight'] ? { ok: true, verdict: 'skipped', rows: ['PREFLIGHT skipped (--skip-preflight): a broken environment can look like a valid RED'] } : await preflight(load({ run, runner: o.runner }));
+  process.stderr.write(`${pre.rows.join('\n')}\n`);
+  if (!pre.ok) fail(3, `the sandbox cannot run this repo's tests, so no gate could be trusted. Fix it and run plan again (--run ${run} reuses this folder), or pass --skip-preflight to go on unproven`);
+  const args = { ...full, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
-  process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${plan.dod.length} DoD item(s), base ${short(base)}, sandbox ${backend}${backend === 'none' ? ' (no sandbox: every gate will be unverifiable)' : ''}; Workflow args in ${join(run, 'args.json')}\n`);
+  process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${plan.dod.length} DoD item(s), base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}; Workflow args in ${join(run, 'args.json')}\n`);
   process.stdout.write(`${JSON.stringify(args)}\n`);
+}
+
+function resumeFlags(v) {
+  const hints = {};
+  for (const h of v.hint ?? []) { const i = h.indexOf('='); if (i < 1 || !h.slice(i + 1).trim()) fail(2, '--hint must be G=text (what the maker should know)'); hints[h.slice(0, i)] = h.slice(i + 1).trim().slice(0, 600); }
+  const raw = v['max-repairs'];
+  if (raw !== undefined && (!/^\d+$/.test(raw) || Number(raw) > 40)) fail(2, '--max-repairs must be an integer from 0 to 40');
+  return { retry: v.retry ?? [], escalate: v.escalate ?? [], hints, maxRepairs: raw === undefined ? undefined : Number(raw) };
 }
 
 // ---------------------------------------------------------------- main
 try {
-  const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true } }, args: process.argv.slice(3), strict: true });
+  const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true },
+    'skip-preflight': { type: 'boolean' }, 'max-repairs': { type: 'string' }, retry: { type: 'string', multiple: true }, escalate: { type: 'string', multiple: true }, hint: { type: 'string', multiple: true } }, args: process.argv.slice(3), strict: true });
   const cmd = process.argv[2];
-  if (cmd === 'plan') cmdPlan(v);
-  else if (['red', 'green', 'final', 'verify', 'snap', 'dod', 'resume'].includes(cmd)) {
+  if (cmd === 'plan') await cmdPlan(v);
+  else if (['red', 'green', 'final', 'verify', 'snap', 'dod', 'resume', 'preflight'].includes(cmd)) {
     const ctx = load(v);
     if (cmd === 'snap') process.stdout.write(`${snapOf(ctx, v.files === undefined ? undefined : v.files.split(',').filter(Boolean), v.on ?? ctx.plan.base)}\n`);
-    else if (cmd === 'resume') resume(ctx, v.ret, v.group);
+    else if (cmd === 'preflight') say((await preflight(ctx)).rows);
+    else if (cmd === 'resume') resume(ctx, v.ret, v.group, resumeFlags(v));
     else if (cmd === 'dod') dod(ctx, v.group ?? fail(2, 'dod needs --group'), v.stage, v.row ?? []);
     else if (cmd === 'final') await final(ctx, false, v.again);
     else if (cmd === 'verify') await verify(ctx, v.ret ?? fail(2, 'verify needs --ret'));
     else if (cmd === 'red') await red(ctx, v.group ?? fail(2, 'red needs --group'));
     else await green(ctx, v.group ?? fail(2, 'green needs --group'), v.retest);
-  } else fail(2, 'usage: tdd.mjs plan|red|green|dod|final|verify|resume|snap (see the header of tdd.mjs)');
+  } else fail(2, 'usage: tdd.mjs plan|preflight|red|green|dod|final|verify|resume|snap (see the header of tdd.mjs)');
 } catch (e) { fail(1, e.message); }

@@ -33,6 +33,7 @@ const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c'
 const put = (p, text) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), text); };
 git('init', '-q');
 put('package.json', '{"type":"module"}\n');
+put('tests/test_base.mjs', "import { test } from 'node:test';\ntest('the base still passes', () => {});\n"); // plan's preflight runs it through the sandbox first
 git('add', '-A'); git('commit', '-qm', 'base');
 
 writeFileSync(join(dir, 'plan.json'), JSON.stringify({
@@ -42,7 +43,9 @@ writeFileSync(join(dir, 'plan.json'), JSON.stringify({
 }));
 const planned = spawnSync(process.execPath, [TDD, 'plan', '--plan', join(dir, 'plan.json'), '--runner', RUNNER], { encoding: 'utf8' });
 assert.equal(planned.status, 0, planned.stderr);
+assert.match(planned.stderr, /PREFLIGHT ok=true verdict=ok: tests\/test_base\.mjs passed in the sandbox/, 'a test that passes at the base proved the sandbox and the command before any agent');
 const ARGS = JSON.parse(planned.stdout.trim().split('\n').pop()), run = ARGS.runDir;
+assert.equal(ARGS.preflight, 'ok');
 
 const TESTS = `import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -87,7 +90,7 @@ const run1 = await launch({ ...ARGS, maxRepairs: 0 }, {
 });
 assert.deepEqual(run1.labels, ['red-driver:a', 'red-navigator:a', 'green-driver:a', 'green-navigator:a']);
 assert.equal(run1.out.groups.a.state, 'paused', JSON.stringify(run1.out.groups.a.reason));
-assert.match(run1.out.groups.a.reason, /repair budget \(0\) is spent[\s\S]*tdd\.mjs resume and a larger args\.maxRepairs/);
+assert.match(run1.out.groups.a.reason, /repair budget \(0\) is spent[\s\S]*tdd\.mjs resume \(it sets the next budget: --max-repairs N\)/);
 assert.match(run1.out.postmortemMd, /Continue without re-reading anything/);
 const retFile = join(dir, 'return.json');
 writeFileSync(retFile, JSON.stringify(run1.out));
@@ -96,14 +99,16 @@ writeFileSync(retFile, JSON.stringify(run1.out));
 const res = tdd('resume', ['--ret', retFile]);
 assert.equal(res.status, 0, res.stderr);
 assert.match(res.stdout, /1 of 1 group\(s\) need work/);
+assert.match(res.stdout, /next run: repair budget 2 \(2 for each of the 1 group\(s\) that still work\)/, 'the lead sees what the next run may spend, before it starts');
 const cont = JSON.parse(readFileSync(join(run, 'continue.json'), 'utf8'));
 assert.equal(cont.base, ARGS.base);
+assert.equal(cont.maxRepairs, 2, 'continuing is decided HERE: the plan\'s own maxRepairs (0, in ARGS) no longer pauses the new run at once');
 assert.equal(cont.groups.a.next, 'green-fix', 'the GREEN gate is fresh and not ok: the group continues with a repair, not from scratch');
 assert.deepEqual(cont.groups.a.matrix.map(r => r.test), ROWS.map(r => r.test), 'the matrix came back from the saved state, written by the dod command of the navigator');
 assert.ok(cont.groups.a.defects.some(d => /tests\/test_double\.mjs is fails-on-head[\s\S]*does not pass with the group's code/.test(d.what)), 'the defect is read off the gate file, next to what the navigator said');
 
 // ---- run 2: args.resume = continue.json: RED, the first driver and the first check are skipped ----
-const run2 = await launch({ ...ARGS, maxRepairs: 2, resume: cont }, { // continuing is a decision about spend: the new run gets a new budget
+const run2 = await launch({ ...ARGS, resume: cont }, { // ARGS still carries the plan's maxRepairs: 0; continue.json decides the budget of this run
   'green-driver:a:rework': prompt => { put('src/double.mjs', GOOD); const out = gate(prompt); return { files: ['src/double.mjs'], reuse: 'none', cleanup: 'none', gateOk: ok(out), gateRuns: 1 }; },
   reviewer: prompt => { gate(prompt); return { findings: [] }; },
 });
@@ -121,4 +126,4 @@ assert.deepEqual([audit.dod.covered, audit.dod.total, audit.dod.gaps, audit.fina
 tdd('resume', ['--ret', retFile]);
 assert.equal(JSON.parse(readFileSync(join(run, 'continue.json'), 'utf8')).groups.a.next, 'done');
 assert.equal(git('rev-list', '--count', 'HEAD'), '1', 'no commit was made on the user\'s branch');
-console.log(`ok - paired-agent-tdd resume end to end${REAL ? ' (REAL sandbox)' : ''}: run 1 paused (budget 0) -> tdd.mjs resume (no agent) -> run 2 spent 3 agents (repair, check, review) and closed the DoD 3/3`);
+console.log(`ok - paired-agent-tdd resume end to end${REAL ? ' (REAL sandbox)' : ''}: run 1 paused (budget 0) -> tdd.mjs resume (no agent, sets the next budget) -> run 2 spent 3 agents (repair, check, review) and closed the DoD 3/3`);

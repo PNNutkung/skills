@@ -3,7 +3,7 @@
 // --write regenerates the diagram and the tiers table in SKILL.md and the NODE/LIM/plan table plus checkMatrix in workflow.js (a Workflow script cannot import);
 // --check fails when any of them has drifted or a guard below is broken. Edit NODES, run --write.
 import assert from 'node:assert';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkMatrix } from './gates.mjs';
@@ -148,14 +148,17 @@ function check() {
   l.forEach((layer, i) => console.log(`  layer ${i + 1}: ${layer.join(', ')}`));
 }
 
-const [cmd, ...a] = process.argv.slice(2);
-if (cmd === '--check') check();
-else if (cmd === '--write') { TARGETS.forEach(t => writeFileSync(join(HERE, t.file), read(t).replace(current(t), () => block(t)))); console.log('SKILL.md diagram and tiers, workflow.js node table and checkMatrix updated'); }
-else if (cmd === '--mermaid') console.log(mermaid());
-else if (cmd === '--plan' && a.length >= 3 && a.length <= 5) {
-  const [g, integ, fg, rounds = LIM.rounds, maxRepairs = LIM.repairs * g] = a.map(Number), { counts, total } = plan(g, integ, fg);
-  console.log(`plan: ${g} group(s), integration ${integ}, ${fg} group(s) with findings`);
-  Object.entries(counts).filter(([, n]) => n).forEach(([id, n]) => console.log(`  ${id.padEnd(19)} ${n}`));
-  console.log(`  total ${total} agents when every first pass is right (+ the graph-planner if used); at most ${worst(g, rounds, maxRepairs)} build agents (${maxRepairs} repair passes for the run, ${rounds} rounds per stage; ${worst(g, rounds, 99)} without that budget); a group still failing is paused and continues with \`tdd.mjs resume\`; the reviewer, fixers and couriers come on top`);
-  console.log(`  the old design is estimated at ${oldTotal(g, 4)} for the same change (NOT measured)`);
-} else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings> [rounds] [maxRepairs]');
+// importable (tdd.mjs reads LIM and worst): the command line runs only when this file is the program
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  const [cmd, ...a] = process.argv.slice(2);
+  if (cmd === '--check') check();
+  else if (cmd === '--write') { TARGETS.forEach(t => writeFileSync(join(HERE, t.file), read(t).replace(current(t), () => block(t)))); console.log('SKILL.md diagram and tiers, workflow.js node table and checkMatrix updated'); }
+  else if (cmd === '--mermaid') console.log(mermaid());
+  else if (cmd === '--plan' && a.length >= 3 && a.length <= 5) {
+    const [g, integ, fg, rounds = LIM.rounds, maxRepairs = LIM.repairs * g] = a.map(Number), { counts, total } = plan(g, integ, fg);
+    console.log(`plan: ${g} group(s), integration ${integ}, ${fg} group(s) with findings`);
+    Object.entries(counts).filter(([, n]) => n).forEach(([id, n]) => console.log(`  ${id.padEnd(19)} ${n}`));
+    console.log(`  total ${total} agents when every first pass is right (+ the graph-planner if used); at most ${worst(g, rounds, maxRepairs)} build agents (${maxRepairs} repair passes for the run, ${rounds} rounds per stage; ${worst(g, rounds, 99)} without that budget); a group still failing is paused and continues with \`tdd.mjs resume\`; the reviewer, fixers and couriers come on top`);
+    console.log(`  the old design is estimated at ${oldTotal(g, 4)} for the same change (NOT measured)`);
+  } else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings> [rounds] [maxRepairs]');
+}

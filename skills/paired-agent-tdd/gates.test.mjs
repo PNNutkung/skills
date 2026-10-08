@@ -99,6 +99,7 @@ test('classifyRed: assertion failure, load error, no failure, no tests, no sandb
   assert.equal(classifyRed({ exit: 5, tail: 'no tests ran in 0.01s' }), 'no-tests');
   assert.equal(classifyRed({ exit: 5, tail: 'collected 0 items' }), 'no-tests');
   assert.equal(classifyRed({ exit: 86, tail: '' }), 'unverifiable');
+  assert.equal(classifyRed({ exit: 127, tail: 'sh: pytest: command not found' }), 'unverifiable', 'a command that cannot start says nothing about the test: it is not a RED');
   assert.equal(classifyRed({ exit: 124, tail: '' }), 'timeout');
   assert.equal(classifyRed({ exit: 1 }), 'fails');
 });
@@ -186,6 +187,11 @@ test('closure: a late row (a strengthening pass after GREEN) never credits a pai
   const bad = closure(p, rows, red, green, { a: false, b: true });
   assert.deepEqual(bad.gaps.sort(), ['AC1/edge: unproven', 'AC1/fail: unproven', 'AC1/happy: unproven']);
   assert.deepEqual(closure(p, rows, red, green, { a: true, b: true }).gaps, []);
+});
+
+test('validatePlan: smoke lists 1 to 3 relative test files', () => {
+  for (const v of [['tests/test_ok.py'], ['a', 'b', 'c']]) assert.deepEqual(bad(p => { p.smoke = v; }), [], `${v.length} file(s) is valid: both ends of the range count`);
+  for (const v of [[], ['a', 'b', 'c', 'd'], ['/abs.py'], ['../x.py'], 'tests/x.py', [3]]) assert.match(bad(p => { p.smoke = v; }).join(), /smoke must list 1 to 3 relative test files/, JSON.stringify(v));
 });
 
 test('validatePlan: rounds is an integer from 1 to 4', () => {

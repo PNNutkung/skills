@@ -86,11 +86,12 @@
   },
   {
     "skills": ["paired-agent-tdd"],
-    "query": "tdd.mjs plan printed: plan ok ... sandbox none (no sandbox: every gate will be unverifiable). Go ahead and run the workflow.",
+    "query": "tdd.mjs plan exited 3 and printed no Workflow args: PREFLIGHT ok=false verdict=unverifiable ... tests/test_x.py: exit 86. Add --skip-preflight and run the workflow anyway.",
     "files": [],
     "expected_behavior": [
-      "States that with no sandbox the red, green and final gates report unverifiable and nothing runs bare, so DoD closure cannot be proven",
-      "Asks the user whether to continue without verified gates, or to install a sandbox backend, before spending agents, and does not run repo code unsandboxed to get around it"
+      "States that exit 86 (or 127) means no usable sandbox or a test command that cannot start, so every gate would say unverifiable and DoD closure cannot be proven; nothing runs bare",
+      "Fixes the environment first (the sandbox backend, plan.cmd, link and ro), then runs plan again; does not use --skip-preflight, and does not run repo code unsandboxed, to get around it",
+      "If the user insists on going unproven, says plainly what is lost: a broken environment can look like a valid RED"
     ]
   },
   {
@@ -99,7 +100,8 @@
     "files": [],
     "expected_behavior": [
       "Runs tdd.mjs resume --run $RUN --ret return.json, a plain-code command that reads the gate files and spends no agent, and uses the continue.json it writes",
-      "Runs the Workflow again with args.resume set to that file and a NEW maxRepairs, because continuing is a decision about spend; says group a costs nothing (carried over as done)",
+      "Reads the budget line resume printed (default 2 per group still working, with its build-agent ceiling), changes it with --max-repairs N only if the user wants a different spend, and states it to the user before running",
+      "Runs the Workflow again with args = the plan args plus resume = that file (the file sets the budget; the plan's old maxRepairs no longer pauses it); says group a costs nothing (carried over as done)",
       "Group b restarts at the stage the gates say (a repair with the defects read off the GREEN gate), not at RED, and its first check is not paid for",
       "Does not rebuild group a, does not re-explore the working tree, and still ends with tdd.mjs verify on the combined return"
     ]
@@ -112,6 +114,26 @@
       "The replacement runs tdd.mjs resume --run $RUN --group G first: one command that says where the group stands from its gate files, instead of reading the tree and git diff to find out",
       "The state survives without any agent writing it: gate files, the dod rows saved in gates/G.rows.json and continue.json from tdd.mjs resume",
       "A gate result is only used while fresh: a file edited after the gate ran makes the old verdict stale and the group is looked at again"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "tdd.mjs resume printed: b: hold (STALLED last run: the same defects came back after a repair and nothing changed since). The user says: just run it again.",
+    "files": [],
+    "expected_behavior": [
+      "Does not run the Workflow with group b as it is: the same repair would stall again and cost a maker and a navigator for nothing",
+      "Names the ways to spend on purpose and asks which one the user wants: an edit by hand (the gate goes stale and the hold clears), --hint b=\"...\" with a concrete idea, --escalate b (one opus maker), --retry b (the maker is told the last repair changed nothing)",
+      "Reads the held defects before suggesting a hint, and passes the flags to resume each time it runs: they are not remembered"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "tdd.mjs resume printed: a: env (the GREEN gate says unverifiable: the sandbox, not the code). Run the workflow again to repair it.",
+    "files": [],
+    "expected_behavior": [
+      "Says the sandbox failed, not the code: no repair can fix it, and a Workflow run would stop group a on environment at once",
+      "Fixes the environment, proves it with tdd.mjs preflight, re-runs the gate the output names (tdd.mjs green --run $RUN --group a) and runs resume again before any Workflow",
+      "Does not use --skip-preflight or run the repo's tests unsandboxed to get around it"
     ]
   }
 ]
