@@ -19,7 +19,7 @@ Read only your assigned points: `Grep -n -A1 -E '^(6|7|24)\. ' <this file>` retu
 
 ## Intent
 
-1. **Scope and intent alignment** — scope creep, stray files, undocumented config changes; acceptance criteria only partially implemented; logic that satisfies the text but breaks an implied business invariant.
+1. **Scope and intent alignment** — scope creep, stray files, undocumented config changes; acceptance criteria only partially implemented; logic that satisfies the text but breaks an implied business invariant. For an agent-authored change request, no reproducible proof of correctness (the `ai-code-delivery` template): no named feature flag controlling the code; tests that assert nothing real (no-ops); a UI change without a screenshot or recording, a backend or infra change without a runtime log or CLI trace; a summary that is prose instead of concise bullets. Missing proof is a finding, not a style note.
    Trigger: always-on (every diff).
 
 ## Tests
@@ -90,7 +90,7 @@ Read only your assigned points: `Grep -n -A1 -E '^(6|7|24)\. ' <this file>` retu
    Trigger: always-on (every diff).
 25. **Failure cascade** (directive 25) — a non-critical dependency failure taking down the primary flow with no fallback; retries unbounded or lacking exponential backoff with full jitter; remote calls without explicit aggressive connect and read timeouts or a circuit breaker.
    Trigger: always-on (every diff).
-26. **Feature flags** (directive 26) — an instant kill-switch without a hotfix deploy; **both** ON and OFF paths tested, or toggling off in production hits bit-rot; the flag evaluated once per request, not inside a hot loop; rollback after an hour must not orphan or corrupt data; the flag marked temporary with a cleanup owner.
+26. **Feature flags** (directive 26) — new user-visible or trunk-integrating behavior shipped with no flag at all, or integration points left outside the flag so incomplete logic can leak into live traffic (gate the blast radius before the feature code, not after); an instant kill-switch without a hotfix deploy (turning the flag off, never an emergency code revert), safe at a 1-5% canary and at every ramp step; **both** ON and OFF paths tested, or toggling off in production hits bit-rot; the flag evaluated once per request, not inside a hot loop; rollback after an hour must not orphan or corrupt data; the flag marked temporary with a cleanup owner.
    Trigger: fires when an added line matches: FEATURE_FLAGS, is_feature_enabled, app.config, os.getenv, ENABLE_, flag.
 
 ## Operability
