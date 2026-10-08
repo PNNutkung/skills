@@ -17,9 +17,13 @@ date | run | graph | agents by node | tokens | wall-clock | note
 - Agents for a 3-group change with one group getting findings: 14 (`graph.mjs --plan 3 0 1`); the old graph for the same change about 27 (1 auditor + 6 per group + integration + 3 dimension reviewers + ~4 fixers; its own counts were never logged). Agent hops on one group's critical path: 6 (7 with an integration test) against 8 (9 with the graph-planner).
 - Wall-clock and cost units follow from those counts and the ~40k fixed cost, but **no real run of the new design has been timed yet**.
 
+## On-job runs
+
+One line per real run, from `record.mjs` (`node record.mjs --run RUN --ret return.json --transcript DIR --note JOB --append runs.md`): what happened on a real change, no baseline. A single run is an observation, not a rate: read several before moving a node's model, effort or agent type.
+
 ## Not measured yet
 
-- Tokens, cost units, wall-clock and findings of a real model-driven run of the new design, on a real change, against the old design on the same change (`node ../zero-trust-review/measure.mjs <transcriptDir>`).
+- Tokens, cost units, wall-clock and findings of a real model-driven run of the new design on a real change: the first line under **On-job runs** will be the first such number.
 - How many survivors are equivalent mutants (a survivor the tests cannot and need not kill), and the mutation time per group on a real suite (default budget 60 s, 12 mutants).
 - Whether folding the refactor pair into the green driver loses premature-abstraction catches the old refactor navigator made, and whether the single reviewer still catches what two navigators miss (the 2026-10-06 run).
 - Linux `bwrap` and docker backends, a project whose tests need a database (the gates then say `unverifiable`), and a non-JS/Python language.

@@ -18,7 +18,7 @@ Cost levers (figures and what is still an estimate: [`runs.md`](./runs.md)): gro
 - [ ] 1 tdd.mjs plan ok; agent count shown (confirm if > 25)
 - [ ] 2 Workflow run; compact return read, saved as return.json
 - [ ] 3 tdd.mjs verify: DoD closure, unfixed, overridden, notDone, proofcheck
-- [ ] 4 Full suite and lint on changed files, once; report
+- [ ] 4 Full suite and lint on changed files, once; record the run; report
 ```
 
 ## When to use
@@ -62,6 +62,8 @@ node $SK/tdd.mjs verify --run $RUN --ret return.json
 ```
 
 It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** any DoD gap, `final: false`, an `overridden` entry (a navigator said PASS against its own gate), an `unfixed` finding or a `notDone` group (a failed integration test included) remains; say so with the numbers. Then run the project's full suite once (background) and lint on the changed files only. Report: DoD matrix, blocked groups with their reason, findings by proof status, assumed DoD items.
+
+**Record every real run** (one line, no baseline): `node $SK/record.mjs --run $RUN --ret return.json --transcript <the transcript dir the Workflow result prints> --note "<job>" --append $SK/runs.md`. It reads the cost units, calls and wall-clock from the transcript and the DoD closure, reworks, mutants, coverage and findings from `$RUN`; run `verify` first.
 
 ## The graph
 
@@ -148,7 +150,7 @@ Aligned to the global subagent routing: T0 code for anything deterministic, T2 s
 
 ## Iterate from measurements
 
-After a run append the line from `node ../zero-trust-review/measure.mjs <transcriptDir>` to [`runs.md`](./runs.md); move one node's model, effort or agent type only from those numbers. The critical path is the wall-clock floor of one group: shorten it by removing an edge. Evals: [`evals.json`](./evals.json).
+Each real run is recorded by `record.mjs` in [`runs.md`](./runs.md) (per-node detail: `node ../zero-trust-review/measure.mjs <transcriptDir>`); move one node's model, effort or agent type only from those numbers. The critical path is the wall-clock floor of one group: shorten it by removing an edge. Evals: [`evals.json`](./evals.json).
 
 ## Terminology
 
