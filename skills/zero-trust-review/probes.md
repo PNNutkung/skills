@@ -26,6 +26,21 @@ node $SK/testprobe.mjs --repo . --base <base> --head <head> --scratch "$SCRATCH/
 
 `summary` goes into `facts`. The sandbox has no network, so a suite whose `conftest` needs a database or service cannot run: add the project's flag that skips it (for example pytest `--noconftest` for plain unit tests) or accept `unverifiable`; never open the network. An editable install reads absolute paths from `.pth` files: `testprobe` grants those inside the repo read-only on its own. Per changed test file: `exercises-change` (passes on HEAD, fails with the source restored to BASE), `no-signal` (passes on both: point 2/3 finding), `fails-on-head` (blocker candidate), `unverifiable` (no sandbox or timeout: say so, never "tests pass"); `flake.nondeterministic` is a point 3 finding.
 
+## Mutants on the changed lines (the lead, once, after the test probe)
+
+Do the changed tests pin the changed code? `mutate.mjs` answers with plain code, no agent: it mutates only the lines the change touched (python, javascript/typescript and c-like sources), runs the changed test files against each mutant inside the sandbox, and reports which mutants no test noticed.
+
+```bash
+node $SK/mutate.mjs --repo . --base <base> --head <head> --scratch "$SCRATCH/mut" \
+  --cmd 'venv/bin/python -m pytest -q --noconftest -p no:cacheprovider {file}' --link venv --ro "$(dirname "$(dirname "$PY")")" --kill-exits 1 [--max 30] [--budget 600]
+```
+
+- Same flags as `testprobe.mjs`, plus `--max` (mutants, sampled evenly over files; default 30), `--budget` (seconds; the rest are `skipped`) and `--kill-exits` (only these non-zero exits count as a kill: pytest `1` = a test failed, `2` = the mutant did not even import = `inconclusive`).
+- Operators (one line each, strings and comments untouched): flip `==` `!=` `<` `<=` `>` `>=`, `and`/`or` and `&&`/`||`, drop `not` or `!`, `True`/`False`, `is None`, `in`/`not in`, `+ - * /`, a constant plus one, a different `return`, a dropped statement (python). Mutants live in scratch copies; the repo is only read. Python bytecode is never written, so a same-size edit cannot run stale code.
+- Only test files that pass on the unmutated HEAD are used. Per mutant: `killed`, `survived`, `timeout` (a hang counts as caught), `inconclusive`, `skipped`, or `unverifiable` (no sandbox: say so, never "tests are fine").
+- A **survivor is a test gap with a proof**: each mutant run prints `ZT-MUTANT <id> <file>:<line> <op> exit=<n>` into the sandbox ledger, so cite it as `{mode: executed, ref: <run>, exit: 0, quote: "ZT-MUTANT <id> <file>:<line> <op> exit=0"}`; `proofcheck` rejects a wrong run, exit or quote. The `summary` (three survivors, `before -> after`, run id) goes into `facts`.
+- Limits, stated plainly: single-line text mutants, not an AST; an *equivalent* mutant (it cannot change behavior) or a line behind a flag the tests never enable also survives, so the reviewer judges each survivor before filing it; `--max` samples, it does not cover every line.
+
 ## Proofs: no guessing
 
 Every verdict and finding carries `proof {mode, ref, quote, command?, exit?}`; `quote` is copied verbatim, <= 300 chars.

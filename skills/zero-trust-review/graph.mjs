@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 export const LIM = { pool: 6, gaps: 3, retry: 1 };
 export const NODES = [
   { id: 'triage', tier: 'T0', role: 'Classify the diff: groups, fired/skipped points, mode (triage.py)', needs: [], model: 'code', deliverable: 'triage JSON' },
-  { id: 'probes', tier: 'T0', role: 'Lead runs the changed tests for real inside the sandbox: pass-after, fail-before, flake (testprobe.mjs)', needs: ['triage'], model: 'code', deliverable: 'Probe facts: one verdict per test file' },
+  { id: 'probes', tier: 'T0', role: 'Lead runs the changed tests for real inside the sandbox: pass-after, fail-before, flake (testprobe.mjs), then mutants of the changed lines (mutate.mjs)', needs: ['triage'], model: 'code', deliverable: 'Probe facts: one verdict per test file' },
   { id: 'reviewer', tier: 'T2', role: 'Driver: review one disjoint file group on its assigned points', needs: ['triage', 'probes'], model: 'sonnet', effort: 'medium', ponytail: 'full', fanout: 'group', deliverable: 'Findings, one-line N/As, questions' },
   { id: 'test-auditor', tier: 'T2', role: 'Stale or contradicted tests, SCOPED runs only', needs: ['triage', 'probes'], model: 'sonnet', effort: 'medium', ponytail: 'lite', gated: 'deep only', deliverable: 'New failures + commands run' },
   { id: 'integration-probe', tier: 'T2', role: 'One real-dependency probe in a throwaway container', needs: ['triage', 'probes'], model: 'sonnet', effort: 'medium', ponytail: 'lite', gated: 'deep only, and only when 13, 18 or 21 fired', deliverable: 'Probe result + measurements' },

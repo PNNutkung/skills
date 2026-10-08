@@ -134,7 +134,7 @@ function reviewPrompt(u) {
     A.decisions ? 'AUTHOR DECISIONS TO CHALLENGE (not facts):\n' + clip(A.decisions, 1500) : '',
     A.prior ? 'EARLIER REVIEW, CLAIMED FIXED (verify each fix is real and complete; re-report only if still broken):\n' + clip(A.prior, 1000) : '',
     u.focus ? 'FOCUS: ' + u.focus : '',
-    /^(tests|all)/.test(u.id) ? 'Mutation probing: at most 8 single-line mutants of the changed source in a scratch copy, changed tests only.' : 'No mutation probing.',
+    /^(tests|all)/.test(u.id) ? 'Mutation: the lead ran mutate.mjs and its survivors are in FACTS; never hand-roll mutants. A survivor is a test gap, proof {mode:executed, ref:<run>, exit:0, quote:"ZT-MUTANT <id> <file>:<line> <op> exit=0"}. No `mutation:` line in FACTS = not run: say so.' : 'No mutation probing.',
     rules(MODE.cap, u.id), SEVERITY,
     checkpoint(u.id, MODE.cap, 'checked point', '{"kind":"finding",...fields} | {"kind":"na","point":N,"reason":".."} | {"kind":"q","point":N,"question":".."}', true),
   ].filter(Boolean).join('\n\n')

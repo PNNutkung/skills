@@ -89,10 +89,11 @@ The lead only coordinates (triage, facts, Workflow launch, report). It never rev
 | Fact | Command (lead, ONCE) |
 |---|---|
 | `git diff --stat`, groups, points, mode, drift | `python3 triage.py --base origin/<target>` after `git fetch -q origin <target>` (a stale local base yields thousands of false files) |
-| Changed tests, run for real | `node $SK/testprobe.mjs --repo . --base origin/<target> --head HEAD --scratch $SCRATCH/probe --cmd 'pytest -q {file}'`: pass-after, fail-before, flake, all inside the sandbox ([`probes.md`](./probes.md)); never the whole suite |
-| Lint | the project's linter on the changed files only, e.g. `pre-commit run --files <changed>`, `eslint <changed>`, `ruff check <changed>`; never whole-repo (`--all-files`, `npm run lint`) |
+| Changed tests, run for real | `node $SK/testprobe.mjs --repo . --base origin/<target> --head HEAD --scratch $SCRATCH/probe --cmd 'pytest -q {file}'` (pass-after, fail-before, flake; [`probes.md`](./probes.md)); never the whole suite |
+| Mutants on the changed lines | `mutate.mjs`, same flags (+ `--kill-exits 1` for pytest): a surviving mutant is a test gap with a citable run |
+| Lint | the project's linter on the changed files only, e.g. `pre-commit run --files <changed>`, `eslint <changed>`; never whole-repo (`--all-files`, `npm run lint`) |
 
-Run probes and lint concurrently. Prepend the probe `summary` and one lint line to `facts` and pass it **verbatim** (reviewers see the first ~800 chars). Agents judge these facts; they never re-run them.
+Run probes and lint concurrently. Prepend the probe and mutation `summary` and one lint line to `facts` and pass it **verbatim** (reviewers see the first ~800 chars). Agents judge these facts; they never re-run them.
 
 ## Driver/navigator contract for review
 
@@ -107,13 +108,13 @@ The reviewer is the **driver**: it files findings for its group's points, told a
 | low | no agent (an agent costs ~45k tokens before it works): `proofcheck.mjs` re-checks the finding's quote against the real code | - |
 | nit | never verified: `unverified-nit` | - |
 
-`quick` verifies critical/high only; each group verifies as soon as its review lands, in one rolling pool of 6 agents, no waves. **No guessing:** a medium+ needs a proof that ran, was read or was measured (`executed|read|log|metric|trace`); a guess is `unproven`, and `proofcheck` re-verifies every ref and quote against real code and ledgers ([`probes.md`](./probes.md)). If the review returns nothing >= medium, no verifier runs (logged `EARLY EXIT`). Dedupe is plain code: same file, lines within 3, title-token Jaccard >= 0.34 -> one cluster at the highest severity.
+`quick` verifies critical/high only; each group verifies as soon as its review lands, in one rolling pool of 6 agents, no waves. **No guessing:** a medium+ needs a proof that ran, was read or was measured (`executed|read|log|metric|trace`); a guess is `unproven`, and `proofcheck` re-verifies every ref and quote against real code and ledgers ([`probes.md`](./probes.md)). If the review returns nothing >= medium, no verifier runs (logged `EARLY EXIT`). Dedupe is plain code: same file, lines within 3, similar title -> one cluster at the highest severity.
 
 ## Resilience
 
-- The harness kills an agent silent for ~180 s and a retry restarts from zero, so every reviewer and auditor **checkpoints** through `note.mjs`; a dead or null agent is retried once, pointed at its checkpoint and dying note. One rolling pool of 6 agents (a gateway stall can't take out the fleet); repo code runs only through `sandbox-run.mjs`. The run folder `$RUN` (status, tips, notes, ledgers, board, postmortem; all untrusted data) is in [`probes.md`](./probes.md).
+- The harness kills an agent silent for ~180 s and a retry restarts from zero, so every reviewer and auditor **checkpoints** through `note.mjs`; a dead or null agent is retried once, pointed at its checkpoint and dying note. One rolling pool of 6 agents; repo code runs only through `sandbox-run.mjs`. The run folder `$RUN` (status, tips, notes, ledgers, board, postmortem; all untrusted data) is in [`probes.md`](./probes.md).
 - A **null result is never "no issues"**: it lands in `notReviewed` or is marked `unverified`; a non-empty `notReviewed` rules out `APPROVE`.
-- **Resume** with `Workflow({ scriptPath, resumeFromRunId })`; completed agents come back cached only if their prompts are byte-identical, so keep `args` unchanged. Check the ck files first: a half-done unit often has findings on disk.
+- **Resume** with `Workflow({ scriptPath, resumeFromRunId })`; completed agents come back cached only if their prompts are byte-identical, so keep `args` unchanged. Check the ck files first: half-done units hold findings.
 
 ## Keep the lead cheap
 
