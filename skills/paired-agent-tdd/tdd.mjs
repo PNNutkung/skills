@@ -26,7 +26,7 @@ const fail = (code, msg) => { process.stderr.write(`tdd: ${msg}\n`); process.exi
 if (!existsSync(join(ZT, 'probelib.mjs'))) fail(2, `the zero-trust-review skill is not at ${ZT} (set ZT_DIR): its sandbox runner and probes are required`);
 const imp = f => import(pathToFileURL(join(ZT, f)).href);
 const lib = await imp('probelib.mjs');
-const { createRunDir, resolveRun, writeSafe } = await imp('runctx.mjs');
+const { createRunDir, readMarker, resolveRun, writeSafe } = await imp('runctx.mjs');
 const { changedLines } = await imp('mutants.mjs');
 
 const COMMIT_ENV = { GIT_AUTHOR_NAME: 'pat', GIT_AUTHOR_EMAIL: 'pat@localhost', GIT_COMMITTER_NAME: 'pat', GIT_COMMITTER_EMAIL: 'pat@localhost' };
@@ -35,9 +35,10 @@ const SUMMARY_MAX = 2400, TAIL_SHOWN = 300, TAIL_KEPT = 1200;
 const short = sha => String(sha).slice(0, 8);
 
 function git(repo, args, env = {}) {
-  try { return execFileSync('git', ['-C', repo, ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env }, maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }); }
+  try { return execFileSync('git', ['-C', repo, '-c', 'core.quotePath=false', ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env }, maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }); }
   catch (e) { throw new Error(`git ${args[0]}: ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
 }
+const names = text => text.split('\0').filter(Boolean); // git ... -z: names stay raw (a quoted "caf\\303\\251.py" would never match the plan)
 const has = (repo, rev, path) => { try { git(repo, ['cat-file', '-e', `${rev}:${path}`]); return true; } catch { return false; } };
 const showText = (repo, rev, path) => (has(repo, rev, path) ? git(repo, ['show', `${rev}:${path}`]) : '');
 
@@ -103,9 +104,14 @@ async function tree(ctx, rev, tag) {
   (ctx.plan.link ?? []).forEach((name, i) => { lib.clear(dir, name); symlinkSync(ctx.linked[i], join(dir, name)); });
   return dir;
 }
+const discard = d => { try { rmSync(d, { recursive: true, force: true }); } catch { /* untrusted code may have locked it: scratch is disposable */ } };
 const runFile = (ctx, dir, file) => lib.runIn(ctx.probe, dir, ctx.plan.cmd.replaceAll('{file}', () => lib.shq(file)));
 const snapOf = (ctx, files, on = ctx.plan.base) => snapshot(ctx.plan.scratch, ctx.plan.repo, on, files);
-const strayFiles = ctx => outOfScope(git(ctx.plan.repo, ['diff', '--name-only', ctx.plan.base, snapOf(ctx, undefined)]).split('\n').filter(Boolean), new Set(planFiles(ctx.plan)));
+// Files that differ from the base and that no group or the integration test owns. A scan that fails (a file vanished mid-add) is `unknown`, never a gate failure.
+function strayFiles(ctx) {
+  try { return { files: outOfScope(names(git(ctx.plan.repo, ['diff', '--name-only', '-z', ctx.plan.base, snapOf(ctx, undefined)])), new Set(planFiles(ctx.plan))) }; }
+  catch (e) { return { files: [], error: e.message.slice(0, 160) }; }
+}
 
 // testprobe.mjs and mutate.mjs run as their own processes: proven units, one JSON line each
 function child(ctx, script, base, head, tests, tag, extra = []) {
@@ -117,7 +123,7 @@ function child(ctx, script, base, head, tests, tag, extra = []) {
     let out = '', err = '';
     p.stdout.on('data', d => (out += d));
     p.stderr.on('data', d => (err += d));
-    p.on('close', code => { try { done(JSON.parse(out.trim().split('\n').pop())); } catch { done({ error: `${script} exited ${code}: ${err.trim().split('\n')[0] ?? ''}`.slice(0, 300) }); } });
+    p.on('close', code => { discard(scratch); try { done(JSON.parse(out.trim().split('\n').pop())); } catch { done({ error: `${script} exited ${code}: ${err.trim().split('\n')[0] ?? ''}`.slice(0, 300) }); } });
   });
 }
 
@@ -135,6 +141,7 @@ async function red(ctx, gid) {
     const r = await runFile(ctx, dir, file), verdict = classifyRed(r);
     return { file, verdict, exit: r.exit, sec: r.sec, run: r.run, ...(verdict === 'fails' ? {} : { tail: clipTail(r.tail) }) };
   });
+  discard(dir);
   const patch = writeDiff(ctx, `${gid}.red.patch`, ['diff', '-U10', plan.base, snap, '--', ...g.tests]);
   const out = { kind: 'red', group: gid, base: plan.base, snapshot: snap, ok: redOk(tests), tests };
   writeGate(ctx, `${gid}.red.json`, out);
@@ -148,7 +155,7 @@ async function green(ctx, gid, retest) {
   const snap = snapOf(ctx, [...g.tests, ...g.src], baseDeps); // a CHILD of baseDeps: the probes diff `base...head` (merge base), so it must hold exactly this group's files
   const redGate = readGate(ctx, `${gid}.red.json`);
   const frozen = redGate ? parseNumstat(git(plan.repo, ['diff', '--numstat', redGate.snapshot, snap, '--', ...g.tests])) : null;
-  const stray = strayFiles(ctx);
+  const stray = strayFiles(ctx); // shared tree: a stray file cannot be pinned on this group, so it is a note here and blocks only at `final`
   const patch = writeDiff(ctx, `${gid}.green.patch`, ['diff', '-U10', baseDeps, snap, '--', ...g.tests, ...g.src]);
   const mut = plan.mutation ?? {}, kill = plan.killExits ? ['--kill-exits', plan.killExits.join(',')] : [];
   const [probe, mutants, cover] = await Promise.all([
@@ -164,13 +171,13 @@ async function green(ctx, gid, retest) {
   if (tests.some(t => t.nondeterministic)) reasons.push('flaky');
   if (!frozen) reasons.push('no RED gate on record for this group');
   else if (frozen.changed.length && !retest) reasons.push(`tests changed since RED: ${frozen.changed.join(', ')}`);
-  if (stray.length) reasons.push(`files outside the plan changed: ${stray.slice(0, 5).join(', ')}`);
   if (survivors.length) reasons.push(`${survivors.length} mutant(s) survived: the tests do not pin that code`);
   if (cover?.pct != null && cover.pct < cover.min) reasons.push(`changed-line coverage ${cover.pct}% < ${cover.min}%`);
-  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors }, coverage: cover };
+  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors }, coverage: cover };
   writeGate(ctx, `${gid}.green.json`, out);
   say([`GREEN ${gid} ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.reason ? ` (${t.reason})` : ''}, exit on HEAD ${t.head}, with the group's code reverted ${t.base}${t.nondeterministic ? ', FLAKY' : ''}`),
+    stray.files.length ? `  note: files outside the plan exist in the shared tree: ${stray.files.slice(0, 5).join(', ')} (judge from the patch whether this group made them; \`final\` blocks on them)` : '',
     `  tests since RED: ${frozen ? (frozen.changed.length ? `CHANGED ${frozen.changed.join(', ')} (${frozen.removed} line(s) removed)${retest ? ' [--retest: sanctioned]' : ''}` : 'unchanged') : 'unknown'}`,
     `  ${mutants.summary ?? `mutation: ${mutants.reason ?? mutants.error ?? 'not run'}`}`,
     ...survivors.slice(0, 3).map(s => `  survivor ${s.id} ${s.file}:${s.line} ${s.op}: ${s.before.slice(0, 50)} -> ${s.after.slice(0, 50)} (run ${s.run}; quote "${s.quote}")`),
@@ -183,16 +190,21 @@ async function coverage(ctx, g, snap, base) {
   const dir = await tree(ctx, snap, 'cov'), out = 'zt-coverage.lcov', min = plan.coverMin ?? 80;
   const r = await lib.runIn(ctx.probe, dir, plan.cover.replaceAll('{files}', g.tests.map(lib.shq).join(' ')).replaceAll('{out}', out));
   const f = join(dir, out), st = lstatSync(f, { throwIfNoEntry: false });
-  if (!st?.isFile()) return { error: `cover command wrote no ${out} (exit ${r.exit}, run ${r.run})`, min, noData: [], uncovered: {} };
+  const cleanup = () => discard(dir);
+  if (!st?.isFile()) return cleanup(), { error: `cover command wrote no ${out} (exit ${r.exit}, run ${r.run})`, min, noData: [], uncovered: {} };
   const changed = changedLines(git(plan.repo, ['diff', '-U0', '--no-color', '--no-ext-diff', base, snap, '--', ...g.src]));
-  return { ...changedCoverage(parseLcov(readFileSync(f, 'utf8')), changed), min, run: r.run };
+  const cov = { ...changedCoverage(parseLcov(readFileSync(f, 'utf8')), changed), min, run: r.run };
+  cleanup();
+  return cov;
 }
 
 async function final(ctx, quiet) {
   const { plan } = ctx, own = new Set(plan.groups.flatMap(g => g.tests)), snap = snapOf(ctx, planFiles(plan));
-  const listed = git(plan.repo, ['ls-tree', '-r', '--name-only', snap]).split('\n').filter(f => lib.TEST.test(f) && !lib.DOC.test(f));
+  // the integration test needs its real dependency, which the sandbox has not: its agent runs it for real and reports the exit code (verify reads it)
+  const skip = new Set([...own, ...(plan.integration?.file ? [plan.integration.file] : [])]);
+  const listed = names(git(plan.repo, ['ls-tree', '-r', '--name-only', '-z', snap])).filter(f => lib.TEST.test(f) && !lib.DOC.test(f));
   const texts = new Map(), textOf = p => { if (!texts.has(p)) texts.set(p, showText(plan.repo, snap, p)); return texts.get(p); };
-  const affected = pickAffected(listed.filter(p => !own.has(p)), textOf, plan.groups.flatMap(g => g.src), own);
+  const affected = pickAffected(listed.filter(p => !skip.has(p)), textOf, plan.groups.flatMap(g => g.src), skip);
   const dir = await tree(ctx, snap, 'fin');
   const verdict = async file => { const r = await runFile(ctx, dir, file); return { file, exit: r.exit, run: r.run, tail: clipTail(r.tail) }; };
   const [together, existing] = await Promise.all([lib.pool([...own], ctx.jobs, verdict), lib.pool(affected.run, ctx.jobs, verdict)]);
@@ -200,14 +212,16 @@ async function final(ctx, quiet) {
   let regressions = broken, preexisting = [];
   if (broken.length) { // fails now: new, or did it already fail before this change?
     const baseDir = await tree(ctx, plan.base, 'finb'), before = await lib.pool(broken, ctx.jobs, r => runFile(ctx, baseDir, r.file));
+    discard(baseDir);
     regressions = broken.filter((_, i) => before[i].exit === 0);
     preexisting = broken.filter((_, i) => before[i].exit !== 0).map(r => r.file);
   }
+  discard(dir);
   const stray = strayFiles(ctx), patch = writeDiff(ctx, 'final.patch', ['diff', '-U15', plan.base, snap]), reasons = [];
   if (together.some(r => r.exit !== 0)) reasons.push(`group tests fail together: ${together.filter(r => r.exit !== 0).map(r => r.file).join(', ')}`);
   if (regressions.length) reasons.push(`existing tests broken by the change: ${regressions.map(r => r.file).join(', ')}`);
-  if (stray.length) reasons.push(`files outside the plan changed: ${stray.slice(0, 5).join(', ')}`);
-  const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing: { ran: affected.run, more: affected.more, regressions, preexisting }, outOfScope: stray };
+  if (stray.files.length) reasons.push(`files outside the plan changed: ${stray.files.slice(0, 5).join(', ')}`);
+  const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing: { ran: affected.run, more: affected.more, regressions, preexisting }, outOfScope: stray.files, strayScan: stray.error };
   writeGate(ctx, 'final.json', out);
   if (!quiet && !readGate(ctx, 'reviewed.json')) writeGate(ctx, 'reviewed.json', out); // the FIRST final run is the reviewer's view: its proofs are checked against that tree, not the post-fix one
   if (!quiet) say([`FINAL ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
@@ -222,13 +236,16 @@ async function verify(ctx, retPath) {
   let ret;
   try { ret = JSON.parse(readFileSync(resolve(retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); }
   const fileMap = (gid, stage) => Object.fromEntries((readGate(ctx, `${gid}.${stage}.json`)?.tests ?? []).map(t => [t.file, t.verdict]));
-  const rows = {}, redMap = {}, greenMap = {}, phantom = [];
+  const rows = {}, redMap = {}, greenMap = {}, greenOk = {}, phantom = [];
   const snapNow = snapOf(ctx, planFiles(plan)); // a claimed test must exist by name in its file now: a row is a claim, the file is the fact
+  const escape = t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const named = r => typeof r.test === 'string' && r.test !== '' && new RegExp(`(?<![A-Za-z0-9_])${escape(r.test)}(?![A-Za-z0-9_])`).test(showText(plan.repo, snapNow, r.file));
   for (const g of plan.groups) {
-    rows[g.id] = (ret.groups?.[g.id]?.matrix ?? []).filter(r => (showText(plan.repo, snapNow, r.file).includes(r.test) ? true : (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false)));
+    rows[g.id] = (ret.groups?.[g.id]?.matrix ?? []).filter(r => named(r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
     redMap[g.id] = fileMap(g.id, 'red'); greenMap[g.id] = fileMap(g.id, 'green');
+    greenOk[g.id] = readGate(ctx, `${g.id}.green.json`)?.ok === true; // flaky, changed-since-RED or surviving-mutant groups credit nothing
   }
-  const c = closure(plan, rows, redMap, greenMap);
+  const c = closure(plan, rows, redMap, greenMap, greenOk);
   writeSafe(ctx.run, join(ctx.run, 'dod-matrix.md'), `${closureMarkdown(c)}\n`);
   const overridden = plan.groups.flatMap(g => ['red', 'green'].flatMap(stage => {
     const gate = readGate(ctx, `${g.id}.${stage}.json`);
@@ -239,14 +256,15 @@ async function verify(ctx, retPath) {
   const snap = await final(ctx, true); // the post-fix state: tests together, regressions, scope
   const squash = s => String(s ?? '').replace(/\s+/g, ' ').trim();
   const stillThere = cl => { const q = squash(cl.quote); return q !== '' && squash(showText(plan.repo, snap, cl.file)).includes(q); };
-  const open = (ret.clusters ?? []).filter(cl => !/^(refuted|out-of-scope)$/.test(cl.status));
+  const open = (ret.clusters ?? []).filter(cl => !/^(refuted|out-of-scope|unverified-nit)$/.test(cl.status)); // a nit is reported, never sent to a fixer
   const unfixed = open.filter(stillThere).map(cl => `${cl.id} ${cl.severity} ${cl.file}:${cl.startLine} ${cl.title}`);
   let proof = null;
   if ((ret.clusters ?? []).length && existsSync(join(ZT, 'proofcheck.mjs'))) {
     const text = await new Promise(done => { const p = spawn(process.execPath, [join(ZT, 'proofcheck.mjs'), '--ret', resolve(retPath), '--repo', plan.repo, '--head', reviewed ?? snap, '--run', ctx.run], { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; p.stdout.on('data', d => (out += d)); p.stderr.on('data', d => (err += d)); p.on('close', code => done({ out, err, code })); });
     try { const parsed = JSON.parse(text.out); proof = (parsed.clusters ?? parsed).reduce((m, x) => ({ ...m, [x.status]: (m[x.status] ?? 0) + 1 }), {}); } catch { proof = `proofcheck exited ${text.code}: ${text.err.trim().split('\n')[0]}`; }
   }
-  const res = { dod: { covered: c.covered, total: c.total, gaps: c.gaps, phantom }, final: readGate(ctx, 'final.json')?.ok, overridden, unfixed, notDone: Object.entries(ret.groups ?? {}).filter(([, v]) => v.state !== 'done').map(([k, v]) => `${k}: ${v.state}`), proofcheck: proof, snapshot: snap, report: join(ctx.run, 'dod-matrix.md') };
+  const integration = plan.integration?.file ? (ret.integration ? (ret.integration.exit === 0 ? 'ok' : `${plan.integration.file} exited ${ret.integration.exit}`) : 'not run') : undefined;
+  const res = { integration, dod: { covered: c.covered, total: c.total, gaps: c.gaps, phantom }, final: readGate(ctx, 'final.json')?.ok, overridden, unfixed, notDone: Object.entries(ret.groups ?? {}).filter(([, v]) => v.state !== 'done').map(([k, v]) => `${k}: ${v.state}`).concat(integration && integration !== 'ok' ? [`integration: ${integration}`] : []), proofcheck: proof, snapshot: snap, report: join(ctx.run, 'dod-matrix.md') };
   writeGate(ctx, 'verify.json', res);
   process.stdout.write(`${JSON.stringify(res)}\n`);
 }
@@ -261,11 +279,17 @@ function cmdPlan(o) {
   if (errors.length) fail(2, `invalid plan:\n  ${errors.join('\n  ')}`);
   let repo;
   try { repo = realpathSync(plan.repo); git(repo, ['rev-parse', '--git-dir']); } catch { fail(2, `repo is not a git repository: ${plan.repo}`); }
+  if (git(repo, ['rev-parse', '--show-prefix']).trim()) fail(2, `repo must be the top level of its work tree, not a subdirectory (${plan.repo}): snapshots are tree-relative`);
+  const notSource = plan.groups.flatMap(g => g.src.filter(f => !lib.isSource(f)).map(f => `${g.id}: ${f}`));
+  if (notSource.length) fail(2, `src files the probes never count as source (a test-like path, a data or config file): ${notSource.join(', ')}; the group could never be judged green. Move them out of src.`);
+  const marker = readMarker({ env: process.env });
+  if (marker) fail(3, `a zero-trust-review run is still active (${marker}): its guard hook would deny the test commands of the agents that write code. Finish it or run: node ${join(ZT, 'note.mjs')} deactivate`);
   const scratch = plan.scratch ? resolve(plan.scratch) : join(realpathSync(tmpdir()), `pat-${process.pid}-${Date.now().toString(36)}`);
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const real = realpathSync(scratch);
   if (real === repo || real.startsWith(repo + sep)) fail(2, 'scratch must be outside the repo');
-  const base = plan.base ?? baseSnapshot(real, repo);
+  let base;
+  try { base = plan.base ? git(repo, ['rev-parse', '--verify', `${plan.base}^{commit}`]).trim() : baseSnapshot(real, repo); } catch (e) { fail(2, `base is not a commit: ${e.message}`); } // a full sha: a branch name would move when an agent commits
   let run;
   if (o.run) { run = trustedRun(o.run); if (!run) fail(3, '--run must be a run folder under the per-user zt-review base; omit it and plan creates one'); }
   else { try { run = createRunDir(`pat-${short(base)}-${Date.now().toString(36)}`); } catch (e) { fail(3, `cannot create the run folder: ${e.message}`); } }

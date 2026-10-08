@@ -230,4 +230,29 @@ assert.match((await play({ groups: [grp('a', { after: ['zzz'] })] })).out.error,
 const prompts = async () => Object.fromEntries((await play({}, {}, 0)).calls.map(c => [c.o.label, c.prompt]));
 assert.deepEqual(await prompts(), await prompts());
 
-console.log('ok - paired-agent-tdd workflow.js: 15 scenarios');
+// 16 six agents share one working tree: the brief allows read-only git only, and the fence promises only what the gates do
+r = await play({ groups: [grp('a')] });
+for (const l of ['red-driver:a', 'green-driver:a']) {
+  const p = r.by(l)[0].prompt;
+  assert.match(p, /read-only git \(status, diff, log, show\)[^.]*never stash, checkout, restore, reset or clean/);
+  assert.doesNotMatch(p, /reverted and the task re-run/);
+  assert.match(p, /the gate lists it and the run is not done until it is reverted/);
+}
+
+// 17 a strengthening pass gets its own brief (tests must PASS on the current code), and its rows are marked late so the DoD closure never credits them
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('gap', 'mutant X-9 survived'), 'red-driver:a:strengthen': { matrix: [{ dod: 'A1', kind: 'edge', test: 'test_a1_edge_zero', file: 'tests/test_a.py' }], files: ['tests/test_a.py'], reuse: 'none' } });
+const st = r.by('red-driver:a:strengthen')[0].prompt;
+assert.match(st, /every new test must PASS on the current code/);
+assert.doesNotMatch(st, /must fail for the RIGHT reason|Run each test file once to see it fail/);
+assert.deepEqual(r.out.groups.a.matrix.filter(m => m.late).map(m => m.test), ['test_a1_edge_zero']);
+assert.ok(r.out.groups.a.matrix.filter(m => !m.late).length >= 3, 'the RED rows are not late');
+
+// 18 a finding on a file outside the plan: a safe relative path gets the _extra fixer, an absolute, hidden or escaping path is left to a human
+const odd = ['/Users/me/.zshrc', '.github/workflows/release.yml', '../other/x.py'].map((f, i) => F('odd ' + i, 'low', f, 'none'));
+r = await play({}, { reviewer: { findings: [...odd, F('doc drift', 'low', 'docs/guide.md', 'none')] } });
+assert.deepEqual(r.calls.filter(c => /^fixer:/.test(c.o.label)).map(c => c.o.label), ['fixer:_extra']);
+assert.match(r.by('fixer:_extra')[0].prompt, /ONLY docs\/guide\.md\./);
+assert.doesNotMatch(r.by('fixer:_extra')[0].prompt, /zshrc|release\.yml|other\/x/);
+assert.equal(r.out.fixes._byHand.notFixed.length, 3);
+
+console.log('ok - paired-agent-tdd workflow.js: 18 scenarios');

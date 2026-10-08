@@ -50,22 +50,45 @@ test('validatePlan: every DoD item is covered, every group names known items and
 const items = [{ id: 'AC1', kinds: ['happy', 'fail', 'edge'] }, { id: 'AC2', kinds: ['happy'] }];
 const files = ['tests/test_a.py'];
 const row = (dod, kind, test = `test_${dod.toLowerCase()}_${kind}`, file = 'tests/test_a.py') => ({ dod, kind, test, file });
+const verdict = (rows, f = files, it = items) => { const { good, ...r } = checkMatrix(it, rows, f); return r; };
 
 test('checkMatrix: complete matrix has nothing missing or bad', () => {
   const rows = [row('AC1', 'happy'), row('AC1', 'fail'), row('AC1', 'edge'), row('AC2', 'happy')];
-  assert.deepEqual(checkMatrix(items, rows, files), { missing: [], bad: [] });
+  assert.deepEqual(verdict(rows), { missing: [], bad: [] });
+  assert.equal(checkMatrix(items, rows, files).good.length, 4);
 });
 
 test('checkMatrix: missing pairs and unusable rows are named', () => {
-  const r = checkMatrix(items, [row('AC1', 'happy'), row('AC1', 'fail', 'test_boundary'), row('AC9', 'happy'), row('AC2', 'happy', 'test_ac2_x', 'tests/other.py'), row('AC2', 'sad')], files);
+  const r = verdict([row('AC1', 'happy'), row('AC1', 'fail', 'test_boundary'), row('AC9', 'happy'), row('AC2', 'happy', 'test_ac2_x', 'tests/other.py'), row('AC2', 'sad')]);
   assert.deepEqual(r.missing.map(m => `${m.dod}/${m.kind}`), ['AC1/fail', 'AC1/edge', 'AC2/happy']);
-  assert.deepEqual(r.bad.map(b => b.why), ['test name must contain its DoD id', 'unknown DoD id', 'file is not one of the group test files', 'kind must be happy, fail or edge']);
-  assert.deepEqual(checkMatrix(items, undefined, files).missing.length, 4);
+  assert.deepEqual(r.bad.map(b => b.why.slice(0, 28)), ['test name must carry its DoD', 'unknown DoD id', 'file is not one of the group', 'kind must be happy, fail or ']);
+  assert.equal(verdict(undefined).missing.length, 4);
 });
 
 test('checkMatrix: extra tests beyond the required kinds are fine, and ids match case-insensitively', () => {
   const rows = [row('AC2', 'happy', 'TEST_AC2_ok'), row('AC2', 'edge'), row('AC1', 'happy'), row('AC1', 'fail'), row('AC1', 'edge')];
-  assert.deepEqual(checkMatrix(items, rows, files), { missing: [], bad: [] });
+  assert.deepEqual(verdict(rows), { missing: [], bad: [] });
+});
+
+test('checkMatrix: an id must be set apart in the name: ac10 never serves ac1, a one-letter id never matches a word, an empty name never counts', () => {
+  const ten = [{ id: 'AC1', kinds: ['happy'] }, { id: 'AC10', kinds: ['happy'] }];
+  const r = verdict([row('AC1', 'happy', 'test_ac10_happy'), row('AC10', 'happy', 'test_ac10_happy')], files, ten);
+  assert.deepEqual(r.missing, [{ dod: 'AC1', kind: 'happy' }], 'AC1 is not covered by the test of AC10');
+  assert.equal(r.bad.length, 1);
+  const a = [{ id: 'A', kinds: ['happy'] }];
+  assert.equal(verdict([row('A', 'happy', 'test_parser_happy')], files, a).missing.length, 1, 'the letter a inside parser is not the id');
+  assert.equal(verdict([row('A', 'happy', 'test_a_happy')], files, a).missing.length, 0);
+  assert.equal(verdict([row('AC1', 'happy', '')], files, ten).bad.length, 1);
+  assert.equal(verdict([row('AC1', 'happy', 'testAc1Happy')], files, ten).bad.length, 1, 'camelCase with no separator is refused: the brief says test_ac1_happy');
+});
+
+test('checkMatrix: one test stands for one (item, kind): a name listed three times is not three tests', () => {
+  const one = row('AC1', 'happy', 'test_ac1_x');
+  const r = verdict([one, { ...one, kind: 'fail' }, { ...one, kind: 'edge' }]);
+  assert.deepEqual(r.missing.map(m => `${m.dod}/${m.kind}`), ['AC1/fail', 'AC1/edge', 'AC2/happy'], 'only the happy pair is credited');
+  assert.equal(r.bad.length, 2);
+  assert.match(r.bad[0].why, /already stands for AC1\/happy/);
+  assert.deepEqual(verdict([one, one]).bad.length, 0, 'the same row twice is harmless');
 });
 
 test('classifyRed: assertion failure, load error, no failure, no tests, no sandbox, timeout', () => {
@@ -135,4 +158,26 @@ test('closure: missing rows, tests that never failed, and tests that do not pass
   assert.match(md, /DoD closure: 0\/5/);
   assert.match(md, /\| AC2 .*\| UNPROVEN test_ac2_ok \| - \| MISSING \|/);
   assert.match(md, /Gaps: /);
+});
+
+test('closure: a row that checkMatrix would refuse never credits a pair, even when its file passed', () => {
+  const p = plan();
+  p.dod[1].kinds = ['happy'];
+  p.dod.push({ id: 'AC10', text: 'x', source: 'assumed', kinds: ['happy'] }); p.groups[0].dod.push('AC10');
+  const dup = row('AC1', 'happy', 'test_ac10_happy');                       // AC10's test claimed for AC1
+  const same = { ...row('AC1', 'fail', 'test_ac1_x'), }, again = { ...same, kind: 'edge' };  // one test claimed for two kinds
+  const c = closure(p, { ...rows, a: [dup, row('AC10', 'happy', 'test_ac10_happy'), row('AC1', 'happy', 'test_ac1_h'), same, again] }, red, green);
+  assert.deepEqual(c.gaps.sort(), ['AC1/edge: missing']);
+  const empty = closure(p, { ...rows, a: [row('AC1', 'happy', ''), row('AC1', 'fail'), row('AC1', 'edge'), row('AC10', 'happy')] }, red, green);
+  assert.ok(empty.gaps.includes('AC1/happy: missing'));
+});
+
+test('closure: a late row (a strengthening pass after GREEN) never credits a pair; a group whose last GREEN gate was not ok credits nothing', () => {
+  const p = plan();
+  p.dod[1].kinds = ['happy'];
+  const onlyLate = { ...rows, a: rows.a.map(r => (r.kind === 'edge' ? { ...r, late: true } : r)) };
+  assert.deepEqual(closure(p, onlyLate, red, green).gaps, ['AC1/edge: missing']);
+  const bad = closure(p, rows, red, green, { a: false, b: true });
+  assert.deepEqual(bad.gaps.sort(), ['AC1/edge: unproven', 'AC1/fail: unproven', 'AC1/happy: unproven']);
+  assert.deepEqual(closure(p, rows, red, green, { a: true, b: true }).gaps, []);
 });

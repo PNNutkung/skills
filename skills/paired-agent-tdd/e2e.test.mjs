@@ -18,6 +18,7 @@ process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const repo = join(dir, 'repo'), stub = join(dir, 'stub'), tmp = join(dir, 'tmp');
 for (const d of [repo, stub, tmp]) mkdirSync(d);
 process.env.TMPDIR = tmp; // the per-user zt-review base (where plan makes the run folder, and the only place the ledger tools approve one) lives in the fixture
+process.env.ZT_MARKER_DIR = join(dir, 'marker'); // never the user's own active review marker
 let run = '';
 writeFileSync(join(stub, 'runner.mjs'), `
 import { spawnSync } from 'node:child_process';
@@ -133,6 +134,7 @@ assert.ok(sawGate.some(([l, first]) => l === 'green-navigator:a:recheck' && /ok=
 assert.match(calls.find(c => c.label === 'green-navigator:a:recheck').prompt, /--retest/);
 assert.equal(out.groups.a.green.reworks, 1);
 assert.deepEqual(out.groups.a.matrix.map(m => m.test).slice(-1), ['test_ac2_edge_default_length']);
+assert.equal(out.groups.a.matrix.at(-1).late, true, 'the strengthening row is marked late: it never failed at RED, so the closure does not credit it');
 assert.equal(out.clusters.length, 1);
 assert.deepEqual([out.clusters[0].status, out.clusters[0].evidence], ['confirmed', 'read']);
 assert.deepEqual(out.fixes.a.fixed, [out.clusters[0].id]);

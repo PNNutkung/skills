@@ -72,19 +72,23 @@ export function validatePlan(plan, ticketText) {
 /**
  * The group's DoD items against the rows its red-driver wrote.
  * items = [{id, kinds}], rows = [{dod, kind, test, file}], files = the group's test files.
- * -> { missing: [{dod, kind}] required pairs with no valid row, bad: [{row, why}] rows that cannot count }
+ * A row counts only if: its DoD id is known and its kind valid, its file is one of the group's, its test name carries the id SET APART by non-alphanumerics
+ * (test_ac1_happy; ac10 never serves ac1), and that test name does not already stand for another (dod, kind).
+ * -> { missing: [{dod, kind}] required pairs with no valid row, bad: [{row, why}] rows that cannot count, good: the rows that can }
  */
 export function checkMatrix(items, rows, files) {
-  const good = [], bad = [];
+  const good = [], bad = [], used = {};
   for (const r of rows || []) {
-    const it = items.find(i => i.id === (r && r.dod));
+    const it = items.find(i => i.id === (r && r.dod)), name = String((r && r.test) || ''), key = r && r.file + '::' + name;
+    const carries = !!it && new RegExp('(^|[^A-Za-z0-9])' + it.id + '($|[^A-Za-z0-9])', 'i').test(name);
     const why = !it ? 'unknown DoD id' : !['happy', 'fail', 'edge'].includes(r.kind) ? 'kind must be happy, fail or edge'
-      : !files.includes(r.file) ? 'file is not one of the group test files' : !String(r.test || '').toLowerCase().includes(r.dod.toLowerCase()) ? 'test name must contain its DoD id' : '';
-    if (why) bad.push({ row: r, why }); else good.push(r);
+      : !files.includes(r.file) ? 'file is not one of the group test files' : !carries ? 'test name must carry its DoD id set apart by non-alphanumerics (test_' + it.id.toLowerCase() + '_happy)'
+      : used[key] && used[key] !== r.dod + '/' + r.kind ? 'test ' + name + ' already stands for ' + used[key] : '';
+    if (why) bad.push({ row: r, why }); else { used[key] = used[key] || r.dod + '/' + r.kind; good.push(r); }
   }
   const missing = [];
   for (const it of items) for (const k of it.kinds) if (!good.some(r => r.dod === it.id && r.kind === k)) missing.push({ dod: it.id, kind: k });
-  return { missing, bad };
+  return { missing, bad, good };
 }
 
 const NO_TESTS = /collected 0 items|no tests ran|no tests found|0 tests? (ran|found|passed)/i;
@@ -148,14 +152,18 @@ export function pickAffected(testPaths, textOf, srcPaths, own, cap = 12) {
 
 /**
  * The DoD closure: for every item and required kind, is there a row whose test file FAILED at RED and PASSES at GREEN?
- * rows = { group: [row] }, red/green = { group: { file: verdict } } read from the gate files (T0), never from an agent's claim.
+ * rows = { group: [row] }, red/green = { group: { file: verdict } } and greenOk = { group: boolean } read from the gate files (T0), never from an agent's claim.
+ * A row is re-validated here (checkMatrix: id carried, one test = one pair, the group's own file); a `late` row (written by a strengthening pass after GREEN)
+ * cannot have failed at RED, so it never credits a pair; a group whose last GREEN gate was not ok credits nothing.
  */
-export function closure(plan, rows, red, green) {
+export function closure(plan, rows, red, green, greenOk = {}) {
+  const kindsOf = id => (plan.dod.find(d => d.id === id)?.kinds ?? KINDS);
+  const valid = Object.fromEntries(plan.groups.map(g => [g.id, checkMatrix(g.dod.map(id => ({ id, kinds: kindsOf(id) })), rows[g.id] ?? [], g.tests).good.filter(r => !r.late)]));
   const items = plan.dod.map(d => {
     const need = d.kinds ?? KINDS, groups = plan.groups.filter(g => g.dod.includes(d.id));
     const kinds = Object.fromEntries(need.map(k => {
-      const mine = groups.flatMap(g => (rows[g.id] ?? []).filter(r => r.dod === d.id && r.kind === k && g.tests.includes(r.file)).map(r => ({ ...r, group: g.id })));
-      const proven = mine.filter(r => RED_OK.has(red[r.group]?.[r.file]) && green[r.group]?.[r.file] === 'exercises-change');
+      const mine = groups.flatMap(g => valid[g.id].filter(r => r.dod === d.id && r.kind === k).map(r => ({ ...r, group: g.id })));
+      const proven = mine.filter(r => greenOk[r.group] !== false && RED_OK.has(red[r.group]?.[r.file]) && green[r.group]?.[r.file] === 'exercises-change');
       const status = proven.length ? 'covered' : mine.length ? 'unproven' : 'missing';
       return [k, { status, tests: (proven.length ? proven : mine).map(r => r.test) }];
     }));

@@ -61,7 +61,7 @@ Workflow({ scriptPath: "$SK/workflow.js", args: <the JSON in args.json> })
 node $SK/tdd.mjs verify --run $RUN --ret return.json
 ```
 
-It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** any DoD gap, `final: false`, an `overridden` entry (a navigator said PASS against its own gate), an `unfixed` finding or a `notDone` group remains; say so with the numbers. Then run the project's full suite once (background) and lint on the changed files only. Report: DoD matrix, blocked groups with their reason, findings by proof status, assumed DoD items.
+It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** any DoD gap, `final: false`, an `overridden` entry (a navigator said PASS against its own gate), an `unfixed` finding or a `notDone` group (a failed integration test included) remains; say so with the numbers. Then run the project's full suite once (background) and lint on the changed files only. Report: DoD matrix, blocked groups with their reason, findings by proof status, assumed DoD items.
 
 ## The graph
 
@@ -106,8 +106,8 @@ graph TD
 | Gate | Run by | Facts |
 |---|---|---|
 | `red` | red-navigator, first command | each new test file **fails now**, and how: assertion, load error, passes already, missing |
-| `green` | green-navigator, first command | tests pass and **fail once the group's code is reverted** (they pin it), no flake, **tests unchanged since RED**, no stray file, **mutants of the new lines** (a survivor is a test gap with a citable run), changed-line coverage |
-| `final` | reviewer, first command | all group tests together, existing tests that mention the changed modules (new regression or already failing), scope, the whole-diff patch |
+| `green` | green-navigator, first command | tests pass and **fail once the group's code is reverted** (they pin it), no flake, **tests unchanged since RED**, **mutants of the new lines** (a survivor is a test gap with a citable run), changed-line coverage |
+| `final` | reviewer, first command | all group tests together, existing tests that mention the changed modules (new regression or already failing), stray files (a note at `green`, a blocker here), the whole-diff patch |
 | `verify` | lead | DoD closure from the gate files, fixes still present, reviewer proofs re-checked |
 
 Each group is judged in a snapshot of the base plus **only its own files** (and the finished groups it waits for), so another group's half-written edit never fails it, and the groups' gates run side by side.
@@ -116,10 +116,10 @@ Each group is judged in a snapshot of the base plus **only its own files** (and 
 
 - **Lead-only.** The lead plans, launches, reads, verifies. It never writes test or code (a one-line fix it fully understands is the only exception) and never re-verifies what a gate already proved. Teammates cannot spawn teammates: reworks are scheduled by the script.
 - **A verifier is always a separate node.** A navigator did not write the work, runs the gate first and judges the output; a claim it did not see in a gate or a file it read is not a fact. The judges cannot edit.
-- **DoD closure.** Every DoD id needs a test per required kind, its name carrying the id. The script checks the matrix in code before a navigator is paid for; `verify` re-derives coverage from gate files: a pair counts only if its test file failed at RED and passes at GREEN.
-- **Bounded rework (R4).** A navigator FAIL (or any defect) gets ONE rework and ONE re-check, then the group is `blocked` and so is everything that waits for it. A surviving mutant is a test gap: it goes to a test-strengthening pass (tests only, never weakened) beside any code fix; the re-check gate runs with `--retest`. A reported defect is never shipped unaddressed: it is fixed or listed under `notDone`.
+- **DoD closure.** Every DoD id needs a test per required kind, its name carrying the id set apart (`test_ac1_happy`), one test per (id, kind). The script checks the matrix in code before a navigator is paid for; `verify` re-derives coverage from gate files: a pair counts only if its test file failed at RED and passes at GREEN.
+- **Bounded rework (R4).** A navigator FAIL (or any defect) gets ONE rework and ONE re-check (plus one rework before the navigator when the code-checked matrix has a gap), then the group is `blocked` and so is everything that waits for it. A surviving mutant is a test gap: it goes to a test-strengthening pass (tests only, never weakened) beside any code fix; the re-check gate runs with `--retest`. A reported defect is never shipped unaddressed: it is fixed or listed under `notDone`.
 - **Frozen tests.** GREEN never edits a test; a wrong test is reported (`testDefects`), not patched.
-- **Hard scope fence.** Every driver and fixer prompt names the only files it may edit and what to report instead; the gate lists any other changed file.
+- **Hard scope fence.** Every driver and fixer prompt names the only files it may edit and what to report instead; `final` lists any other changed file.
 - **One task, one deliverable.** A driver that needs work beyond its brief stops and reports; split at capability boundaries only.
 - **Precedent and research first** (in every driver prompt): grep sibling tests for the same flag before asserting a fail or edge behavior (a contradiction means the new test is probably wrong), and look for an existing helper, then the installed library docs, before writing new code. Genuine ambiguity: stop and use `wayfinder` or `grill-with-docs`, naming the decision.
 - **Tool discipline.** Read/Edit/Write/Grep/Glob for files; Bash only for the test command, git and linters; never `sed` or a heredoc to edit.

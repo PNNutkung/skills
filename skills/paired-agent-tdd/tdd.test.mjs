@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,10 +54,10 @@ function fixture(t, { files = {}, plan = {}, fake = {} } = {}) {
   git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'base');
   writeFileSync(join(stub, 'stub-runner.mjs'), STUB);
   writeFileSync(join(stub, 'config.json'), JSON.stringify(fake));
-  writeFileSync(join(dir, 'plan.json'), JSON.stringify({ ...PLAN(repo), ...plan }));
+  writeFileSync(join(dir, 'plan.json'), JSON.stringify({ ...PLAN(repo), ...(typeof plan === 'function' ? plan(repo) : plan) }));
   const fx = { dir, repo, tmp, runner: join(stub, 'stub-runner.mjs'), stub, head: git(repo, 'rev-parse', 'HEAD'), run: undefined };
   fx.tdd = (cmd, args = [], env = {}) => {
-    const r = spawnSync(process.execPath, [TDD, cmd, ...(fx.run && cmd !== 'plan' ? ['--run', fx.run] : []), '--runner', fx.runner, ...args], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp, ...env } });
+    const r = spawnSync(process.execPath, [TDD, cmd, ...(fx.run && cmd !== 'plan' ? ['--run', fx.run] : []), '--runner', fx.runner, ...args], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp, ZT_MARKER_DIR: join(dir, 'marker'), ...env } });
     return { status: r.status, out: r.stdout, err: r.stderr };
   };
   fx.plan = (extra = []) => {
@@ -69,7 +69,7 @@ function fixture(t, { files = {}, plan = {}, fake = {} } = {}) {
   return fx;
 }
 const planned = (t, opts) => { const fx = fixture(t, opts); const r = fx.plan(); assert.equal(r.status, 0, r.err); return fx; };
-const TEST_ALPHA = '# test_ac1_happy_case\ngrep -q new src/alpha.txt\n';
+const TEST_ALPHA = '# test_ac1_happy\ngrep -q new src/alpha.txt\n';
 const TEST_BETA = '# test_ac2_happy\ngrep -q new src/alpha.txt && grep -q beta src/beta.txt\n';
 
 test('plan: validates, snapshots a clean tree as HEAD, writes the run folder, prints the Workflow args', t => {
@@ -188,15 +188,17 @@ test('green: tests that pass without the change give no signal; tests edited aft
   assert.equal(fx.gate('a.green.json').tests[0].verdict, 'no-signal');
 });
 
-test('green: no RED gate on record, a stray file outside the plan, and a flaky test are each a reason', t => {
+test('green: no RED gate on record is a reason; a stray file outside the plan is a note, and blocks at final', t => {
   const fx = planned(t);
   put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA, 'src/alpha.txt': 'new\n' });
   assert.match(fx.tdd('green', ['--group', 'a']).out, /no RED gate on record/);
   fx.tdd('red', ['--group', 'a']);
   put(fx.repo, { 'junk/stray.txt': 'x\n' });
   const r = fx.tdd('green', ['--group', 'a']);
-  assert.match(r.out, /files outside the plan changed: junk\/stray\.txt/);
+  assert.match(r.out, /note: files outside the plan exist in the shared tree: junk\/stray\.txt/);
+  assert.match(r.out, /^GREEN a ok=true/, 'a stray file cannot be pinned on one group of a shared tree: it is a note here, a blocker at final');
   assert.deepEqual(fx.gate('a.green.json').outOfScope, ['junk/stray.txt']);
+  assert.match(fx.tdd('final').out, /not ok:[^\n]*files outside the plan changed: junk\/stray\.txt/);
 });
 
 test('group snapshots hold the base plus only the group\'s own files: another group\'s half-written edit is invisible', t => {
@@ -357,4 +359,66 @@ test('verify: a reviewer finding whose code is still there after the fix is unfi
   const cl = (id, file, quote) => ({ id, status: 'confirmed', severity: 'medium', file, startLine: 1, endLine: 1, title: `finding ${id}`, quote });
   const v = verify(fx, { ...RET(BETA_ROW), clusters: [cl('C-1', 'src/alpha.txt', 'old'), cl('C-2', 'src/alpha.txt', 'new'), { ...cl('C-3', 'src/alpha.txt', 'new'), status: 'refuted' }] });
   assert.deepEqual(v.unfixed, ['C-2 medium src/alpha.txt:1 finding C-2']);
+});
+
+test('plan refuses: a subdirectory of a work tree, a src file the probes never count as source, an active review marker; it resolves a moving base to a sha', t => {
+  const sub = fixture(t, { plan: repo => ({ repo: join(repo, 'sub') }) });
+  mkdirSync(join(sub.repo, 'sub'));
+  const r = sub.plan();
+  assert.equal(r.status, 2);
+  assert.match(r.err, /top level of its work tree/);
+  const cfg = fixture(t, { plan: p => ({ groups: [{ ...PLAN(p).groups[0], src: ['src/app_config.py'] }], dod: PLAN(p).dod.slice(0, 1) }) });
+  const c = cfg.plan();
+  assert.equal(c.status, 2);
+  assert.match(c.err, /never count as source[\s\S]*a: src\/app_config\.py/);
+  const marked = fixture(t);
+  const md = join(marked.dir, 'marker'), live = join(marked.dir, 'live-run');
+  for (const d of [md, live]) { mkdirSync(d); chmodSync(d, 0o700); }
+  writeFileSync(join(md, '.active'), `${live}\n`, { mode: 0o600 });
+  const m = marked.plan();
+  assert.equal(m.status, 3);
+  assert.match(m.err, /zero-trust-review run is still active[\s\S]*deactivate/);
+  const moving = fixture(t, { plan: { base: 'HEAD' } });
+  assert.equal(JSON.parse(moving.plan().out.trim()).base, moving.head, 'HEAD is stored as the sha it is now');
+});
+
+test('a non-ASCII path is judged like any other: names stay raw, so nothing reads as stray', t => {
+  const fx = planned(t, { plan: p => ({ groups: [{ id: 'a', tests: ['tests/test_café.sh'], src: ['src/café.txt'], dod: ['AC1', 'AC2'], after: [] }] }) });
+  put(fx.repo, { 'tests/test_café.sh': '# test_ac1_happy\ngrep -q new src/café.txt\n' });
+  assert.match(fx.tdd('red', ['--group', 'a']).out, /RED a ok=true/);
+  put(fx.repo, { 'src/café.txt': 'new\n' });
+  const g = fx.tdd('green', ['--group', 'a']);
+  assert.match(g.out, /^GREEN a ok=true/, g.out);
+  assert.deepEqual(fx.gate('a.green.json').outOfScope, []);
+  const f = fx.tdd('final');
+  assert.match(f.out, /^FINAL ok=true/m, f.out);
+});
+
+test('the integration test is not run in the sandbox (it needs its real dependency); verify reads the exit code its agent reported', t => {
+  const integ = { file: 'tests/integration/test_flow.sh', goal: 'drive the full path' };
+  const fx = planned(t, { plan: { integration: integ } });
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA, 'src/alpha.txt': 'new\n', 'tests/test_beta.sh': TEST_BETA, 'src/beta.txt': 'beta\n', [integ.file]: '# mentions alpha\nexit 1\n' });
+  const f = fx.tdd('final');
+  assert.match(f.out, /^FINAL ok=true/m, f.out);
+  assert.ok(!fx.gate('final.json').existing.ran.includes(integ.file) && fx.gate('final.json').outOfScope.length === 0);
+  const ok = verify(fx, { ...RET(BETA_ROW), integration: { file: integ.file, exit: 0 } });
+  assert.deepEqual([ok.integration, ok.notDone], ['ok', []]);
+  const bad = verify(fx, { ...RET(BETA_ROW), integration: { file: integ.file, exit: 3 } });
+  assert.deepEqual(bad.notDone, [`integration: ${integ.file} exited 3`]);
+  assert.deepEqual(verify(fx, RET(BETA_ROW)).notDone, [`integration: not run`]);
+});
+
+test('verify: a nit is reported, never "unfixed"; a matrix row whose name only starts with a real test name is a phantom', t => {
+  const fx = built(t);
+  const cl = (id, status) => ({ id, status, severity: 'nit', file: 'src/alpha.txt', startLine: 1, endLine: 1, title: `t ${id}`, quote: 'new' });
+  const v = verify(fx, { ...RET([{ dod: 'AC2', kind: 'happy', test: 'test_ac2', file: 'tests/test_beta.sh' }]), clusters: [cl('R-1', 'unverified-nit')] });
+  assert.deepEqual(v.unfixed, []);
+  assert.deepEqual(v.dod.phantom, ['AC2/happy: test_ac2 is not in tests/test_beta.sh']);
+});
+
+test('gates leave no scratch tree behind', t => {
+  const fx = built(t);
+  fx.tdd('final');
+  const args = JSON.parse(readFileSync(join(fx.run, 'args.json'), 'utf8'));
+  assert.deepEqual(readdirSync(args.scratch).filter(n => /^(red|gp|gm|cov|fin|finb)-/.test(n)), []);
 });

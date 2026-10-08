@@ -31,16 +31,18 @@ function plan(g, integration, findingGroups) {
 // GENERATED:matrix (node graph.mjs --write)
 
 function checkMatrix(items, rows, files) {
-  const good = [], bad = [];
+  const good = [], bad = [], used = {};
   for (const r of rows || []) {
-    const it = items.find(i => i.id === (r && r.dod));
+    const it = items.find(i => i.id === (r && r.dod)), name = String((r && r.test) || ''), key = r && r.file + '::' + name;
+    const carries = !!it && new RegExp('(^|[^A-Za-z0-9])' + it.id + '($|[^A-Za-z0-9])', 'i').test(name);
     const why = !it ? 'unknown DoD id' : !['happy', 'fail', 'edge'].includes(r.kind) ? 'kind must be happy, fail or edge'
-      : !files.includes(r.file) ? 'file is not one of the group test files' : !String(r.test || '').toLowerCase().includes(r.dod.toLowerCase()) ? 'test name must contain its DoD id' : '';
-    if (why) bad.push({ row: r, why }); else good.push(r);
+      : !files.includes(r.file) ? 'file is not one of the group test files' : !carries ? 'test name must carry its DoD id set apart by non-alphanumerics (test_' + it.id.toLowerCase() + '_happy)'
+      : used[key] && used[key] !== r.dod + '/' + r.kind ? 'test ' + name + ' already stands for ' + used[key] : '';
+    if (why) bad.push({ row: r, why }); else { used[key] = used[key] || r.dod + '/' + r.kind; good.push(r); }
   }
   const missing = [];
   for (const it of items) for (const k of it.kinds) if (!good.some(r => r.dod === it.id && r.kind === k)) missing.push({ dod: it.id, kind: k });
-  return { missing, bad };
+  return { missing, bad, good };
 }
 
 // /GENERATED:matrix
@@ -110,8 +112,8 @@ const FIX = { type: 'object', properties: { fixed: { type: 'array', items: STR }
 const WHERE = 'REPO ' + A.repo + '  BASE ' + String(A.base).slice(0, 8) + '  RUN ' + RUN
 const pony = lvl => (lvl === 'off' ? '' : ' PONYTAIL ' + lvl + ': the smallest change that works; evidence and checks are never shortened.')
 const cap = node => 'At most ' + NODE[node].cap + ' tool calls.'
-const FENCE = files => 'HARD SCOPE FENCE: edit or create ONLY ' + files.join(', ') + '. A file outside that list that needs a change: do NOT edit it, list it under outOfScope (file, line, why). Touching one fails the task; it is reverted and the task re-run.'
-const TOOLS = 'TOOLS: Read/Edit/Write/Grep/Glob for files; Bash only for the test command, git and linters; never sed or a heredoc to edit a file. Run only your own test files, one at a time: `' + A.cmd + '`; never the whole suite.'
+const FENCE = files => 'HARD SCOPE FENCE: edit or create ONLY ' + files.join(', ') + '. A file outside that list that needs a change: do NOT edit it, list it under outOfScope (file, line, why). Touching one fails the task: the gate lists it and the run is not done until it is reverted.'
+const TOOLS = 'TOOLS: Read/Edit/Write/Grep/Glob for files; Bash only for the test command, read-only git (status, diff, log, show) and linters (other groups share this working tree: never stash, checkout, restore, reset or clean); never sed or a heredoc to edit a file. Run only your own test files, one at a time: `' + A.cmd + '`; never the whole suite.'
 const RESEARCH = 'RESEARCH FIRST: (1) grep this repo for a sibling pattern, helper or test setup to reuse, (2) the installed library docs for a built-in, (3) only then anything broader. Report which applied as reuse = codebase|docs|oss|none; "nothing to reuse" is a valid answer.'
 const PRECEDENT = 'PRECEDENT: before asserting a fail or edge behavior, grep the existing tests for the same flag or mode on a sibling path. A new assertion that contradicts an existing passing test is probably wrong: settle that before you finish.'
 const itemsOf = g => g.dod.map(id => { const d = DOD.find(x => x.id === id) || {}; return { id, kinds: d.kinds || ['happy', 'fail', 'edge'], text: d.text || '' } })
@@ -120,14 +122,23 @@ const head = (g, role, node) => 'ROLE: ' + role + ' (group ' + g.id + ').' + pon
 const defectLines = ds => ds.map(d => '- [' + (d.cls || 'defect') + '] ' + (d.file ? d.file + (d.line ? ':' + d.line : '') + ' ' : '') + clip(d.what, 300) + (d.fix ? ' | fix: ' + clip(d.fix, 200) : '')).join('\n')
 const gateCmd = (stage, g, extra) => TDD + ' ' + stage + ' --run ' + RUN + ' --group ' + g.id + (extra || '')
 
+function strengthenPrompt(g, o) {
+  return [
+    head(g, 'driver: STRENGTHEN the tests; the implementation is done and passes', 'red-driver'),
+    'DEFINITION OF DONE:\n' + dodLines(g),
+    'These mutants SURVIVED, so no test pins that code. Add or sharpen tests so each one would fail; every new test must PASS on the current code. Never weaken, skip or delete a test. Name new tests with their DoD id set apart by non-alphanumerics (test_ac1_edge_...).\n' + defectLines(o.strengthen),
+    FENCE(g.tests), TOOLS, PRECEDENT,
+    'RETURN: matrix = one row per NEW test {dod, kind, test, file}; files; outOfScope; reuse; notes (<= 400 chars). ' + cap('red-driver'),
+  ].join('\n\n')
+}
 function redPrompt(g, o) {
+  if (o.strengthen) return strengthenPrompt(g, o)
   return [
     head(g, 'driver: write the FAILING tests (RED) for this group', 'red-driver'),
-    'DEFINITION OF DONE (one test per item and kind; every test name MUST contain its item id, e.g. test_ac1_happy_...; a kind you cannot test is a defect to report, not to skip):\n' + dodLines(g),
+    'DEFINITION OF DONE (one test per item and kind; every test name MUST contain its item id set apart by non-alphanumerics, e.g. test_ac1_happy_...; one test serves one item and kind only; a kind you cannot test is a defect to report, not to skip):\n' + dodLines(g),
     FENCE(g.tests), TOOLS, RESEARCH, PRECEDENT,
     'Each new test must fail for the RIGHT reason: an assertion about behavior that does not exist yet, not a typo. Run each test file once to see it fail.',
     o.defects ? 'FIX EXACTLY THESE DEFECTS FROM THE CHECK (and nothing else):\n' + defectLines(o.defects) : '',
-    o.strengthen ? 'STRENGTHEN: the implementation is done and these mutants SURVIVED, so no test pins that code. Add or sharpen tests so each one would fail (the test must still pass on the current code). Never weaken, skip or delete a test; keep names containing the DoD id.\n' + defectLines(o.strengthen) : '',
     'RETURN: matrix = one row per test {dod, kind, test, file} (test = the exact function name); files = test files touched; outOfScope; reuse; notes (<= 400 chars). ' + cap('red-driver'),
   ].filter(Boolean).join('\n\n')
 }
@@ -160,7 +171,7 @@ function greenNavPrompt(g, o) {
     'FIRST command, once (T0 facts: tests pass and exercise the change, flake, frozen tests, scope, mutants, coverage; do not re-run them): `' + gateCmd('green', g, o.retest ? ' --retest' : '') + '`. Read the patch it names.',
     'DEFINITION OF DONE:\n' + dodLines(g),
     o.recheck ? 'RE-CHECK after one rework' + (o.retest ? ' (tests were strengthened on purpose: the gate ran with --retest; judge those test changes yourself: only additions, nothing weakened)' : '') + '. Defects reported before:\n' + defectLines(o.recheck) + '\nVerify each is really fixed.' : '',
-    'CHECK: (1) every reason after "not ok:" in the gate is a defect: a surviving mutant = cls gap (name the assertion that is missing), changed tests = cls test, a stray file = cls scope, anything else cls impl. (2) minimal: no behavior beyond the DoD; a new helper that duplicates an existing one (grep) is cls impl. (3) no test weakened, skipped or loosened. (4) a cleanup, if any, left behavior unchanged and abstracted nothing prematurely. (5) gap-hunting: legitimate future edits or inputs that the new code would wrongly reject.',
+    'CHECK: (1) every reason after "not ok:" in the gate is a defect: a surviving mutant = cls gap (name the assertion that is missing), changed tests = cls test, anything else cls impl; a stray file the gate lists is only a hint (other groups share the tree): cls scope only if the patch shows THIS group created it. (2) minimal: no behavior beyond the DoD; a new helper that duplicates an existing one (grep) is cls impl. (3) no test weakened, skipped or loosened. (4) a cleanup, if any, left behavior unchanged and abstracted nothing prematurely. (5) gap-hunting: legitimate future edits or inputs that the new code would wrongly reject.',
     NAV_TAIL + cap('green-navigator'),
   ].filter(Boolean).join('\n\n')
 }
@@ -244,7 +255,7 @@ async function build(g) {
     if (tests.length) jobs.push(() => as('red-driver', redPrompt(g, { strengthen: tests }), RED_DRIVER, 'red-driver:' + g.id + ':strengthen'))
     const res = await parallel(jobs) // different files (src vs tests): safe side by side
     const added = (res[code.length ? 1 : 0] || {}).matrix || []
-    if (tests.length && added.length) st.matrix = st.matrix.concat(added.filter(a => !st.matrix.some(m => m.test === a.test && m.file === a.file)))
+    if (tests.length && added.length) st.matrix = st.matrix.concat(added.filter(a => !st.matrix.some(m => m.test === a.test && m.file === a.file)).map(a => ({ ...a, late: true }))) // written after GREEN: they never failed at RED, so the closure does not credit them
     gn = await as('green-navigator', greenNavPrompt(g, { recheck: before, retest: tests.length > 0 }), NAV, 'green-navigator:' + g.id + ':recheck')
     if (!gn) return stop('failed', 'green-navigator returned nothing on the re-check')
   }
@@ -279,8 +290,12 @@ const clusters = ((review && review.findings) || []).map(f => {
 // ---------------------------------------------------------------- fix: one fixer per owning group, so no two fixers touch the same file
 phase('Fix')
 const ownerOf = f => (G.find(g => g.tests.includes(f) || g.src.includes(f)) || { id: '_extra' }).id
-const work = {}
-for (const c of clusters.filter(x => x.status !== 'unverified-nit')) (work[ownerOf(c.file)] = work[ownerOf(c.file)] || []).push(c)
+const work = {}, byHand = []
+const safeFile = f => typeof f === 'string' && f !== '' && !f.startsWith('/') && !f.startsWith('.') && !f.includes('\0') && !f.split('/').includes('..')
+for (const c of clusters.filter(x => x.status !== 'unverified-nit')) {
+  if (ownerOf(c.file) === '_extra' && !safeFile(c.file)) { byHand.push({ id: c.id, why: 'file outside the plan is absolute, hidden or leaves the repo: fix by hand' }); continue }
+  (work[ownerOf(c.file)] = work[ownerOf(c.file)] || []).push(c)
+}
 const fixes = {}
 await parallel(Object.entries(work).map(([gid, fs]) => async () => {
   const files = gid === '_extra' ? [...new Set(fs.map(c => c.file))] : byId[gid].tests.concat(byId[gid].src)
@@ -288,6 +303,8 @@ await parallel(Object.entries(work).map(([gid, fs]) => async () => {
   const over = fs.slice(8).map(c => ({ id: c.id, why: 'over the 8-finding cap of one fixer' }))
   fixes[gid] = r ? { fixed: r.fixed, notFixed: (r.notFixed || []).concat(over), outOfScope: r.outOfScope || [] } : { fixed: [], notFixed: fs.map(c => ({ id: c.id, why: 'fixer returned nothing' })), outOfScope: [] }
 }))
+
+if (byHand.length) fixes._byHand = { fixed: [], notFixed: byHand, outOfScope: [] }
 
 // ---------------------------------------------------------------- compact return
 const total = Object.values(used).reduce((a, b) => a + b, 0)
