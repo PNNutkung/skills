@@ -14,7 +14,7 @@
 //
 // Method: split the command into segments (on ; && || | & newline, inside $( ), backticks and ( ) groups), strip wrappers and env assignments,
 // then judge each segment's program against an ALLOW-LIST (unknown program = deny). Redirect targets and file arguments are checked separately.
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,12 +76,20 @@ function substitutions(text) {
   return depth === 0 ? cmds : null;
 }
 
-// Returns [{ words, redirs }]: one entry per simple command; words have quotes removed, redirs are the WRITE targets (> >> >| &> >&file).
+// Every ( ) group, $( ), backtick and <( ) gets a unique id: a segment's `scope` lists the ids of the groups around it (they run in a subshell, so a `cd`
+// inside never reaches the next command), `term` is the operator that ended it (; && || | |& & or a newline) and `fork` says it runs in a subshell of
+// its own (either side of a pipe, or a background job).
+let scopeSeq = 0;
+const FORKING = new Set(['&', '|', '|&']);
+
+// Returns [{ words, redirs, term, scope, fork }]: one entry per simple command; words have quotes removed, redirs are the WRITE targets (> >> >| &> >&file).
 // Substitutions leave a "$(…)" placeholder word in the outer command and their own commands become separate segments.
 function parse(src) {
   const segs = [];
   const stack = [];
   const heredocs = [];
+  let lastTerm = '';
+  let groupClosed = false; // the last thing seen was the `)` of a plain ( ) group: the next operator belongs to the group as a whole
   const fresh = () => ({ words: [], redirs: [], word: null, pending: null, dq: false });
   let cur = fresh();
 
@@ -92,27 +100,40 @@ function parse(src) {
     cur.word = null;
     cur.pending = null;
   };
-  const endSeg = () => {
+  const endSeg = term => {
     endWord();
-    if (cur.words.length || cur.redirs.length) segs.push({ words: cur.words, redirs: cur.redirs });
+    if (cur.words.length || cur.redirs.length || (groupClosed && term)) {
+      const ended = term ?? ';';
+      segs.push({ words: cur.words, redirs: cur.redirs, term: ended, scope: stack.map(f => f.id), fork: FORKING.has(ended) || FORKING.has(lastTerm) });
+    }
+    groupClosed = false;
+    if (term) lastTerm = term;
     cur = fresh();
   };
-  const open = (closer, placeholder) => { stack.push({ outer: cur, closer, placeholder }); cur = fresh(); };
+  const open = (closer, placeholder) => { stack.push({ outer: cur, closer, placeholder, id: ++scopeSeq, lastTerm }); cur = fresh(); lastTerm = ''; };
   const close = () => {
     endSeg();
     const f = stack.pop();
     cur = f.outer;
+    lastTerm = f.lastTerm;
     if (f.placeholder) cur.word = `${cur.word ?? ''}$(…)`;
+    else groupClosed = true;
+  };
+  // commands from a substitution found inside text (arithmetic, an unquoted here-doc) run in a subshell of their own
+  const nested = c => {
+    const id = ++scopeSeq;
+    const outer = stack.map(f => f.id);
+    return parse(c).map(sg => ({ ...sg, scope: [...outer, id, ...(sg.scope ?? [])] }));
   };
   // anything the guard cannot parse with confidence becomes a segment whose "program" is unknown, hence denied
-  const unparsable = () => segs.push({ words: ['<unparsable-substitution>'], redirs: [] });
+  const unparsable = () => segs.push({ words: ['<unparsable-substitution>'], redirs: [], term: ';', scope: stack.map(f => f.id), fork: false });
   const dollarParen = i => {
     if (src[i + 2] === '(') { // $(( arithmetic )) is not a command itself, but its body can hold $( ), backticks and <( ), which run
       const k = matchClose(src, i + 3, 2);
       if (k < 0) { unparsable(); return src.length; }
       if (src[k - 1] === ')' && k - 1 >= i + 3) {
         const cmds = substitutions(src.slice(i + 3, k - 1));
-        if (cmds) for (const c of cmds) segs.push(...parse(c)); else unparsable();
+        if (cmds) for (const c of cmds) segs.push(...nested(c)); else unparsable();
         cur.word = `${cur.word ?? ''}$((…))`;
         return k;
       }
@@ -137,7 +158,7 @@ function parse(src) {
       // an unquoted heredoc still expands $( ) and backticks, which run
       if (!h.quoted) {
         const cmds = substitutions(body.join('\n'));
-        if (cmds) for (const c of cmds) segs.push(...parse(c)); else unparsable();
+        if (cmds) for (const c of cmds) segs.push(...nested(c)); else unparsable();
       }
     }
     return i;
@@ -174,8 +195,12 @@ function parse(src) {
     } else if (c === '"') { cur.word ??= ''; cur.dq = true; }
     else if (c === '\\') { if (next !== '\n') cur.word = (cur.word ?? '') + (next ?? ''); i++; }
     else if (c === '#' && cur.word === null) { while (i + 1 < src.length && src[i + 1] !== '\n') i++; }
-    else if (c === '\n') { endSeg(); i = readHeredocBodies(i); }
-    else if (c === ';' || c === '|' || (c === '&' && next !== '>')) endSeg();
+    else if (c === '\n') { endSeg('\n'); i = readHeredocBodies(i); }
+    else if (c === ';' || c === '|' || (c === '&' && next !== '>')) {
+      let op = c;
+      if ((c === '&' || c === '|') && (next === c || (c === '|' && next === '&'))) { op = c + next; i++; } // && || |&
+      endSeg(op);
+    }
     else if (c === ' ' || c === '\t') endWord();
     else if (c === '$' && next === '(') i = dollarParen(i);
     else if (c === '`') i = backtick(i);
@@ -261,16 +286,19 @@ const STEERING_VARS = new Set(['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_
   'GIT_EDITOR', 'GIT_ASKPASS', 'GIT_EXEC_PATH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'PAGER', 'EDITOR', 'VISUAL',
   // which repo (and so which .git/config) git reads; the GIT_TRACE* family and GIT_REDIRECT_STDERR write files named by the variable
   'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG',
-  'GIT_REDIRECT_STDERR']);
+  'GIT_REDIRECT_STDERR', 'CDPATH']);
 const isSteering = v => STEERING_VARS.has(v) || /^GIT_(CONFIG_(KEY|VALUE)_\d+|TRACE\w*)$/.test(v);
 
 // -> { prog, args, assigns } (prog is undefined for an assignment-only segment), { denial } for a bad wrapper option, or null when the segment
 // runs and sets nothing (`command -v`, flow-control header). assigns = names of VAR=val words in the prefix, including those after env/time/...
 // A wrapper with nothing left to run (bare `env`, `nohup`, `timeout 5`) comes back as the program itself, so it is judged on its own: denied.
+// `external` = a wrapper that starts a new process ran first (env, nice, timeout, nohup, exec ...): a `cd` behind it is not the shell builtin and changes nothing.
+const SHELL_WRAPPERS = new Set(['command', 'builtin', 'time']);
 function unwrap(words) {
   const w = [...words];
   const assigns = [];
   let lastWrapper = null;
+  let external = false;
   const nothingToRun = () => (assigns.length ? { assigns } : null);
   while (w.length) {
     const head = w[0];
@@ -281,14 +309,15 @@ function unwrap(words) {
     if (head === 'command' && /^-[vV]$/.test(w[1] ?? '')) return nothingToRun();
     if (wrapper === null || !Object.hasOwn(WRAPPERS, wrapper)) break;
     lastWrapper = wrapper;
+    external ||= !SHELL_WRAPPERS.has(wrapper);
     w.shift();
     const denial = readWrapperOptions(wrapper, w);
     if (denial) return { denial };
   }
-  if (!w.length && lastWrapper) return { prog: lastWrapper, args: [], assigns };
+  if (!w.length && lastWrapper) return { prog: lastWrapper, args: [], assigns, external };
   if ((w[0] === 'for' || w[0] === 'select') && isSteering(w[1] ?? '')) return { denial: deny(`setting ${w[1]}`, WHY_ENV) };
   if (!w.length || NOOP.has(w[0])) return nothingToRun();
-  return { prog: w[0], args: w.slice(1), assigns };
+  return { prog: w[0], args: w.slice(1), assigns, external };
 }
 
 // ---------- paths ----------
@@ -535,6 +564,22 @@ function gitWhereDenial(dir, ctx) {
   return loc.path === ctx.tmp || strictlyInside(loc.path, ctx.tmp)
     ? deny(GIT_TEMP_REPO, 'could read a .git/config written there, which can name a program', 'Run git only in the repo under review, outside the temp dir.') : null;
 }
+// fetch and ls-remote talk to a remote: only a configured one, named by a bare word (no URL, scp-like address, ext:: transport or path, which can name any host
+// or run a program). Options that take a separate value are skipped so their value is not mistaken for the remote.
+const GIT_REMOTE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+const GIT_REMOTE_VALUE_OPTS = new Set(['--depth', '--deepen', '--shallow-since', '--shallow-exclude', '-j', '--jobs', '--filter', '--negotiation-tip', '-o', '--server-option', '--refmap', '--sort']);
+const GIT_ADDRESS = /:\/\/|::|^[^\s/:@]+@[^\s/:]+:/;
+function gitRemoteDenial(sub, rest) {
+  if (sub !== 'fetch' && sub !== 'ls-remote') return null;
+  const positional = [];
+  for (let k = 0; k < rest.length; k++) {
+    const a = rest[k];
+    if (a === '--') { positional.push(...rest.slice(k + 1)); break; }
+    if (a.startsWith('-') && a.length > 1) { if (GIT_REMOTE_VALUE_OPTS.has(a)) k++; } else positional.push(a);
+  }
+  const bad = positional.some((p, idx) => (idx === 0 ? !GIT_REMOTE_NAME.test(p) : GIT_ADDRESS.test(p)));
+  return bad ? deny(`git ${sub}`, 'may only name a configured remote (a bare word such as origin), never a URL, address or path', FIX_STATE) : null;
+}
 function gitRule(args, ctx) {
   let cwd = ctx.cwd;
   let i = 0;
@@ -570,6 +615,8 @@ function gitRule(args, ctx) {
   }
   if (sub === 'remote' && GIT_REMOTE_WRITERS.has(args[i + 1])) return deny(`git remote ${args[i + 1]}`, 'would write the repo config (remote URLs, hooks)', FIX_STATE);
   if (sub === 'branch' && hasFlag(args.slice(i + 1), GIT_BRANCH_CONFIG_WRITERS)) return deny('git branch (upstream/description)', 'would write the repo config', FIX_STATE);
+  const remoteDenied = gitRemoteDenial(sub, args.slice(i + 1));
+  if (remoteDenied) return remoteDenied;
   const denied = [...GIT_DENIED_LONG, ...(sub === 'archive' ? ['--remote'] : [])];
   const end = args.indexOf('--');
   // `git archive -o FILE` (the short form of --output) writes a file anywhere
@@ -631,7 +678,7 @@ function dockerRule(args) {
 const TAR_SHORT = 'xtvzjJafCpkmO';
 const TAR_SHORT_VALUE = 'fC';
 const TAR_LONG = new Set(['extract', 'get', 'list', 'file', 'directory', 'verbose', 'gzip', 'gunzip', 'bzip2', 'xz', 'zstd', 'lzma', 'auto-compress', 'strip-components',
-  'wildcards', 'no-wildcards', 'exclude', 'one-top-level', 'no-same-owner', 'no-same-permissions', 'touch', 'ignore-zeros', 'keep-old-files', 'skip-old-files',
+  'wildcards', 'no-wildcards', 'exclude', 'no-same-owner', 'no-same-permissions', 'touch', 'ignore-zeros', 'keep-old-files', 'skip-old-files',
   'keep-newer-files', 'overwrite', 'no-overwrite-dir', 'to-stdout', 'preserve-permissions']);
 const TAR_LONG_VALUE = new Set(['file', 'directory', 'strip-components', 'exclude']);
 
@@ -880,20 +927,51 @@ function judge(seg, unwrapped, ctx) {
   return NOT_ALLOWED_HINT.has(name) ? deny(prog, WHY_NOT_ALLOWED, FIX_NOT_ALLOWED) : deny(prog);
 }
 
-// a `cd` to a statically known dir lets later relative paths resolve; an unknown target makes them unverifiable
-function trackCd(unwrapped, ctx) {
-  if (!unwrapped?.prog || !['cd', 'pushd'].includes(programName(unwrapped.prog))) return;
-  const target = unwrapped.args.find(a => !a.startsWith('-'));
-  const loc = target === undefined ? null : locate(target, ctx);
-  ctx.cwd = loc && !loc.tail.length ? loc.path : null;
+// ---------- where the next command runs ----------
+// ctx.cwd = the shell's directory (null = not known statically: relative paths then cannot be judged and are denied). Rules, each closing a way for the
+// guard to believe in a directory the shell is not in:
+//  - a ( ) group, $( ), backtick or <( ) is a subshell: its cd/pushd/popd are undone when it ends;
+//  - either side of a pipe and a background job (`cd d & cmd`, `cd d | cmd`) are subshells: their cd never reaches the next command;
+//  - env/nice/timeout/nohup/... start a process, so `env cd d` is not the builtin and changes nothing;
+//  - a cd can fail: afterwards the new directory is certain only if it exists now (and nothing earlier in the command rm'd or mv'd it); otherwise it is
+//    believed only for commands that run when the cd succeeded, i.e. the rest of its `&&` chain (a pipe stays in the chain), then it is forgotten.
+const DIR_BUILTINS = new Set(['cd', 'pushd', 'popd']);
+const CHAIN_TERMS = new Set(['&&', '|', '|&']);
+const isDirectory = p => { try { return statSync(p).isDirectory(); } catch { return false; } };
+
+function trackDir(unwrapped, seg, ctx) {
+  const name = unwrapped?.prog === undefined ? null : programName(unwrapped.prog);
+  if (name === 'rm' || name === 'mv') ctx.destructive = true;
+  if (!DIR_BUILTINS.has(name) || unwrapped.external || seg.fork) return;
+  const args = unwrapped.args;
+  const target = args.find(a => !a.startsWith('-'));
+  const where = target === undefined ? null : locate(target, ctx);
+  let next = where && !where.tail.length && !args.some(a => /^[+-]\d+$/.test(a)) ? where.path : null;
+  if (name === 'popd') next = args.length ? null : (ctx.dirs.pop() ?? null);
+  else if (name === 'pushd') { if (next === null) ctx.dirs = []; else ctx.dirs.push(ctx.cwd); }
+  const certain = next !== null && !ctx.destructive && isDirectory(next);
+  ctx.cwd = certain || (next !== null && seg.term === '&&') ? next : null;
+  ctx.assumed = next !== null && !certain && seg.term === '&&';
+}
+// a chain ends at ; || & or a newline: what a failed cd would have left behind is then possible again
+function endChain(seg, ctx) {
+  if (ctx.assumed && !CHAIN_TERMS.has(seg.term)) { ctx.cwd = null; ctx.assumed = false; }
 }
 
 function decide(command, ctx) {
+  Object.assign(ctx, { dirs: [], assumed: false, destructive: false });
+  const frames = []; // the ( ) groups the previous segment was inside, with the state to restore when each ends
   for (const seg of parse(command)) {
+    const scope = seg.scope ?? [];
+    let keep = 0;
+    while (keep < frames.length && keep < scope.length && frames[keep].id === scope[keep]) keep++;
+    while (frames.length > keep) Object.assign(ctx, frames.pop().saved);
+    for (const id of scope.slice(keep)) frames.push({ id, saved: { cwd: ctx.cwd, dirs: [...ctx.dirs], assumed: ctx.assumed } });
     const unwrapped = unwrap(seg.words);
     const verdict = judge(seg, unwrapped, ctx);
     if (verdict) return verdict;
-    trackCd(unwrapped, ctx);
+    trackDir(unwrapped, seg, ctx);
+    endChain(seg, ctx);
   }
   return null;
 }
