@@ -18,7 +18,7 @@ npx skills add PNNutkung/skills --skill paired-agent-tdd
 
 Claude Code only, to also get the `zero-trust-review` guard and telemetry-capture hooks (skills alone do not include hooks):
 
-```
+```sh
 /plugin marketplace add PNNutkung/skills
 /plugin install pnnutkung-skills@pnnutkung-skills
 ```
@@ -26,7 +26,7 @@ Claude Code only, to also get the `zero-trust-review` guard and telemetry-captur
 ## Skills
 
 | Skill | What it does |
-|---|---|
+| --- | --- |
 | [`paired-agent-tdd`](skills/paired-agent-tdd) | TDD as driver/navigator pairs scheduled from an explicit execution graph (`graph.mjs`), with per-node model and effort tiering. Runs on a Claude Code agent team or a Workflow script. |
 | [`zero-trust-review`](skills/zero-trust-review) | Strict review of a branch diff against a 30-point production-hazard checklist, tiered and cost-capped (`quick` / `standard` / `deep`). Cites findings as permalinks on the review host (GitLab, GitHub, or git-only). |
 | [`ai-code-delivery`](skills/ai-code-delivery) | Delivery runbook for agent-written code: feature-flag gating, trunk/leaf review depth, PR proof template, fresh-context review, 80/20 readiness gate, canary rollout. Hands the diff review to `zero-trust-review`. |
