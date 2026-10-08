@@ -74,6 +74,7 @@ test('classifyRed: assertion failure, load error, no failure, no tests, no sandb
   assert.equal(classifyRed({ exit: 1, tail: "Error [ERR_MODULE_NOT_FOUND]: Cannot find module './a.mjs'" }), 'fails-to-load');
   assert.equal(classifyRed({ exit: 0, tail: '2 passed' }), 'passes-already');
   assert.equal(classifyRed({ exit: 5, tail: 'no tests ran in 0.01s' }), 'no-tests');
+  assert.equal(classifyRed({ exit: 5, tail: 'collected 0 items' }), 'no-tests');
   assert.equal(classifyRed({ exit: 86, tail: '' }), 'unverifiable');
   assert.equal(classifyRed({ exit: 124, tail: '' }), 'timeout');
   assert.equal(classifyRed({ exit: 1 }), 'fails');
