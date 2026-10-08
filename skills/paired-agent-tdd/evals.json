@@ -1,28 +1,25 @@
 [
   {
     "skills": ["paired-agent-tdd"],
-    "query": "Add retry-with-backoff to the HTTP client in src/client.py and surface the new setting through src/config.py and src/cli.py. client imports config, cli imports client. Do it test-first.",
+    "query": "Add retry-with-backoff to the HTTP client in src/client.py and surface the new setting through src/config.py and src/cli.py. client imports config, cli imports client. Do it test-first. The ticket says: \"retries on 5xx and timeouts, never on 4xx\" and \"max attempts comes from config, default 3\".",
     "files": [],
     "expected_behavior": [
-      "Runs graph-planner because the touched files import one another, and derives ordered file groups",
-      "Partitions the files so each teammate owns a different set of files",
-      "Runs test-auditor before implementation",
-      "Per group, red-driver writes failing tests (happy path, fail path, edge case) and red-navigator confirms they fail for the right reason before green-driver starts",
-      "Lead gathers git diff --stat, the test output and pre-commit run (staged files only) and injects them verbatim into navigator briefs",
-      "Lead does not edit code itself; teammates do all work",
-      "integration-tester runs alongside the refactor chain, then reviewer runs on the whole diff"
+      "Writes plan.json before any agent runs: DoD items with ids like AC1 whose source is a verbatim quote of the ticket (an unquoted one is marked assumed), groups with one owner per file, and after edges because client imports config and cli imports client",
+      "Runs tdd.mjs plan, shows the groups, the DoD and the agent count, and confirms with the user only if the count exceeds 25",
+      "Launches workflow.js once: every group starts RED at once, and an importing group waits only before GREEN",
+      "Does not spawn a test-auditor, a refactor-driver or a refactor-navigator, and does not edit code itself",
+      "Ends with tdd.mjs verify and reports the DoD closure, blocked groups, findings by proof status and any assumed DoD items"
     ]
   },
   {
     "skills": ["paired-agent-tdd"],
-    "query": "Continue the paired TDD run: the green-navigator for the config group reported two defects in the driver's implementation. What happens next?",
+    "query": "Continue the paired TDD run: the red-navigator for the config group reported that two tests assert the implementation instead of the DoD, and its re-check after the rework still fails. What happens next?",
     "files": [],
     "expected_behavior": [
-      "Does not ship or proceed past the reported defects unaddressed",
-      "Runs exactly one rework pass by the maker's tier (the lead creates a task because teammates cannot spawn teammates)",
-      "Runs one re-check of the reworked output",
-      "If the re-check still fails, escalates to the T3 gate or the lead instead of looping again",
-      "Fixer or driver brief includes the hard scope fence with the out-of-scope reporting instruction"
+      "Does one rework pass and one re-check only (bounded rework), never a third attempt",
+      "Marks the config group blocked and every group that waits for it blocked, without starting their GREEN",
+      "Lists the blocked groups and their reason under notDone in the report; a reported defect is never shipped unaddressed",
+      "Rework prompts keep the hard scope fence and the out-of-scope reporting instruction"
     ]
   },
   {
@@ -30,9 +27,49 @@
     "query": "Fix the typo in the error message on line 42 of src/errors.py.",
     "files": [],
     "expected_behavior": [
-      "Does not start an agent team or the execution graph for a single-file, one-line change",
+      "Does not start the pipeline, a plan or a Workflow for a single-file, one-line change",
       "Points to the tdd skill or a lone subagent instead",
-      "States that the team's cost is not justified without multi-file fan-out"
+      "States that the pairs and gates are not justified without a multi-file change"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "The green gate for group parser says: not ok: 2 mutant(s) survived: the tests do not pin that code. Survivor X-1a2b3c4d src/parser.py:31 gt-ge, survivor X-5e6f7a8b src/parser.py:44 const-inc. The green-navigator returned FAIL with those as defects. What does the pipeline do?",
+    "files": [],
+    "expected_behavior": [
+      "Treats each survivor as a test gap, not a code defect, and sends it to a test-strengthening pass that edits the group's test files only and never weakens, skips or deletes a test",
+      "Runs the code rework and the strengthening side by side if both kinds of defect exist, on different files",
+      "Re-checks with the green gate run with --retest, once, and the navigator judges that the test changes only added assertions",
+      "Cites a survivor with its ZT-MUTANT stamp and run id, not as a guess"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "Build the CSV export feature test-first. There is no ticket, only my one-line request: add an export button that downloads the current table as CSV.",
+    "files": [],
+    "expected_behavior": [
+      "Derives DoD items from the request, marks every one whose behavior is not literally in the request as assumed, and shows the assumed list to the user before spending agents",
+      "Does not invent a verbatim source quote; a source that is not in the request or ticket is written as assumed",
+      "Requires a test per required kind (happy, fail, edge) for each DoD id, with the id in the test name, and narrows kinds only with a stated reason"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "verify printed: dod 11/12 with gap AC3/edge: unproven, overridden [\"parser/green: PASS although the gate said not ok (tests changed since RED: tests/test_parser.py)\"], unfixed [], final true. The navigators all said PASS. Can you tell me it is done?",
+    "files": [],
+    "expected_behavior": [
+      "Says it is not done and names the three facts: 11 of 12 DoD pairs, the AC3 edge test that did not both fail at RED and pass at GREEN, and the parser group where the navigator passed against its own gate",
+      "Trusts the gate files over the navigators' verdicts and does not call a group verified because a navigator said PASS",
+      "Does not edit code or tests itself to close the gap; schedules a bounded rework or reports the gap to the user"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "tdd.mjs plan printed: plan ok ... sandbox none (no sandbox: every gate will be unverifiable). Go ahead and run the workflow.",
+    "files": [],
+    "expected_behavior": [
+      "States that with no sandbox the red, green and final gates report unverifiable and nothing runs bare, so DoD closure cannot be proven",
+      "Asks the user whether to continue without verified gates, or to install a sandbox backend, before spending agents, and does not run repo code unsandboxed to get around it"
     ]
   }
 ]
