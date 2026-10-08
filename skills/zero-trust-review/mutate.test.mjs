@@ -23,8 +23,9 @@ if (a[0] === '--check') { console.log('stub'); process.exit(0); }
 appendFileSync(join(dir, 'calls.log'), JSON.stringify(a) + '\\n');
 const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
 const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
-const fake = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).exit;
+const cfg = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')), fake = cfg.exit;
 if (fake) process.exit(fake);
+if (cfg.fakeMutantExit && cmd.join(' ').includes('ZT-MUTANT')) process.exit(cfg.fakeMutantExit);
 const env = { ...process.env };
 for (const kv of vals('--env')) env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
 const code = spawnSync(cmd[0], cmd.slice(1), { cwd: vals('--cwd')[0], env, stdio: 'inherit' }).status ?? 1;
@@ -70,13 +71,13 @@ function fixture(t, { source = CALC, testText = TEST_CALC, extra = {} } = {}) {
   return { dir, repo, base, head: git(repo, 'rev-parse', 'HEAD'), scratch: join(dir, 'scratch') };
 }
 
-function mutate(fx, args = [], fake = {}) {
+function mutate(fx, args = [], fake = {}, { cmd = 'python3 {file}', runner } = {}) {
   const sd = join(fx.dir, 'stub');
   mkdirSync(sd, { recursive: true });
   writeFileSync(join(sd, 'stub-runner.mjs'), STUB);
   writeFileSync(join(sd, 'config.json'), JSON.stringify(fake));
-  const r = spawnSync(process.execPath, [MUTATE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', fx.scratch, '--cmd', 'python3 {file}',
-    '--runner', join(sd, 'stub-runner.mjs'), '--jobs', '2', ...args], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [MUTATE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', fx.scratch, '--cmd', cmd,
+    '--runner', runner ?? join(sd, 'stub-runner.mjs'), '--jobs', '2', ...args], { encoding: 'utf8' });
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* usage error */ }
   return { ...r, out, calls: existsSync(join(sd, 'calls.log')) ? readFileSync(join(sd, 'calls.log'), 'utf8').trim().split('\n').map(l => JSON.parse(l)) : [] };
@@ -160,7 +161,36 @@ test('a survivor and a killed mutant both carry a quote that the ledger output w
   for (const m of r.out.mutants) assert.match(m.quote, new RegExp(`^ZT-MUTANT ${m.id} ${m.file.replace('.', '\\.')}:${m.line} ${m.op} exit=${m.result === 'survived' ? 0 : '[1-9]\\d*'}$`));
   const stamped = r.calls.filter(a => a.at(-1).includes('ZT-MUTANT X-'));
   assert.equal(stamped.length, r.out.mutants.length, 'one stamped run per mutant (one test file); the baseline run is not stamped');
-  assert.ok(stamped.every(a => a.at(-1).startsWith('( ')));
+  assert.ok(stamped.every(a => a.at(-1).includes('( ') && a.at(-1).includes('cat ') && a.at(-1).endsWith('exit "$zt"')));
+});
+
+const REAL_RUNNER = join(HERE, 'sandbox-run.mjs');
+const realSandbox = existsSync(REAL_RUNNER) && spawnSync(process.execPath, [REAL_RUNNER, '--check'], { encoding: 'utf8' }).status === 0;
+
+// An untrusted test can swap a source file for a symlink to anywhere. The tool must never write through it from the HOST: mutants are applied and undone by the
+// sandboxed command itself, where the write is refused. (Before the fix the host-side restore overwrote the file the link points to, with the change request's own bytes.)
+test('a test that swaps the mutated file for a symlink cannot make the host write outside the tree', { skip: !realSandbox && 'no sandbox on this host' }, t => {
+  const fx = fixture(t);
+  const outside = join(fx.dir, 'outside.txt');
+  writeFileSync(outside, 'SAFE\n');
+  put(fx.repo, { 'tests/swap.sh': `rm -f src/calc.py\nln -s '${outside}' src/calc.py\n` });
+  git(fx.repo, 'add', '-A'); git(fx.repo, 'commit', '-qm', 'hostile test');
+  const r = mutate({ ...fx, head: git(fx.repo, 'rev-parse', 'HEAD') }, ['--tests', 'tests/swap.sh', '--timeout', '30'], {}, { cmd: 'sh {file}', runner: REAL_RUNNER });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(outside, 'utf8'), 'SAFE\n', 'the host wrote through a planted symlink');
+  assert.ok(r.out.mutants.length > 0);
+});
+
+test('a mutant whose run did not finish cleanly (no stamp: killed, timed out) gets its tree replaced, never reused', { skip }, t => {
+  const fx = fixture(t);
+  const r = mutate(fx, [], { fakeMutantExit: 124 });
+  assert.equal(r.out.score.timeout, r.out.mutants.length);
+  const scratch = realpathSync(fx.scratch), dirs = readdirSync(scratch);
+  assert.ok(dirs.length <= 2, `${dirs.length} trees left in scratch (one per worker; discarded trees are removed)`);
+  for (const d of dirs) {
+    assert.equal(readFileSync(join(scratch, d, 'src/calc.py'), 'utf8'), CALC, d);
+    assert.equal(existsSync(join(scratch, d, 'src/calc.py.zt-orig')), false, d);
+  }
 });
 
 test('the repo is never modified, and mutated files are restored in the scratch trees', { skip }, t => {
