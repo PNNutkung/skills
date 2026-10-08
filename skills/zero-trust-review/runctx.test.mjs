@@ -4,7 +4,7 @@ import assert from 'node:assert';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { STALE_MS, activate, appendSafe, checkRunDir, deactivate, markerFile, readMarker, resolveRun, writeSafe } from './runctx.mjs';
+import { STALE_MS, activate, appendSafe, checkRunDir, createRunDir, deactivate, markerFile, readMarker, resolveRun, writeSafe } from './runctx.mjs';
 
 const mk = () => mkdtempSync(join(tmpdir(), 'zt-ctx-'));
 const env = dir => ({ ZT_MARKER_DIR: dir });
@@ -94,6 +94,17 @@ test('writeSafe replaces a file inside the run dir (0600) and never follows a le
   assert.throws(() => writeSafe(run, join(mk(), 'elsewhere.md'), 'x\n'), /outside run folder/);
   chmodSync(run, 0o777);
   assert.throws(() => writeSafe(run, join(run, 'a.md'), 'x\n'), /unsafe/, 'a run dir others can write is refused');
+});
+
+test('createRunDir makes the private per-uid run dir WITHOUT a marker, and the ledger tools approve it as an explicit run dir', () => {
+  const tmp = mk(), md = mk(); chmodSync(md, 0o700);
+  const run = createRunDir('pat-abc12345', { tmp, env: env(md) });
+  assert.match(run, /zt-review(-\d+)?\/pat-abc12345$/);
+  assert.equal(lstatSync(run).mode & 0o077, 0, 'private run dir');
+  assert.equal(readMarker({ env: env(md) }), '', 'no marker: the review-only guard stays off for this run');
+  assert.equal(resolveRun({ run, env: env(md), tmp }), run, 'approved by living under the per-user base');
+  assert.equal(createRunDir('pat-abc12345', { tmp, env: env(md) }), run, 'idempotent');
+  assert.throws(() => createRunDir('../escape', { tmp }));
 });
 
 test('activate creates a private per-uid run dir and the marker; deactivate removes only its own marker', () => {

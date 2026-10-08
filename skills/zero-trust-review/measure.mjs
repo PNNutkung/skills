@@ -8,7 +8,8 @@ import { join } from 'node:path';
 const [dir, sha8 = '-', mode = '-'] = process.argv.slice(2);
 if (!dir) { console.error('usage: node measure.mjs <transcriptDir> [sha8 mode]'); process.exit(2); }
 const NODE = l => (/^refute:/.test(l) ? 'verifier-refute' : /^reproduce:/.test(l) ? 'verifier-reproduce' : /^adjudicator:/.test(l) ? 'adjudicator' : /^batch:/.test(l) ? 'batch-verifier'
-  : l === 'critic' ? 'critic' : /^GAP/.test(l) ? 'gap-reviewer' : /^(test-auditor|integration-probe)$/.test(l) ? l : 'reviewer');
+  : l === 'critic' ? 'critic' : /^GAP/.test(l) ? 'gap-reviewer' : /^(test-auditor|integration-probe)$/.test(l) ? l
+  : /^((red|green)-(driver|navigator)|fixer|reviewer|integration-tester)(:|$)/.exec(l)?.[1] ?? 'reviewer'); // the last arm: paired-agent-tdd labels are <node>:<group>[:rework|:recheck|:strengthen]
 const jsonl = f => readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 
 const agents = readdirSync(dir).filter(f => /^agent-.*\.jsonl$/.test(f)).map(f => {
