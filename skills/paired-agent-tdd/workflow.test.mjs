@@ -12,7 +12,7 @@ const wf = new (Object.getPrototypeOf(async () => {}).constructor)('agent', 'par
 const KINDS = ['happy', 'fail', 'edge'];
 const grp = (id, o = {}) => ({ id, goal: `goal of ${id}`, tests: [`tests/test_${id}.py`], src: [`src/${id}.py`], dod: [`${id.toUpperCase()}1`], after: [], ...o });
 const BASE = {
-  repo: '/repo', base: 'b'.repeat(40), cmd: 'pytest -q {file}', skillDir: HERE, runDir: '/tmp/pat-test', scratch: '/tmp/pat-scratch',
+  repo: '/repo', base: 'b'.repeat(40), cmd: 'pytest -q {file}', skillDir: HERE, runDir: '/tmp/pat-test', scratch: '/tmp/pat-scratch', maxRepairs: 40, // the old scenarios test the round cap and the stall check, not the run-wide budget (see scenario 21)
   dod: ['a', 'b', 'c', 'slow', 'fast'].map(id => ({ id: `${id.toUpperCase()}1`, text: `behavior of ${id}`, source: 'assumed' })),
   groups: [grp('a'), grp('b', { after: ['a'] }), grp('c')],
 };
@@ -61,8 +61,9 @@ function launch(args, respond, delay = 0) {
 async function play(args, over = {}, delay = 0) {
   const h = launch(args, agentsFor({ ...BASE, ...args }, over), delay), out = await h.done;
   assert.deepEqual(h.unexpected, [], 'agent called with no canned answer');
-  const broken = /\bNaN\b|undefined|\[object Object\]/; // a prompt or a reason built from a missing value: the mutation probe turned several string joins into NaN and nothing noticed
+  const broken = /NaN|undefined|\[object Object\]/; // a prompt or a reason built from a missing value: the mutation probe turned several string joins into NaN and nothing noticed
   assert.deepEqual(h.calls.filter(c => broken.test(c.prompt)).map(c => c.o.label), [], 'a prompt holds NaN, undefined or [object Object]');
+  assert.deepEqual(h.logs.filter(m => broken.test(m)), [], 'a log line holds NaN, undefined or [object Object]');
   assert.deepEqual([...Object.values(out.groups || {}).map(g => g.reason || ''), ...(out.notDone || [])].filter(t => broken.test(t)), [], 'a reason holds NaN, undefined or [object Object]');
   return { out, ...h, n: out.stats && out.stats.agentsByNode, by: label => h.calls.filter(c => c.o.label === label) };
 }
@@ -425,4 +426,142 @@ r = await play({ groups: [grp('a')] }, { 'red-driver:a': thinMatrix, 'red-driver
 assert.equal(r.calls.filter(c => ['red-driver', 'red-navigator', 'green-driver', 'green-navigator'].includes(c.o.label.split(':')[0]) && c.o.label.split(':')[1] === 'a').length, 5 + 5 * ROUNDS, 'the documented worst case is reached and not exceeded');
 assert.equal(r.out.groups.a.state, 'done');
 
-console.log('ok - paired-agent-tdd workflow.js: 20 scenarios');
+// 21 the run-wide repair budget: spent, a failing group is PAUSED (resumable), never retried further; the cheapest brake on tokens
+nth = 0;
+r = await play({ groups: [grp('a')], maxRepairs: 1 }, never);
+assert.equal(r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, 2, 'the driver, then the one repair the budget allows');
+assert.deepEqual([r.out.groups.a.state, r.out.stats.repairsLeft, r.out.stats.repairBudget], ['paused', 0, 1]);
+assert.match(r.out.groups.a.reason, /run-wide repair budget \(1\) is spent after 1 repair round\(s\)[\s\S]*continue with tdd\.mjs resume/);
+assert.ok(r.out.notDone.some(n => /^a paused/.test(n)) && /tdd\.mjs resume --run \/tmp\/pat-test --ret return\.json[\s\S]*args\.resume/.test(r.out.postmortemMd), 'the report says how to continue');
+nth = 0;
+r = await play({ groups: [grp('a'), grp('b', { after: ['a'] })], dod: BASE.dod, maxRepairs: 0 }, { 'red-navigator:a': FAIL('test', 'weak') });
+assert.deepEqual([r.out.groups.a.state, r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, r.out.groups.b.state], ['paused', 1, 'blocked'], 'no budget: the first failing check pauses the group, and what waits for it is blocked');
+const thinOnly = () => ({ matrix: rows(a, ['happy']), files: ['tests/test_a.py'], reuse: 'none' });
+r = await play({ groups: [grp('a')], maxRepairs: 0 }, { 'red-driver:a': thinOnly });
+assert.equal(r.by('red-driver:a:matrix').length, 0, 'the matrix rework is a repair too: with none left the navigator is told about the gap instead');
+assert.match(r.by('red-navigator:a')[0].prompt, /KNOWN GAPS/);
+r = await play({ groups: [grp('a'), grp('c')], maxRepairs: 1 }, { 'red-navigator:a': () => FAIL('test', 'weak a'), 'red-navigator:c': () => FAIL('test', 'weak c'), 'red-navigator:c:recheck': () => FAIL('test', 'weak c again') });
+assert.equal(r.calls.filter(c => /:rework/.test(c.o.label)).length, 1, 'the budget belongs to the run, not to each group');
+assert.ok(Object.values(r.out.groups).some(g => g.state === 'paused'));
+r = await play({ mode: 'plan', maxRepairs: undefined });
+assert.deepEqual([r.out.repairBudget, r.out.worstBuildAgents], [6, 30], 'the default is 2 repairs per group: 3 groups cap at 4 x 3 + 3 x 6 build agents');
+r = await play({ mode: 'plan', maxRepairs: 99 });
+assert.equal(r.out.repairBudget, 6, 'an out-of-range budget falls back to the default');
+
+// 22 a maker that stops on a failing gate and says what remains: the next pass starts from that list, no navigator is spent on a failure it already admits; a PASS never comes from a maker
+const stuck = { matrix: rows(a), files: ['tests/test_a.py'], reuse: 'none', gateOk: false, gateRuns: 3, remaining: [{ cls: 'test', file: 'tests/test_a.py', what: 'the edge test still passes already' }] };
+r = await play({ groups: [grp('a')] }, { 'red-driver:a': stuck });
+assert.deepEqual([r.by('red-navigator:a').length, r.by('red-driver:a:rework').length, r.by('red-navigator:a:recheck').length, r.out.groups.a.state], [0, 1, 1, 'done']);
+assert.match(r.by('red-driver:a:rework')[0].prompt, /FIX EXACTLY THESE DEFECTS[\s\S]*the edge test still passes already/);
+r = await play({ groups: [grp('a')] }, { 'red-driver:a': { ...stuck, gateOk: true } });
+assert.equal(r.by('red-navigator:a').length, 1, 'a maker that says ok is still checked: only a navigator on fresh facts ends a stage');
+r = await play({ groups: [grp('a')] }, { 'red-driver:a': stuck, 'red-driver:a:rework': stuck });
+assert.deepEqual([r.calls.filter(c => /^red-navigator/.test(c.o.label)).length, r.out.groups.a.state], [0, 'blocked']);
+assert.match(r.out.groups.a.reason, /RED made no progress/, 'the same admitted defects twice is a stall, with no agent spent on checking it');
+const greenStuck = { files: ['src/a.py'], reuse: 'none', gateOk: false, gateRuns: 3, remaining: [{ cls: 'gap', file: 'src/a.py', line: 4, what: 'mutant X-1 survived: no test pins x > 0' }] };
+r = await play({ groups: [grp('a')] }, { 'green-driver:a': greenStuck, 'red-driver:a:strengthen': strengthened });
+assert.deepEqual([r.by('green-navigator:a').length, r.by('red-driver:a:strengthen').length, r.out.groups.a.state], [0, 1, 'done'], 'an admitted survivor goes straight to the strengthening pass');
+assert.match(r.by('green-navigator:a:recheck')[0].prompt, /--retest/);
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': mixed, 'red-driver:a:strengthen': { ...strengthened, gateOk: false, remaining: [{ cls: 'gap', what: 'x' }] }, 'green-driver:a:rework': { files: ['src/a.py'], reuse: 'none', gateOk: false, remaining: [{ cls: 'impl', what: 'y' }] } }, 3);
+assert.equal(r.by('green-navigator:a:recheck').length, 1, 'two makers in one round never ran the gate: their claims are not admissions, the check runs');
+
+// 23 resume: a continue file (written by tdd.mjs resume from the gate files) lets a failed, blocked, paused or killed run continue; done groups cost nothing
+const cont = (groups, base = 'b'.repeat(40)) => ({ resume: { version: 1, base, groups } });
+const ent = (next, o = {}) => ({ next, why: 'test', matrix: rows(a), files: ['tests/test_a.py'], defects: [], retest: false, ...o });
+r = await play(cont({ a: ent('done'), b: ent('done', { matrix: rows(BASE.groups[1]) }), c: ent('done', { matrix: rows(BASE.groups[2]) }) }));
+assert.deepEqual([r.out.stats.total, r.n.reviewer, Object.values(r.out.groups).map(g => g.state)], [1, 1, ['done', 'done', 'done']], 'every group already done: only the review is left to pay for');
+assert.deepEqual([r.out.groups.a.red.carried, r.out.groups.a.matrix.length], [true, 3], 'the carried matrix reaches the return, so verify still closes the DoD');
+const only = (e, args = {}) => play({ groups: [grp('a')], ...cont({ a: e }), ...args });
+r = await only(ent('green-fix', { defects: [{ cls: 'impl', file: 'tests/test_a.py', what: 'tests/test_a.py is fails-on-head: it does not pass with the group code' }] }));
+assert.deepEqual([r.by('red-driver:a').length, r.by('red-navigator:a').length, r.by('green-driver:a').length, r.by('green-navigator:a').length], [0, 0, 0, 0], 'RED, the first driver and the first check are all skipped');
+assert.match(r.by('green-driver:a:rework')[0].prompt, /FIX EXACTLY THESE DEFECTS[\s\S]*fails-on-head/);
+assert.deepEqual([r.by('green-navigator:a:recheck').length, r.out.groups.a.state, r.out.groups.a.red.carried], [1, 'done', true]);
+r = await only(ent('green-check'));
+assert.deepEqual([r.out.stats.agentsByNode['red-driver'], r.out.stats.agentsByNode['green-driver'], r.by('green-navigator:a').length], [undefined, undefined, 1], 'the gates were ok and nobody judged them: one navigator, no maker');
+r = await only(ent('green'));
+assert.deepEqual([r.by('red-driver:a').length, r.by('green-driver:a').length, r.by('green-navigator:a').length], [0, 1, 1]);
+r = await only(ent('red-check'));
+assert.deepEqual([r.by('red-driver:a').length, r.by('red-navigator:a').length, r.by('green-driver:a').length], [0, 1, 1], 'a navigator looks at the tests on disk, then GREEN runs as usual');
+r = await only(ent('red-fix', { defects: [{ cls: 'test', file: 'tests/test_a.py', what: 'RED gate: tests/test_a.py is passes-already' }] }));
+assert.deepEqual([r.by('red-driver:a').length, r.by('red-driver:a:rework').length, r.by('red-navigator:a:recheck').length], [0, 1, 1]);
+assert.match(r.by('red-driver:a:rework')[0].prompt, /passes-already/);
+r = await only(ent('red'));
+assert.deepEqual([r.by('red-driver:a').length, r.by('red-navigator:a').length], [1, 1], 'nothing to continue from: a normal start');
+r = await only(ent('nonsense'));
+assert.equal(r.by('red-driver:a').length, 1, 'an unknown entry is a normal start, never a skipped group');
+r = await only(ent('green-check', { retest: true }));
+assert.match(r.by('green-navigator:a')[0].prompt, /green --run \/tmp\/pat-test --group a --retest/, 'tests strengthened in the last run keep --retest');
+r = await only(ent('green', { retest: true }));
+assert.match(r.by('green-driver:a')[0].prompt, /green --run \/tmp\/pat-test --group a --retest/);
+assert.equal(r.out.groups.a.retest, true, 'the return records it, so the next resume keeps it');
+assert.match((await play(cont({}, 'c'.repeat(40)))).out.error, /another run/, 'a continue file from another base is refused');
+// a group that waits for a carried-over group does not wait for anything
+r = await play({ groups: [grp('a'), grp('b', { after: ['a'] })], dod: BASE.dod, ...cont({ a: ent('done'), b: ent('green', { matrix: rows(BASE.groups[1]) }) }) });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.b.state, r.by('red-driver:b').length], ['done', 'done', 0]);
+// a dead agent's replacement is pointed at one cheap command instead of exploring the tree
+calls10 = 0;
+r = await play({}, { 'red-driver:c': () => (++calls10 === 1 ? null : { matrix: rows(BASE.groups[2]), files: ['tests/test_c.py'], reuse: 'none' }) });
+assert.match(r.by('red-driver:c')[1].prompt, /^RETRY 2\/2 of red-driver:c[\s\S]*Run `node \S+\/tdd\.mjs resume --run \/tmp\/pat-test --group c` first/);
+r = await play({}, { reviewer: () => (calls10-- > 0 ? null : { findings: [] }) });
+assert.match(r.by('reviewer')[1].prompt, /^RETRY 2\/2 of reviewer[\s\S]*read the files and `git diff` first/, 'an agent with no group has no state to ask for');
+
+// 24 pins found by the mutation probe on the resume and budget code
+r = await only(ent('done'));
+assert.deepEqual([r.out.groups.a.red.reworks, r.out.groups.a.green.reworks, r.out.groups.a.retest], [0, 0, false], 'a carried group has spent no repair in this run');
+r = await only(ent('green'));
+assert.deepEqual([r.out.groups.a.red.reworks, r.out.groups.a.red.carried], [0, true]);
+r = await play({ groups: [grp('a')] });
+assert.deepEqual(r.out.groups.a.files, ['tests/test_a.py'], 'the files the driver reports reach the return');
+r = await play({ groups: [grp('a')], maxRepairs: 1 }, { 'red-driver:a': thinOnly });
+assert.deepEqual([r.by('red-driver:a:matrix').length, r.out.stats.repairsLeft, r.out.groups.a.state], [1, 0, 'done'], 'the matrix rework runs on the LAST repair of the budget');
+// the repair itself can admit: a code maker that stops on a surviving mutant sends the group straight to a strengthening pass, with no check in between
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('impl', 'extra feature'), 'green-driver:a:rework': greenStuck, 'red-driver:a:strengthen2': strengthened });
+assert.deepEqual([r.by('green-navigator:a:recheck').length, r.by('red-driver:a:strengthen2').length, r.by('green-navigator:a:recheck2').length, r.out.groups.a.state], [0, 1, 1, 'done']);
+assert.match(r.by('red-driver:a:strengthen2')[0].prompt, /mutant X-1 survived/);
+// a test defect that two makers report is kept once, a new one is added
+const td = { file: 'tests/test_a.py', line: 9, why: 'asserts the old message' }, td2 = { file: 'tests/test_a.py', line: 12, why: 'asserts the old name' };
+r = await play({ groups: [grp('a')] }, {
+  'green-driver:a': { files: ['src/a.py'], reuse: 'none', gateOk: false, gateRuns: 3, remaining: [{ cls: 'impl', what: 'first' }] },
+  'green-driver:a:rework': { files: ['src/a.py'], reuse: 'none', gateOk: false, gateRuns: 2, testDefects: [td], remaining: [{ cls: 'impl', what: 'second' }] },
+  'green-driver:a:rework2': { files: ['src/a.py'], reuse: 'none', gateOk: true, gateRuns: 1, testDefects: [td, td2] },
+});
+assert.deepEqual(r.out.groups.a.green.testDefects, [td, td2], 'the same test defect from two makers is kept once, a new one is added');
+assert.deepEqual([r.out.groups.a.green.driver.gateOk, r.out.groups.a.green.driver.gateRuns], [true, 1], 'and the record is the latest maker\'s');
+// a strengthening-only round never rewrites the record of the code maker
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('gap', 'mutant X-3 survived'), 'red-driver:a:strengthen': { ...strengthened, gateOk: false, gateRuns: 9 } });
+assert.deepEqual([r.out.groups.a.green.driver.gateRuns], [undefined], 'the green driver of the default scenario reports no gate runs, and a strengthening maker\'s claim does not replace that');
+// 25 fixes from the second review: fair shares of the budget, carried groups cost no budget, a paused group is not reviewed, retest survives a stop, a continue file is bound to its run
+nth = 0;
+r = await play({ groups: [grp('a'), grp('c')], maxRepairs: 3 }, { ...never, 'red-navigator:c': () => FAIL('test', 'weak c') }, l => (/^red-navigator:c/.test(l) ? 40 : 0));
+assert.equal(r.calls.filter(c => /^red-driver:a:rework/.test(c.o.label)).length, 2, 'the hard group takes what the easy one has not got coming, and no more');
+assert.deepEqual([r.out.groups.a.state, r.out.groups.c.state], ['paused', 'done'], 'the easy group still gets its repair');
+assert.match(r.out.groups.a.reason, /the rest of the run-wide repair budget \(3\) is reserved for the groups still running/);
+nth = 0;
+const neverC = Object.fromEntries(['green-navigator:c', 'green-navigator:c:recheck', 'green-navigator:c:recheck2', 'green-navigator:c:recheck3'].map(l => [l, () => FAIL('impl', 'defect number ' + (++nth))]));
+r = await play({ maxRepairs: undefined, ...cont({ a: ent('done'), b: ent('done', { matrix: rows(BASE.groups[1]) }), c: ent('green-check', { matrix: rows(BASE.groups[2]) }) }) }, neverC);
+assert.deepEqual([r.out.stats.repairBudget, r.out.groups.c.state, r.calls.filter(c => /^green-driver:c:rework/.test(c.o.label)).length], [2, 'paused', 2], 'groups carried over as done get no budget: 2 for the one group with work left, not 6');
+assert.equal(r.out.reviewed, false);
+assert.equal(r.n.reviewer, undefined, 'a paused group means the change is not whole: no opus review of it now, and none again after the resume');
+assert.ok(r.logs.some(m => /reviewer skipped: group\(s\) c paused/.test(m)));
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': () => FAIL('gap', 'mutant ' + (++nth) + ' survived'), 'green-navigator:a:recheck': () => FAIL('gap', 'mutant ' + (++nth) + ' survived'), 'green-navigator:a:recheck2': () => FAIL('gap', 'mutant ' + (++nth) + ' survived'), 'green-navigator:a:recheck3': () => FAIL('gap', 'mutant ' + (++nth) + ' survived') });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.a.retest], ['blocked', true], 'a group that stops after strengthening its tests records that, or the next resume would undo the strengthening');
+assert.match((await play({ resume: { version: 1, base: 'b'.repeat(40), run: '/tmp/some-other-run', groups: {} } })).out.error, /another run/);
+assert.match((await play({ resume: { version: 1, groups: {} } })).out.error, /another run/, 'a continue file with no base is refused, not trusted');
+assert.equal((await play({ ...cont({ a: ent('done'), b: ent('done', { matrix: rows(BASE.groups[1]) }), c: ent('done', { matrix: rows(BASE.groups[2]) }) }), resume: { version: 1, base: 'b'.repeat(40), run: '/tmp/pat-test/', groups: { a: ent('done'), b: ent('done', { matrix: rows(BASE.groups[1]) }), c: ent('done', { matrix: rows(BASE.groups[2]) }) } } })).out.error, undefined, 'the same run folder, with or without a trailing slash');
+r = await play({}, { 'green-driver:c': () => null });
+assert.match(r.out.postmortemMd, /tdd\.mjs resume --run \/tmp\/pat-test[\s\S]*args\.resume/, 'the postmortem points at the cheap way back, not at redoing the work');
+assert.match(r.by('green-navigator:a')[0].prompt, /passes without the new code = cls gap[\s\S]*a flaky run too\) cls impl/);
+
+// the shares, at their boundaries: a group is never held to less than its share, and never takes what a group still running is owed
+const easy = (id, ms = 40) => ({ over: { [`red-navigator:${id}`]: () => FAIL('test', 'weak ' + id) }, delay: l => (l.startsWith(`red-navigator:${id}`) ? ms : 0) });
+nth = 0;
+r = await play({ groups: [grp('a'), grp('c')], maxRepairs: 2 }, { ...never, ...easy('c').over }, easy('c').delay);
+assert.equal(r.calls.filter(c => /^red-driver:a:rework/.test(c.o.label)).length, 1, 'a has spent its share and the last repair belongs to c: exactly 1');
+assert.deepEqual([r.out.groups.a.state, r.out.groups.c.state], ['paused', 'done']);
+nth = 0;
+r = await play({ groups: [grp('a'), grp('c'), grp('d')], dod: BASE.dod, maxRepairs: 3 }, { ...never, ...easy('c').over, ...easy('d').over }, l => (/^red-navigator:[cd]/.test(l) ? 40 : 0));
+assert.deepEqual([r.calls.filter(c => /^red-driver:a:rework/.test(c.o.label)).length, r.out.groups.c.state, r.out.groups.d.state], [1, 'done', 'done'], 'three groups, three repairs: the hard one keeps one, each easy one gets its own');
+r = await play({ groups: [grp('a')] });
+assert.deepEqual([r.out.groups.a.red.reworks, r.out.groups.a.green.reworks], [0, 0], 'a group that needed nothing spent nothing');
+
+console.log('ok - paired-agent-tdd workflow.js: 26 scenarios');

@@ -17,6 +17,7 @@ export function validatePlan(plan, ticketText) {
   if (plan?.cover !== undefined && !(typeof plan.cover === 'string' && plan.cover.includes('{out}'))) bad('cover must be a command containing {out} (an lcov file it writes; {files} = the group test files)');
   if (plan?.integration !== undefined && !(relPath(plan.integration?.file) && squash(plan.integration?.goal))) bad('integration needs a relative file and a goal');
   if (plan?.rounds !== undefined && !(Number.isInteger(plan.rounds) && plan.rounds >= 1 && plan.rounds <= 4)) bad('rounds must be an integer from 1 to 4 (repair rounds per stage before a group is blocked)');
+  if (plan?.maxRepairs !== undefined && !(Number.isInteger(plan.maxRepairs) && plan.maxRepairs >= 0 && plan.maxRepairs <= 40)) bad('maxRepairs must be an integer from 0 to 40 (repair passes for the whole run; groups still failing then are paused, not blocked)');
   for (const n of plan?.link ?? []) if (!relPath(n)) bad(`link ${JSON.stringify(n)} must be a normalized relative path inside the repo`);
   for (const p of plan?.ro ?? []) if (typeof p !== 'string' || !p.startsWith('/')) bad(`ro ${JSON.stringify(p)} must be an absolute path`);
   for (const e of plan?.env ?? []) if (!/^[A-Za-z_]\w*=/.test(String(e))) bad(`env ${JSON.stringify(e)} must be K=V`);
@@ -104,6 +105,32 @@ export function classifyRed({ exit, tail }) {
 }
 const RED_OK = new Set(['fails', 'fails-to-load']);
 export const redOk = tests => tests.length > 0 && tests.every(t => RED_OK.has(t.verdict));
+
+const DEFECT_CAP = 6;
+const RED_WHY = { 'passes-already': 'it passes without new code, so it pins no new behavior', missing: 'the file does not exist', 'no-tests': 'it holds no test', unverifiable: 'the sandbox could not run it', timeout: 'it timed out' };
+/** RED gate file -> the defects a maker must fix (what a RED navigator would report), read from the gate's own facts, not from anyone's words. */
+export function defectsFromRed(gate) {
+  return (gate?.tests ?? []).filter(t => !RED_OK.has(t.verdict)).slice(0, DEFECT_CAP).map(t => ({ cls: 'test', file: t.file, what: `RED gate: ${t.file} is ${t.verdict}: ${RED_WHY[t.verdict] ?? 'it must fail now for the right reason'}` }));
+}
+/**
+ * GREEN gate file -> defects, classed the way the green navigator is told to: code that does not pass or a flaky run = impl, a test that pins nothing or a surviving mutant or
+ * too little coverage = gap (strengthen), changed tests = test (restore). A reason the structure does not name still becomes an impl defect, never silence. Worst first, capped.
+ */
+export function defectsFromGreen(gate) {
+  const tests = gate?.tests ?? [], impl = [], test = [], gap = [];
+  for (const t of tests) {
+    if (t.verdict === 'exercises-change') continue;
+    if (t.verdict === 'no-signal') gap.push({ cls: 'gap', file: t.file, what: `${t.file} passes without the group's code, so it pins nothing: assert the new behavior` });
+    else impl.push({ cls: 'impl', file: t.file, what: `${t.file} is ${t.verdict}${t.reason ? ` (${t.reason})` : ''}: it does not pass with the group's code` });
+  }
+  if (tests.some(t => t.nondeterministic)) impl.push({ cls: 'impl', what: 'flaky: the 3 runs disagree: make the code under test deterministic, or report the test under testDefects' }); // the restore maker cannot fix it: only the code maker can
+  if ((gate?.reasons ?? []).some(r => r.startsWith('tests changed since RED')) && gate?.frozen?.changed?.length) test.push({ cls: 'test', file: gate.frozen.changed[0], what: `tests changed since RED: ${gate.frozen.changed.join(', ')}` });
+  for (const s of gate?.mutation?.survivors ?? []) gap.push({ cls: 'gap', file: s.file, line: s.line, what: `mutant ${s.id} survived (${s.op}): ${String(s.before ?? '').trim().slice(0, 60)} -> ${String(s.after ?? '').trim().slice(0, 60)}; no test pins that code` });
+  const cov = gate?.coverage;
+  if (cov?.pct != null && cov.pct < cov.min) gap.push({ cls: 'gap', what: `changed-line coverage ${cov.pct}% < ${cov.min}%${Object.keys(cov.uncovered ?? {}).length ? `; uncovered ${Object.entries(cov.uncovered).slice(0, 3).map(([f, ls]) => `${f}:${ls.slice(0, 5).join(',')}`).join(' ')}` : ''}` });
+  const all = [...impl, ...test, ...gap];
+  return (all.length ? all : (gate?.ok === false ? (gate.reasons ?? []).map(what => ({ cls: 'impl', what })) : [])).slice(0, DEFECT_CAP);
+}
 
 /** `git diff --numstat` text -> { changed: paths, removed: deleted line count } (binary files count as changed) */
 export function parseNumstat(text) {

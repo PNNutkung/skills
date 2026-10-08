@@ -92,5 +92,26 @@
       "States that with no sandbox the red, green and final gates report unverifiable and nothing runs bare, so DoD closure cannot be proven",
       "Asks the user whether to continue without verified gates, or to install a sandbox backend, before spending agents, and does not run repo code unsandboxed to get around it"
     ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "The Workflow returned notDone: [\"b paused: the run-wide repair budget (6) is spent after 2 repair round(s), still failing: tests/test_b.py is fails-on-head\"]. Group a is done. How do you continue without paying for the whole run again?",
+    "files": [],
+    "expected_behavior": [
+      "Runs tdd.mjs resume --run $RUN --ret return.json, a plain-code command that reads the gate files and spends no agent, and uses the continue.json it writes",
+      "Runs the Workflow again with args.resume set to that file and a NEW maxRepairs, because continuing is a decision about spend; says group a costs nothing (carried over as done)",
+      "Group b restarts at the stage the gates say (a repair with the defects read off the GREEN gate), not at RED, and its first check is not paid for",
+      "Does not rebuild group a, does not re-explore the working tree, and still ends with tdd.mjs verify on the combined return"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "An agent of the paired-agent-tdd run died after editing files and its retry is starting. What should the replacement do first, and what does the run keep so a killed session can be continued?",
+    "files": [],
+    "expected_behavior": [
+      "The replacement runs tdd.mjs resume --run $RUN --group G first: one command that says where the group stands from its gate files, instead of reading the tree and git diff to find out",
+      "The state survives without any agent writing it: gate files, the dod rows saved in gates/G.rows.json and continue.json from tdd.mjs resume",
+      "A gate result is only used while fresh: a file edited after the gate ran makes the old verdict stale and the group is looked at again"
+    ]
   }
 ]

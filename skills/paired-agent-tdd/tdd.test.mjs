@@ -344,6 +344,161 @@ test('plan: rounds is validated and travels to the Workflow args', t => {
   assert.equal(JSON.parse(ok.plan().out.trim().split('\n').pop()).rounds, 2);
 });
 
+const resumeOf = (fx, args = []) => { const r = fx.tdd('resume', args); assert.equal(r.status, 0, r.err); return r; };
+const continueOf = fx => JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).groups;
+const ROW = { dod: 'AC1', kind: 'happy', test: 'test_ac1_happy', file: 'tests/test_alpha.sh' };
+
+test('resume: from the gate files alone each group says where it stands; the matrix survives in rows.json; nothing is trusted from an agent', t => {
+  const fx = planned(t);
+  resumeOf(fx);
+  assert.deepEqual(Object.values(continueOf(fx)).map(g => g.next), ['red', 'red'], 'no gate on record: a normal start');
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).base, fx.head, 'the file is tied to the base it was made for');
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  fx.tdd('red', ['--group', 'a']);
+  dod(fx, 'red');
+  assert.deepEqual(fx.gate('a.rows.json').rows, [ROW], 'every dod call persists its rows: an agent that dies takes nothing with it');
+  resumeOf(fx);
+  assert.deepEqual([continueOf(fx).a.next, continueOf(fx).a.matrix], ['red-check', [ROW]], 'the RED gate is ok but no navigator has passed it: one check, never a free pass to GREEN');
+  const redPass = join(fx.dir, 'red-pass.json');
+  writeFileSync(redPass, JSON.stringify({ groups: { a: { red: { verdict: 'PASS' } } } }));
+  resumeOf(fx, ['--ret', redPass]);
+  assert.equal(continueOf(fx).a.next, 'green', 'RED passed (a navigator said so) and there is no code yet');
+  put(fx.repo, { 'src/alpha.txt': 'new\n' });
+  resumeOf(fx);
+  assert.match(JSON.stringify(continueOf(fx).a), /"next":"green-check".*code exists, no fresh GREEN gate/);
+  fx.tdd('green', ['--group', 'a']);
+  resumeOf(fx);
+  assert.match(JSON.stringify(continueOf(fx).a), /"next":"green-check".*gates fresh and ok, not judged yet/, 'gates ok but no navigator judged them: one check, no maker');
+  const ret = join(fx.dir, 'return.json');
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'done', matrix: [ROW], files: ['src/alpha.txt'] } } }));
+  resumeOf(fx, ['--ret', ret]);
+  assert.deepEqual([continueOf(fx).a.next, continueOf(fx).a.files], ['done', ['src/alpha.txt']], 'judged PASS last run, gates fresh and ok, DoD pair closed');
+  put(fx.repo, { 'src/alpha.txt': 'newer\n' });
+  resumeOf(fx, ['--ret', ret]);
+  assert.equal(continueOf(fx).a.next, 'green-check', 'an edit after the gate ran: the old verdict no longer counts');
+});
+
+test('resume: a gate that is fresh and not ok gives its defects, read off the gate; a stale RED gate is looked at again', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\ngrep -q old src/alpha.txt\n' });
+  fx.tdd('red', ['--group', 'a']);
+  resumeOf(fx);
+  const red = continueOf(fx).a;
+  assert.equal(red.next, 'red-fix');
+  assert.match(red.defects[0].what, /RED gate: tests\/test_alpha\.sh is passes-already/);
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  resumeOf(fx);
+  assert.equal(continueOf(fx).a.next, 'red', 'tests edited since the gate and no rows to hand over: start RED again');
+  dod(fx, 'red');
+  resumeOf(fx);
+  assert.equal(continueOf(fx).a.next, 'red-check', 'with rows, a navigator looks at what is on disk');
+  fx.tdd('red', ['--group', 'a']);
+  put(fx.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\ntrue\n', 'src/alpha.txt': 'new\n' });
+  fx.tdd('green', ['--group', 'a', '--retest']);
+  resumeOf(fx);
+  const green = continueOf(fx).a;
+  assert.equal(green.next, 'green-fix');
+  assert.deepEqual(green.defects.map(d => d.cls), ['gap'], 'a test that passes without the code pins nothing: strengthen it');
+});
+
+test('resume: tests that only GREW since RED are a strengthening (retest); tests that lost lines are not', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  fx.tdd('red', ['--group', 'a']);
+  dod(fx, 'red');
+  put(fx.repo, { 'tests/test_alpha.sh': `echo extra\n${TEST_ALPHA}`, 'src/alpha.txt': 'new\n' }); // a line ADDED in front: the last command still decides the exit
+  fx.tdd('green', ['--group', 'a']);
+  assert.equal(fx.gate('a.green.json').ok, false, 'changed since RED without --retest');
+  resumeOf(fx);
+  assert.deepEqual([continueOf(fx).a.retest, continueOf(fx).a.defects], [true, []], 'additions only: sanctioned, and the "changed" reason is not made a defect');
+  put(fx.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\ntrue\n' });
+  fx.tdd('green', ['--group', 'a']);
+  resumeOf(fx);
+  assert.equal(continueOf(fx).a.retest, false, 'a line was removed: that is a weakening, not a strengthening');
+  assert.match(continueOf(fx).a.defects.map(d => d.what).join(' | '), /tests changed since RED/);
+  const ret = join(fx.dir, 'return.json');
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'blocked', retest: true } } }));
+  resumeOf(fx, ['--ret', ret]);
+  assert.equal(continueOf(fx).a.retest, true, 'the last run knew it strengthened the tests');
+});
+
+test('resume: what the last navigator said stands while the files are unchanged; a gate that is ok does not erase it', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  fx.tdd('red', ['--group', 'a']);
+  dod(fx, 'red');
+  const ret = join(fx.dir, 'return.json'), tautology = { cls: 'test', file: 'tests/test_alpha.sh', what: 'asserts the implementation, not the DoD' };
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'paused', red: { verdict: 'FAIL', defects: [tautology] } } } }));
+  resumeOf(fx, ['--ret', ret]);
+  assert.deepEqual([continueOf(fx).a.next, continueOf(fx).a.defects], ['red-fix', [tautology]], 'a defect only a navigator can see (the gate is ok) is not forgotten: RED is not carried as PASS');
+  put(fx.repo, { 'src/alpha.txt': 'new\n' });
+  fx.tdd('green', ['--group', 'a']);
+  const weak = { cls: 'gap', what: 'the edge test only checks truthiness' };
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'blocked', green: { verdict: 'FAIL', defects: [weak] } } } }));
+  resumeOf(fx, ['--ret', ret]);
+  assert.deepEqual([continueOf(fx).a.next, continueOf(fx).a.defects], ['green-fix', [weak]], 'GREEN gate ok, navigator FAIL: a repair, not a navigator that pays to find the same thing again');
+  put(fx.repo, { 'src/alpha.txt': 'newer\n' });
+  resumeOf(fx, ['--ret', ret]);
+  assert.equal(continueOf(fx).a.next, 'green-check', 'the code changed since: the old verdict is stale, look again');
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'blocked', reason: 'GREEN made no progress: the same defects came back after repair round 1: x', green: { verdict: 'FAIL', defects: [weak] } } } }));
+  put(fx.repo, { 'src/alpha.txt': 'new\n' });
+  fx.tdd('green', ['--group', 'a']);
+  resumeOf(fx, ['--ret', ret]);
+  assert.match(continueOf(fx).a.why, /STALLED last run/);
+});
+
+test('resume: the gate records whether it ran with --retest; the saved rows only ever grow with real tests; a missing snapshot is a stale gate, not a crash; the file names its run', t => {
+  const fx = planned(t);
+  const three = '# test_ac1_happy\n# test_ac1_fail\n# test_ac1_edge\ngrep -q new src/alpha.txt\n';
+  put(fx.repo, { 'tests/test_alpha.sh': three });
+  fx.tdd('red', ['--group', 'a']);
+  const rows3 = ['happy', 'fail', 'edge'].map(k => `AC1:${k}:test_ac1_${k}:tests/test_alpha.sh`);
+  dod(fx, 'red', rows3);
+  dod(fx, 'red', [rows3[0], 'AC1:happy:test_ac1_typo:tests/test_alpha.sh']);
+  assert.deepEqual(fx.gate('a.rows.json').rows.map(r => r.test), ['test_ac1_happy', 'test_ac1_fail', 'test_ac1_edge'], 'a partial call with a phantom row neither shrinks the matrix nor adds the phantom');
+  put(fx.repo, { 'tests/test_alpha.sh': three.replace('grep -q new src/alpha.txt', 'grep -q new src/alpha.txt && true'), 'src/alpha.txt': 'new\n' }); // a line REPLACED: a sharpening
+  fx.tdd('green', ['--group', 'a', '--retest']);
+  assert.deepEqual([fx.gate('a.green.json').ok, fx.gate('a.green.json').retest], [true, true]);
+  resumeOf(fx);
+  assert.deepEqual([continueOf(fx).a.retest, continueOf(fx).a.next], [true, 'green-check'], 'a sanctioned sharpening (a line removed) is still sanctioned after a restart');
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).run, fx.run, 'the file names the run folder it was made for');
+  const g = fx.gate('a.green.json');
+  writeFileSync(join(fx.run, 'gates', 'a.green.json'), JSON.stringify({ ...g, snapshot: '0'.repeat(40) }));
+  const r = resumeOf(fx);
+  assert.match(r.out, /a: green-check \(code exists, no fresh GREEN gate\)/, 'a pruned snapshot makes the gate stale for that group only');
+});
+
+test('resume: an environment failure (no sandbox, a timeout) is a warning, not a reason to spend makers', t => {
+  const fx = planned(t, { fake: { exit: 86 } });
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  fx.tdd('red', ['--group', 'a']);
+  const r = resumeOf(fx);
+  assert.match(r.out, /WARNING a: a gate says unverifiable or timeout: fix the sandbox before spending agents on it/);
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).warnings.length, 1);
+});
+
+test('resume: the same row or the same defect from two sources is kept once', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\ngrep -q old src/alpha.txt\n' });
+  fx.tdd('red', ['--group', 'a']);
+  dod(fx, 'red');
+  const fromGate = 'RED gate: tests/test_alpha.sh is passes-already: it passes without new code, so it pins no new behavior';
+  const ret = join(fx.dir, 'return.json');
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'paused', matrix: [ROW, { ...ROW, kind: 'fail', test: 'not_in_the_file' }], red: { verdict: 'FAIL', defects: [{ cls: 'test', what: fromGate }, { cls: 'test', what: 'tautology' }] } } } }));
+  resumeOf(fx, ['--ret', ret]);
+  assert.deepEqual(continueOf(fx).a.matrix, [ROW], 'rows.json and the return both name the test once; a row whose test is gone from its file is dropped');
+  assert.deepEqual(continueOf(fx).a.defects.map(d => d.what), [fromGate, 'tautology'], 'the navigator and the gate said the same thing once');
+});
+
+test('resume --group prints one group and writes no file: it is what a replacement for a dead agent runs instead of exploring the tree', t => {
+  const fx = planned(t);
+  const r = resumeOf(fx, ['--group', 'b']);
+  assert.match(r.out, /^RESUME b: 1 of 1 group\(s\) need work\n  b: red \(no RED gate on record\)/);
+  assert.equal(existsSync(join(fx.run, 'continue.json')), false);
+  assert.equal(fx.tdd('resume', ['--group', 'zzz']).status, 2);
+  assert.equal(fx.tdd('resume', ['--ret', join(fx.dir, 'nope.json')]).status, 2);
+});
+
 test('coverage: changed lines covered below the minimum is a reason; the lcov file comes from the sandboxed command', t => {
   const cover = hits => `printf 'SF:src/alpha.txt\\nDA:1,${hits}\\nend_of_record\\n' > {out}`;
   for (const [hits, ok] of [[0, false], [3, true]]) {

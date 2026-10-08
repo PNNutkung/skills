@@ -14,7 +14,8 @@ import { checkMatrix } from './gates.mjs';
 // fanout: group = one per file group (groups stream through RED and GREEN with no barrier between them).
 // LIM: pool = agents in flight at once (one rolling pool for the whole run), retry = extra attempts for a dead or null agent, rounds = repair rounds per stage (R4):
 // a driver pass, then an independent check, repeated until the check passes, stops making progress or the rounds run out. plan.rounds (1-4) overrides it per run.
-export const LIM = { pool: 6, retry: 1, rounds: 3 };
+// repairs = the run-wide repair budget PER GROUP (plan.maxRepairs overrides the total): spent, a group still failing is PAUSED, not retried: `tdd.mjs resume` continues it later.
+export const LIM = { pool: 6, retry: 1, rounds: 3, repairs: 2 };
 export const NODES = [
   { id: 'graph-planner', tier: 'T3', role: 'Partition the planned files into owned groups and their order', needs: [], model: 'opus', effort: 'high', ponytail: 'full', agentType: 'planner', gated: 'only when the import structure is unknown', outside: true, deliverable: 'groups + after edges for plan.json' },
   { id: 'plan', tier: 'T0', role: 'tdd.mjs plan: validate groups, DoD and quotes, snapshot the base tree', needs: ['graph-planner'], model: 'code', deliverable: 'RUN/plan.json + Workflow args' },
@@ -64,11 +65,12 @@ export function plan(g, integration, findingGroups) {
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
 }
 /**
- * The ceiling of BUILD agents when every check fails until the rounds run out, per group: RED = 1 driver + 1 matrix rework + (1 + R) checks + R reworks, GREEN = 1 driver +
- * (1 + R) checks + up to 2 makers a round (a code fix and a strengthening pass) = 5 + 5R. Not counted: the reviewer, the fixers, up to 3 final couriers with their fixers,
- * and one retry (LIM.retry) of any agent that dies.
+ * The ceiling of BUILD agents. Per group, when every check fails until the rounds run out: RED = 1 driver + 1 matrix rework + (1 + R) checks + R reworks, GREEN = 1 driver +
+ * (1 + R) checks + up to 2 makers a round = 5 + 5R. Run-wide, the repair budget B (every rework or repair round, the matrix rework included) bounds the rest: the first pass of
+ * every group is 4 agents (2 makers, 2 checks) and each repair is at most 2 makers + 1 check, so 4g + 3B. The smaller of the two holds. Not counted: the reviewer, the fixers,
+ * up to 3 final couriers with their fixers, and one retry (LIM.retry) of any agent that dies.
  */
-export const worst = (g, rounds = LIM.rounds) => g * (5 + 5 * rounds);
+export const worst = (g, rounds = LIM.rounds, budget = LIM.repairs * g) => Math.min(g * (5 + 5 * rounds), 4 * g + 3 * budget);
 // The design this one replaced, as an ESTIMATE (not measured): auditor + 6 agents per group + integration tester + 3 dimension reviewers + one fixer per finding.
 const oldTotal = (g, findings) => 1 + 6 * g + 1 + 3 + findings;
 
@@ -135,7 +137,9 @@ function check() {
   assert.ok(['red-driver', 'green-driver', 'fixer', 'integration-tester'].every(id => byId.get(id).agentType === 'tdd-guide'), 'makers use the TDD agent type');
   assert.equal(plan(3, 0, 1).total, 15, '3 groups: 12 build agents + 1 reviewer + 1 fixer + 1 final verifier');
   assert.equal(plan(3, 0, 0).total, 13, 'no findings: no fixer and no final verifier');
-  assert.equal(worst(3, 3), 60, '3 groups, 3 repair rounds: at most 60 build agents (20 per group, measured on the script with a navigator that never passes)');
+  assert.equal(worst(3, 3, 99), 60, '3 groups, 3 repair rounds, no run-wide limit: at most 60 build agents (20 per group, reached by a script test with a navigator that never passes)');
+  assert.equal(worst(3, 3), 30, 'with the default budget (2 repairs per group) the same change is capped at 4 x 3 + 3 x 6 = 30');
+  assert.ok(Number.isInteger(LIM.repairs) && LIM.repairs >= 1 && LIM.repairs <= 4, 'the run-wide repair budget is 1-4 per group');
   TARGETS.forEach(t => assert.equal(current(t), block(t), `${t.file} block ${t.open} is stale - run: node graph.mjs --write`));
   assert.ok(Buffer.byteLength(readFileSync(join(HERE, 'SKILL.md'))) <= SKILL_CAP, `SKILL.md is over ${SKILL_CAP} bytes: move long text into briefs.md or probes.md`);
   const cp = criticalPath();
@@ -148,10 +152,10 @@ const [cmd, ...a] = process.argv.slice(2);
 if (cmd === '--check') check();
 else if (cmd === '--write') { TARGETS.forEach(t => writeFileSync(join(HERE, t.file), read(t).replace(current(t), () => block(t)))); console.log('SKILL.md diagram and tiers, workflow.js node table and checkMatrix updated'); }
 else if (cmd === '--mermaid') console.log(mermaid());
-else if (cmd === '--plan' && a.length === 3) {
-  const [g, integ, fg] = a.map(Number), { counts, total } = plan(g, integ, fg);
+else if (cmd === '--plan' && a.length >= 3 && a.length <= 5) {
+  const [g, integ, fg, rounds = LIM.rounds, maxRepairs = LIM.repairs * g] = a.map(Number), { counts, total } = plan(g, integ, fg);
   console.log(`plan: ${g} group(s), integration ${integ}, ${fg} group(s) with findings`);
   Object.entries(counts).filter(([, n]) => n).forEach(([id, n]) => console.log(`  ${id.padEnd(19)} ${n}`));
-  console.log(`  total ${total} agents when every first pass is right (+ the graph-planner if used); at most ${worst(g)} build agents if every check fails until ${LIM.rounds} repair rounds per stage run out (a stalled group stops earlier; the reviewer, fixers and couriers come on top)`);
+  console.log(`  total ${total} agents when every first pass is right (+ the graph-planner if used); at most ${worst(g, rounds, maxRepairs)} build agents (${maxRepairs} repair passes for the run, ${rounds} rounds per stage; ${worst(g, rounds, 99)} without that budget); a group still failing is paused and continues with \`tdd.mjs resume\`; the reviewer, fixers and couriers come on top`);
   console.log(`  the old design is estimated at ${oldTotal(g, 4)} for the same change (NOT measured)`);
-} else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings>');
+} else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings> [rounds] [maxRepairs]');

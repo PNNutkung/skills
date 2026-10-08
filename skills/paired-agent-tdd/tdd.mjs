@@ -4,6 +4,7 @@
 //   node tdd.mjs red    --run RUN --group G               the group's NEW tests must FAIL now (class: assertion | load error | passes already)
 //   node tdd.mjs green  --run RUN --group G [--retest]    the group's tests pass, exercise the change, did not change since RED, stay in scope; mutants; coverage
 //   node tdd.mjs dod    --run RUN --group G --stage red|green --row ID:kind:test:file ...   the group's DoD pairs from its gate file and the working tree (instant, no run)
+//   node tdd.mjs resume --run RUN [--ret return.json] [--group G]   where each group stands, from the gate files; writes RUN/continue.json (args.resume of the Workflow)
 //   node tdd.mjs final  --run RUN [--again]               every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch (--again: a re-run after fixes)
 //   node tdd.mjs verify --run RUN --ret return.json       DoD closure from the gate files, fixes still present, reviewer proofs (proofcheck.mjs)
 //   node tdd.mjs snap   --run RUN --on REV [--files a,b]  print the sha of REV + those working-tree files (no --files: the whole working tree)
@@ -19,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { changedCoverage, classifyRed, closure, closureMarkdown, groupClosure, outOfScope, parseLcov, parseNumstat, parseRow, pickAffected, redOk, validatePlan } from './gates.mjs';
+import { changedCoverage, classifyRed, closure, closureMarkdown, defectsFromGreen, defectsFromRed, groupClosure, outOfScope, parseLcov, parseNumstat, parseRow, pickAffected, redOk, validatePlan } from './gates.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ZT = resolve(process.env.ZT_DIR ?? join(HERE, '..', 'zero-trust-review'));
@@ -174,7 +175,7 @@ async function green(ctx, gid, retest) {
   else if (frozen.changed.length && !retest) reasons.push(`tests changed since RED: ${frozen.changed.join(', ')}`);
   if (survivors.length) reasons.push(`${survivors.length} mutant(s) survived: the tests do not pin that code`);
   if (cover?.pct != null && cover.pct < cover.min) reasons.push(`changed-line coverage ${cover.pct}% < ${cover.min}%`);
-  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors }, coverage: cover };
+  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, retest: !!retest, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors }, coverage: cover };
   writeGate(ctx, `${gid}.green.json`, out);
   say([`GREEN ${gid} ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.reason ? ` (${t.reason})` : ''}, exit on HEAD ${t.head}, with the group's code reverted ${t.base}${t.nondeterministic ? ', FLAKY' : ''}`),
@@ -188,16 +189,23 @@ async function green(ctx, gid, retest) {
 const escapeRe = t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isNamed = (repo, rev, r) => typeof r.test === 'string' && r.test !== '' && new RegExp(`(?<![A-Za-z0-9_])${escapeRe(r.test)}(?![A-Za-z0-9_])`).test(showText(repo, rev, r.file));
 
+/** A gate file only speaks for the tree it ran on: the files it judged, as they are now, against the snapshot it ran. -> { gate, cur (a snapshot of those files now), stale (the files edited since) } */
+function gateAge(ctx, g, stage) {
+  const { plan } = ctx, gate = readGate(ctx, `${g.id}.${stage}.json`), files = stage === 'red' ? g.tests : [...g.tests, ...g.src], cur = snapOf(ctx, files);
+  let stale = [];
+  if (gate?.snapshot) { try { stale = parseNumstat(git(plan.repo, ['diff', '--numstat', gate.snapshot, cur, '--', ...files])).changed; } catch { stale = ['(the gate snapshot is gone)']; } } // a pruned snapshot is a stale gate, not a crash
+  return { gate, cur, stale };
+}
+const rowText = r => [r.dod, r.kind, r.test, r.file].join(':');
+
 /**
  * The DoD pairs of ONE group while it is built: no test is run, so a driver can ask after every edit. The rows are a claim; the facts are the working tree (is the test
  * named in its file?) and the gate file (did the file fail at RED, pass at GREEN, is the gate ok?). A gate file only speaks for the tree it ran on: edited since, it is stale.
  */
-function dod(ctx, gid, stage, rowTexts) {
+function dodCheck(ctx, gid, stage, rowTexts) {
   const { plan } = ctx, g = group(plan, gid);
   if (stage !== 'red' && stage !== 'green') fail(2, 'dod needs --stage red|green');
-  const parsed = rowTexts.map(parseRow), gate = readGate(ctx, `${gid}.${stage}.json`), files = stage === 'red' ? g.tests : [...g.tests, ...g.src];
-  const cur = snapOf(ctx, files), reasons = [], phantom = [];
-  const stale = gate?.snapshot ? parseNumstat(git(plan.repo, ['diff', '--numstat', gate.snapshot, cur, '--', ...files])).changed : [];
+  const parsed = rowTexts.map(parseRow), { gate, cur, stale } = gateAge(ctx, g, stage), reasons = [], phantom = [];
   const rows = parsed.filter(Boolean).filter(r => isNamed(plan.repo, cur, r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
   const verdicts = name => Object.fromEntries((readGate(ctx, name)?.tests ?? []).map(t => [t.file, t.verdict]));
   const c = groupClosure(plan, gid, rows, verdicts(`${gid}.red.json`), verdicts(`${gid}.green.json`), readGate(ctx, `${gid}.green.json`)?.ok === true, stage);
@@ -208,9 +216,63 @@ function dod(ctx, gid, stage, rowTexts) {
   else if (stage === 'green' && !gate.ok) reasons.push('the GREEN gate said not ok');
   if (phantom.length) reasons.push(`rows with no such test: ${phantom.join('; ')}`);
   if (c.gaps.length) reasons.push(`DoD gaps: ${c.gaps.join(', ')}`);
-  const ok = reasons.length === 0;
+  return { ok: reasons.length === 0, reasons, c, rows, cur };
+}
+const rowKey = r => [r.file, r.test, r.dod, r.kind].join('::');
+function dod(ctx, gid, stage, rowTexts) {
+  const { ok, reasons, c, rows, cur } = dodCheck(ctx, gid, stage, rowTexts);
+  if (rows.length) { // the matrix survives an agent that dies or a run that is killed: `resume` reads it back. Only rows that name a real test, merged with the earlier rows that still do (a partial call must not shrink it)
+    const kept = (readGate(ctx, `${gid}.rows.json`)?.rows ?? []).filter(r => isNamed(ctx.plan.repo, cur, r)), seen = new Set();
+    writeGate(ctx, `${gid}.rows.json`, { stage, rows: [...kept, ...rows].filter(r => !seen.has(rowKey(r)) && seen.add(rowKey(r))) });
+  }
   say([`DOD ${gid} stage=${stage} ok=${ok} covered ${c.covered}/${c.total}${c.shared.length ? ` (also owned by another group: ${c.shared.join(', ')})` : ''}`, ...(ok ? [] : [`  not ok: ${reasons.join('; ')}`]),
     ...c.items.map(i => `  ${i.id}: ${Object.entries(i.kinds).map(([k, v]) => `${k} ${v.status}${v.tests.length ? ` (${v.tests.join(', ')})` : ''}`).join(', ')}`)]);
+}
+
+/**
+ * Where does each group stand, from the gate files and the working tree alone (no agent's word, no token spent)? Writes RUN/continue.json, which the lead hands to the
+ * Workflow as args.resume so a failed, blocked, paused or killed run continues instead of starting over:
+ *   done = judged PASS last run (needs --ret) and its gates are fresh and ok and its DoD pairs close;  green-check = gates fresh and ok, nobody judged them;
+ *   green-fix = the GREEN gate is fresh and not ok (its defects are read off the gate);  green = RED passed, no code yet;  red-fix / red-check / red likewise for RED.
+ * With --group it only prints that group (an agent that replaces a dead one runs it first, instead of exploring the tree).
+ */
+function resume(ctx, retPath, only) {
+  const { plan } = ctx;
+  let ret = null;
+  if (retPath) { try { ret = JSON.parse(readFileSync(resolve(retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); } }
+  const groups = {}, lines = [], warnings = [];
+  const merge = (...lists) => { const seen = new Set(); return lists.flat().filter(d => !seen.has(d.what) && seen.add(d.what)).slice(0, 6); };
+  for (const g of only ? [group(plan, only)] : plan.groups) {
+    const prev = ret?.groups?.[g.id], red = gateAge(ctx, g, 'red'), green = gateAge(ctx, g, 'green');
+    // the matrix: what the gates saw (rows.json, refreshed by every dod call) and the last return's rows (late ones too), each only while its test still exists in its file
+    const seenRows = new Set(), matrix = [...(readGate(ctx, `${g.id}.rows.json`)?.rows ?? []), ...(prev?.matrix ?? [])].filter(r => (r.late || isNamed(plan.repo, green.cur, r)) && !seenRows.has(rowKey(r)) && seenRows.add(rowKey(r)));
+    const fz = green.gate?.frozen, retest = !!prev?.retest || !!green.gate?.retest || (!!fz?.changed?.length && fz.removed === 0); // tests only GREW since RED: a strengthening, which --retest sanctions
+    // what the last NAVIGATOR said is evidence the gates cannot give (a tautology, a token edge test): it stands while the files the gate judged have not changed since
+    const knownRed = prev?.red?.verdict === 'FAIL' ? prev.red.defects ?? [] : [], knownGreen = prev?.green?.verdict === 'FAIL' ? prev.green.defects ?? [] : [], redPassed = prev?.red?.verdict === 'PASS';
+    const staleRed = red.stale.length ? (matrix.length ? 'red-check' : 'red') : null, env = [red.gate, green.gate].some(gt => (gt?.tests ?? []).some(t => t.verdict === 'unverifiable' || t.verdict === 'timeout'));
+    let next, why, defects = [];
+    // A fresh GREEN verdict outranks a stale RED one: the tests grow after GREEN on purpose (a strengthening), so the RED gate file is out of date in every healthy run.
+    if (!red.gate) { next = 'red'; why = 'no RED gate on record'; }
+    else if (green.gate && !green.stale.length) {
+      defects = merge(knownGreen, green.gate.ok ? [] : defectsFromGreen(green.gate).filter(d => !(retest && /^tests changed since RED/.test(d.what))));
+      if (defects.length || !green.gate.ok) { next = 'green-fix'; why = knownGreen.length ? 'the last navigator reported defects the gate cannot see' : 'the GREEN gate is fresh and not ok'; }
+      else if (prev?.state === 'done' && matrix.length && dodCheck(ctx, g.id, 'green', matrix.filter(r => !r.late).map(rowText)).ok) { next = 'done'; why = 'judged PASS last run; gates fresh and ok; DoD pairs closed'; }
+      else { next = 'green-check'; why = 'gates fresh and ok, not judged yet'; }
+    } else if (!red.gate.ok) {
+      if (staleRed) { next = staleRed; why = `tests edited since the RED gate: ${red.stale.join(', ')}`; } else { next = 'red-fix'; why = 'the RED gate is not ok'; defects = merge(knownRed, defectsFromRed(red.gate)); }
+    } else if (parseNumstat(git(plan.repo, ['diff', '--numstat', plan.base, snapOf(ctx, g.src), '--', ...g.src])).changed.length > 0) { next = 'green-check'; why = 'code exists, no fresh GREEN gate'; }
+    else if (staleRed) { next = staleRed; why = `tests edited since the RED gate: ${red.stale.join(', ')}`; }
+    else if (knownRed.length) { next = 'red-fix'; why = 'the last navigator reported defects the gate cannot see'; defects = merge(knownRed); }
+    else if (redPassed) { next = 'green'; why = 'RED passed (a navigator said so), no code yet'; }
+    else { next = 'red-check'; why = 'the RED gate is ok but no navigator has passed it'; }
+    if (/made no progress/.test(prev?.reason ?? '')) why += '; STALLED last run: the same repair will probably stall again, read the defects before spending';
+    if (env) warnings.push(`${g.id}: a gate says unverifiable or timeout: fix the sandbox before spending agents on it`);
+    groups[g.id] = { next, why, matrix, files: prev?.files ?? [], defects, retest };
+    lines.push(`  ${g.id}: ${next} (${why})${defects.length ? `; ${defects.length} defect(s), first: ${defects[0].what.slice(0, 140)}` : ''}`);
+  }
+  const todo = Object.entries(groups).filter(([, v]) => v.next !== 'done').length;
+  if (!only) writeSafe(ctx.run, join(ctx.run, 'continue.json'), `${JSON.stringify({ version: 1, base: plan.base, run: ctx.run, groups, warnings })}\n`);
+  say([`RESUME ${only ?? 'run'}: ${todo} of ${Object.keys(groups).length} group(s) need work${only ? '' : `; ${join(ctx.run, 'continue.json')} written: pass its content as args.resume to the Workflow`}`, ...lines, ...warnings.map(w => `  WARNING ${w}`)]);
 }
 
 async function coverage(ctx, g, snap, base) {
@@ -336,13 +398,14 @@ try {
   const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true } }, args: process.argv.slice(3), strict: true });
   const cmd = process.argv[2];
   if (cmd === 'plan') cmdPlan(v);
-  else if (['red', 'green', 'final', 'verify', 'snap', 'dod'].includes(cmd)) {
+  else if (['red', 'green', 'final', 'verify', 'snap', 'dod', 'resume'].includes(cmd)) {
     const ctx = load(v);
     if (cmd === 'snap') process.stdout.write(`${snapOf(ctx, v.files === undefined ? undefined : v.files.split(',').filter(Boolean), v.on ?? ctx.plan.base)}\n`);
+    else if (cmd === 'resume') resume(ctx, v.ret, v.group);
     else if (cmd === 'dod') dod(ctx, v.group ?? fail(2, 'dod needs --group'), v.stage, v.row ?? []);
     else if (cmd === 'final') await final(ctx, false, v.again);
     else if (cmd === 'verify') await verify(ctx, v.ret ?? fail(2, 'verify needs --ret'));
     else if (cmd === 'red') await red(ctx, v.group ?? fail(2, 'red needs --group'));
     else await green(ctx, v.group ?? fail(2, 'green needs --group'), v.retest);
-  } else fail(2, 'usage: tdd.mjs plan|red|green|dod|final|verify|snap (see the header of tdd.mjs)');
+  } else fail(2, 'usage: tdd.mjs plan|red|green|dod|final|verify|resume|snap (see the header of tdd.mjs)');
 } catch (e) { fail(1, e.message); }

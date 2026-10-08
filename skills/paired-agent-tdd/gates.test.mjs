@@ -1,7 +1,7 @@
 // Offline checks for gates.mjs (pure functions, no I/O). Run: node --test gates.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { changedCoverage, checkMatrix, classifyRed, closure, closureMarkdown, groupClosure, outOfScope, parseLcov, parseNumstat, parseRow, pickAffected, redOk, validatePlan } from './gates.mjs';
+import { changedCoverage, checkMatrix, classifyRed, closure, closureMarkdown, defectsFromGreen, defectsFromRed, groupClosure, outOfScope, parseLcov, parseNumstat, parseRow, pickAffected, redOk, validatePlan } from './gates.mjs';
 
 const plan = () => ({
   repo: '/r', cmd: 'pytest -q {file}',
@@ -223,4 +223,42 @@ test('groupClosure: an item another group also owns can be closed there, so its 
   assert.deepEqual(b.gaps, [], 'b alone does not have to close AC1');
   assert.deepEqual(b.shared.sort(), ['AC1/edge: missing', 'AC1/fail: missing', 'AC1/happy: missing']);
   assert.equal(groupClosure(p, 'a', rows.a, red.a, green.a, true, 'green').gaps.length, 0);
+});
+
+test('validatePlan: maxRepairs is an integer from 0 to 40', () => {
+  for (const v of [0, 1, 6, 40]) assert.deepEqual(bad(p => { p.maxRepairs = v; }), [], `maxRepairs ${v} is valid: 0 means no repair at all, 40 is the top`);
+  for (const v of [-1, 41, 1.5, '3', null]) assert.match(bad(p => { p.maxRepairs = v; }).join(), /maxRepairs must be an integer from 0 to 40/, String(v));
+});
+
+test('defectsFromRed: every test file that did not fail now is a defect named by its verdict; failing files are not', () => {
+  const gate = { tests: [{ file: 'a.py', verdict: 'fails' }, { file: 'b.py', verdict: 'fails-to-load' }, { file: 'c.py', verdict: 'passes-already' }, { file: 'd.py', verdict: 'missing' }, { file: 'e.py', verdict: 'weird' }] };
+  const d = defectsFromRed(gate);
+  assert.deepEqual(d.map(x => [x.cls, x.file]), [['test', 'c.py'], ['test', 'd.py'], ['test', 'e.py']]);
+  assert.match(d[0].what, /passes-already: it passes without new code/);
+  assert.match(d[1].what, /missing: the file does not exist/);
+  assert.match(d[2].what, /weird: it must fail now for the right reason/);
+  assert.deepEqual(defectsFromRed(null), []);
+  assert.equal(defectsFromRed({ tests: Array.from({ length: 9 }, (_, i) => ({ file: `t${i}.py`, verdict: 'passes-already' })) }).length, 6, 'capped like a navigator report');
+});
+
+test('defectsFromGreen: classed like the green navigator is told to (impl, then test, then gap), from structure first and reasons only as a last resort', () => {
+  const gate = {
+    ok: false, reasons: ['a test file does not pass and exercise the change', 'flaky', 'tests changed since RED: t.py', '2 mutant(s) survived: x', 'changed-line coverage 40% < 80%'],
+    tests: [{ file: 't.py', verdict: 'fails-on-head', reason: 'exit 1' }, { file: 'u.py', verdict: 'no-signal', nondeterministic: true }, { file: 'v.py', verdict: 'exercises-change' }],
+    frozen: { changed: ['t.py', 'w.py'], removed: 2 }, mutation: { survivors: [{ id: 'X-1', file: 's.py', line: 4, op: 'gt-ge', before: 'if x > 0:', after: 'if x >= 0:' }] },
+    coverage: { pct: 40, min: 80, uncovered: { 's.py': [3, 4, 9] } },
+  };
+  const d = defectsFromGreen(gate);
+  assert.deepEqual(d.map(x => x.cls), ['impl', 'impl', 'test', 'gap', 'gap', 'gap']);
+  assert.match(d[1].what, /flaky: the 3 runs disagree: make the code under test deterministic/, 'a flaky run goes to the code maker: the restore maker cannot fix it');
+  assert.match(d[0].what, /t\.py is fails-on-head \(exit 1\): it does not pass with the group's code/);
+  assert.deepEqual([d[2].file, d[2].what], ['t.py', 'tests changed since RED: t.py, w.py'], 'the first changed file is the anchor, every one is named');
+  assert.deepEqual([d[4].file, d[4].line, /mutant X-1 survived \(gt-ge\): if x > 0: -> if x >= 0:; no test pins that code/.test(d[4].what)], ['s.py', 4, true]);
+  assert.match(d[5].what, /changed-line coverage 40% < 80%; uncovered s\.py:3,4,9/);
+  assert.ok(!defectsFromGreen({ ...gate, coverage: { pct: 80, min: 80, uncovered: {} } }).some(x => /coverage/.test(x.what)), 'coverage exactly at the minimum is enough');
+  const sanctioned = defectsFromGreen({ ...gate, reasons: gate.reasons.filter(r => !r.startsWith('tests changed')) });
+  assert.ok(!sanctioned.some(x => /tests changed since RED/.test(x.what)), 'a --retest run reports no changed-tests reason, so none is made up');
+  assert.deepEqual(defectsFromGreen({ ok: false, reasons: ['test probe: boom'], tests: [{ file: 't.py', verdict: 'exercises-change' }] }), [{ cls: 'impl', what: 'test probe: boom' }], 'a reason the structure does not name still becomes a defect');
+  assert.deepEqual(defectsFromGreen({ ok: true, reasons: [], tests: [{ file: 't.py', verdict: 'exercises-change' }] }), []);
+  assert.deepEqual(defectsFromGreen(undefined), []);
 });
