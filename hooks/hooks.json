@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/zt-guard.mjs\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*([Gg]rafana|[Ll]oki|[Pp]rometheus|[Tt]empo|[Pp]yroscope|[Ee]lasticsearch|[Dd]atadog|[Ss]entry|[Oo]pen[Ss]earch)",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/zt-capture.mjs\"", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Lead-side diff triage for zero-trust-review. Stdlib only; prints ONE compact JSON object.
-usage: triage.py [--base origin/main] [--head HEAD] [--mode auto|quick|standard|deep] [--force-all] [--self-test]"""
-import argparse, json, os, re, subprocess, sys
+usage: triage.py [--base origin/main] [--head HEAD] [--mode auto|quick|standard|deep] [--force-all]
+                 [--no-merge] [--min-group 150] [--diff-dir DIR] [--self-test]"""
+import argparse, json, os, re, subprocess, sys, tempfile
+from pathlib import Path
 
 ALWAYS = [1, 2, 3, 4, 5, 24, 25, 27, 28, 29, 30]
 # Gated point -> regex over ADDED lines of production files. Firing too much costs a 2-call N/A; firing too little hides a hazard.
@@ -29,6 +31,7 @@ GATED = {
 }
 RX = {n: re.compile(r, re.I) for n, r in GATED.items()}
 CAP = 600  # max changed lines per reviewer group (empirical; adjust only from runs.md data)
+MIN_GROUP = 150  # groups below this many changed lines are merged with a partner (see merge_small)
 TEST = re.compile(r'(^|/)(tests?|__tests__|specs?|e2e|cypress|playwright)/|(^|/)(test_|conftest)[^/]*$|[_.](test|spec)\.\w+$', re.I)
 FRONT = re.compile(r'\.(m?[jt]sx?|s?css|less)$', re.I)
 TS = re.compile(r'\.[mc]?[jt]sx?$', re.I)
@@ -51,8 +54,36 @@ def pack(items):  # sorted (path, lines) -> bins of <= CAP changed lines, direct
     return bins + ([cur] if cur else [])
 
 
-def git(*a):
-    r = subprocess.run(['git', '-c', 'core.quotepath=false', *a], capture_output=True, text=True)
+def merge_small(groups, min_lines=MIN_GROUP, cap=CAP):  # every agent costs ~45k tokens of fixed context: fold tiny groups together
+    gs, stuck = list(groups), set()
+    while True:
+        small = [g for g in gs if g['lines'] < min_lines and g['id'] not in stuck]
+        if not small: return gs
+        a = min(small, key=lambda g: g['lines'])  # min() keeps the first of equals, i.e. kind order
+        fits = [g for g in gs if g is not a and a['lines'] + g['lines'] <= cap]
+        if not fits: stuck.add(a['id']); continue
+        b = min(fits, key=lambda g: g['lines'])
+        i, j = sorted((gs.index(a), gs.index(b)))
+        x, y = gs[i], gs[j]
+        merged = {'id': f"{x['id']}-{y['id']}", 'label': f"{x['label']}+{y['label']}", 'files': x['files'] + y['files'],
+                  'lines': x['lines'] + y['lines'], 'points': sorted(set(x['points']) | set(y['points'])),
+                  'agentType': 'typescript-reviewer' if x['agentType'] == y['agentType'] == 'typescript-reviewer' else 'python-reviewer'}
+        gs = gs[:i] + [merged] + gs[i + 1:j] + gs[j + 1:]
+
+
+def with_diffs(groups, rng, out_dir):  # one patch per group so a reviewer reads only its own files
+    os.makedirs(out_dir, exist_ok=True)
+    out = []
+    for g in groups:
+        path = os.path.abspath(os.path.join(out_dir, g['id'] + '.patch'))
+        # --literal-pathspecs: a path like '[id].tsx' must not be read as a glob
+        Path(path).write_text(git('--literal-pathspecs', 'diff', '-U15', '--no-color', '--no-ext-diff', '--no-renames', rng, '--', *g['files']))
+        out.append({**g, 'diff': path})
+    return out
+
+
+def git(*a, cwd=None):
+    r = subprocess.run(['git', '-c', 'core.quotepath=false', *a], capture_output=True, text=True, cwd=cwd)
     if r.returncode: sys.exit(f'triage: git {" ".join(a)}: {(r.stderr.strip().splitlines() or [""])[0]} (git fetch the base first?)')
     return r.stdout
 
@@ -63,6 +94,38 @@ def self_test():
     assert kind('superset/config.py') == kind('docs/flags.md') == 'docs' and kind('setup.py') == 'src'
     assert [len(b) for b in pack([('a', 400), ('b', 300), ('c', 700)])] == [1, 1, 1] and len(pack([('a', 300), ('b', 300)])) == 1
     assert RX[12].search('FROM t ORDER BY x') and not RX[12].search('<Select value={v} />') and RX[13].search('cur.fetchmany(10)')
+    G = lambda i, n, pts=(1,), ts=False: {'id': i, 'label': i.upper(), 'files': [i + '.py'], 'lines': n, 'points': list(pts),
+                                          'agentType': 'typescript-reviewer' if ts else 'python-reviewer'}
+    ids = lambda gs: [(g['id'], g['lines']) for g in gs]
+    src_docs = [G('src', 72, [1, 4]), G('tests', 421, [2, 3]), G('docs', 108, [1, 27])]
+    m = merge_small(src_docs)
+    assert ids(m) == [('src-docs', 180), ('tests', 421)] and m[0]['points'] == [1, 4, 27] and m[0]['files'] == ['src.py', 'docs.py']
+    assert m[0]['label'] == 'SRC+DOCS' and ids(src_docs) == [('src', 72), ('tests', 421), ('docs', 108)]  # input not mutated
+    one, big = [G('src', 10)], [G('src', 150), G('tests', 600)]
+    assert merge_small(one) == one and merge_small(big) == big
+    assert ids(merge_small([G('src', 10), G('docs', 20)])) == [('src-docs', 30)]
+    assert ids(merge_small([G('src', 500), G('docs', 20)])) == [('src-docs', 520)]  # earlier kind first, whichever was tiny
+    assert ids(merge_small([G('src', 100), G('tests', 590)])) == [('src', 100), ('tests', 590)]  # 690 > cap: stays
+    assert ids(merge_small([G('src', 50), G('tests', 60), G('docs', 70)])) == [('src-tests-docs', 180)]
+    assert ids(merge_small([G('src', 100), G('tests', 100), G('docs', 100)], cap=250)) == [('src-tests', 200), ('docs', 100)]
+    assert ids(merge_small([G('src', 50), G('tests', 50), G('docs', 50)])) == [('src-tests-docs', 150)]  # ties go to kind order
+    ts2 = [G('src', 30, ts=True), G('frontend', 40, ts=True), G('docs', 500)]
+    assert merge_small(ts2[:2])[0]['agentType'] == 'typescript-reviewer' and merge_small([ts2[0], ts2[2]])[0]['agentType'] == 'python-reviewer'
+    with tempfile.TemporaryDirectory() as d:  # real repo: 2 commits, 2 tiny groups, one file each
+        rows = lambda x: ''.join(f'row{i}\n' if i != 20 else x for i in range(1, 41))
+        ident = ('-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false')
+        git('init', '-q', cwd=d)
+        for n, line in enumerate(('row20\n', 'changed\n')):
+            for f in ('a.py', 'b.md'): Path(d, f).write_text(rows(line))
+            git('add', '.', cwd=d); git(*ident, 'commit', '-q', '--no-verify', '-m', str(n), cwd=d)
+        run = lambda *x: json.loads(subprocess.run([sys.executable, os.path.abspath(__file__), '--base', 'HEAD~1', *x],
+                                                   cwd=d, capture_output=True, text=True, check=True).stdout)
+        gs = run('--diff-dir', os.path.join(d, 'x', 'y'))['groups']
+        assert ids(gs) == [('src-docs', 4)] and os.path.isabs(gs[0]['diff'])
+        patch = Path(gs[0]['diff']).read_text()
+        assert 'a/a.py' in patch and 'a/b.md' in patch and patch.count('\n row5\n') == 2 and '\n row4\n' not in patch  # -U15 around line 20
+        gs = run('--no-merge')['groups']
+        assert ids(gs) == [('src', 2), ('docs', 2)] and all('diff' not in g for g in gs)
     print('ok')
 
 
@@ -71,6 +134,8 @@ def main():
     ap.add_argument('--base', default='origin/main'); ap.add_argument('--head', default='HEAD')
     ap.add_argument('--mode', default='auto', choices=['auto', 'quick', 'standard', 'deep'])
     ap.add_argument('--force-all', action='store_true'); ap.add_argument('--self-test', action='store_true')
+    ap.add_argument('--no-merge', action='store_true'); ap.add_argument('--min-group', type=int, default=MIN_GROUP)
+    ap.add_argument('--diff-dir')
     a = ap.parse_args()
     if a.self_test: return self_test()
     head, tip = git('rev-parse', a.head, a.base).split()
@@ -99,6 +164,8 @@ def main():
             ts = k == 'frontend' or all(TS.search(p) for p in b)
             groups.append({'id': k + (f'-{i + 1}' if len(bins) > 1 else ''), 'label': LABEL[k], 'files': b, 'lines': sum(files[p]['lines'] for p in b),
                            'points': pts[k], 'agentType': 'typescript-reviewer' if ts else 'python-reviewer'})
+    if not a.no_merge: groups = merge_small(groups, a.min_group)
+    if a.diff_dir: groups = with_diffs(groups, rng, a.diff_dir)
     src_lines = sum(f['lines'] for p, f in files.items() if kind(p) in ('src', 'frontend'))
     mode = a.mode if a.mode != 'auto' else 'quick' if src_lines < 150 and len(files) <= 5 else 'deep' if src_lines > 1500 or len(files) > 40 else 'standard'
     ahead = git('rev-list', '--count', f'{mb}..{tip}').strip()

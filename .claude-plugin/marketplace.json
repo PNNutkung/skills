@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "pnnutkung-skills",
+  "description": "PNNutkung's agent skills and the zero-trust-review hooks.",
+  "owner": {
+    "name": "PNNutkung",
+    "url": "https://github.com/PNNutkung"
+  },
+  "plugins": [
+    {
+      "name": "pnnutkung-skills",
+      "description": "zero-trust-review, paired-agent-tdd and ai-code-delivery skills, plus the zero-trust-review bash guard and observability capture hooks.",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

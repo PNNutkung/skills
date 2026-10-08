@@ -1,0 +1,11 @@
+{
+  "name": "pnnutkung-skills",
+  "version": "0.1.0",
+  "description": "Personal agent skills (zero-trust-review, paired-agent-tdd, ai-code-delivery) plus the zero-trust-review guard and telemetry-capture hooks.",
+  "author": {
+    "name": "PNNutkung",
+    "url": "https://github.com/PNNutkung"
+  },
+  "repository": "https://github.com/PNNutkung/skills",
+  "hooks": "./hooks/hooks.json"
+}
