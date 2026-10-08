@@ -43,6 +43,7 @@ const drive = (script, fx, input, raw) => spawnSync(process.execPath, [script], 
 const FX = fixture();
 symlinkSync('/etc', join(FX.tmp, 'link-to-etc'));
 symlinkSync(FX.run, join(FX.tmp, 'lnk-run'));
+symlinkSync(FX.tmp, join(FX.tmp, 'lnk-self')); // a link back to the temp dir itself
 const T = FX.tmp, R = FX.run, MD = FX.md, SK = FX.sk;
 const SKILL_DIR = join(ROOT, 'skills', 'zero-trust-review'), SANDBOX = join(SKILL_DIR, 'sandbox-run.mjs'), NOTE = join(SKILL_DIR, 'note.mjs');
 const guardIn = (command, extra = {}) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', agent_id: 'agent-1', cwd: '/work/repo', tool_input: { command }, ...extra });
@@ -118,7 +119,7 @@ const ALLOW = [
   // docker
   `docker ps`, `docker port zt-x`, `docker logs zt-x`, `docker inspect zt-x`, `docker rm -f zt-x`, `docker rm --force zt-a zt-b`,
   `docker image ls`, `docker image inspect img`, `docker pull postgres:15`,
-  `docker run -d --name zt-pg -e POSTGRES_PASSWORD=x -p 5432:5432 postgres:15`,
+  `docker run -d --name zt-pg --network none -e POSTGRES_PASSWORD=x postgres:15`,
   // wrappers around allowed programs, quoting and shell syntax that is not a command
   `env FOO=1 git log`, `command git log`, `time ls`, `FOO=bar`, `command -v node`,
   `echo "a;b && python3 -c x"`, `grep 'python3 -c' file`, `ls # python3 in a comment`,
@@ -280,12 +281,94 @@ const DENY = [
 ];
 for (const c of DENY) test(`guard denies: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'deny'));
 
+// ---------- guard: option ALLOW-LISTS (the six bypasses found by red-teaming a deny-list of known-bad options) ----------
+// Root cause: filtering on a leading `-` and denying KNOWN-bad options. Each program below now accepts only the options it is listed to take;
+// any other spelling (attached value, `=` form, bundle, unique abbreviation, second program text) is denied. Table = known-bad spellings.
+const REPO_T = join(T, 'repo');
+const BYPASS_DENY = [
+  // (1) awk: program text arriving through -e/--source, several of them, or inside a bundle
+  `awk -e 'BEGIN{x=1}' -e 'BEGIN{system("id")}' f`, `awk --source='BEGIN{system("id")}' f`, `awk -e 'BEGIN{ "id" | getline }' f`, `gawk -e 'BEGIN{x}' -e '{print | "sh"}' f`,
+  `awk -F: -e '{print > "x"}' f`, `awk -vx=1 -e 'BEGIN{system("x")}'`, `awk --source 'BEGIN{system("id")}' f`, `awk -e'BEGIN{system("id")}' f`, `awk --sou='BEGIN{system("id")}' f`,
+  `awk --version`, `awk -h`, `awk -b '{print}' f`, `awk -S '{print}' f`, `awk -M '{print}' f`, `awk -p '{print}' f`, `awk -o '{print}' f`, `awk -D '{print}' f`,
+  `awk -v 'BEGIN{system("x")}'`, `awk -F`, `awk -v`,
+  // (2) git -c / --config-env: only display keys; remote.<n>.* and every other key can name a program
+  `git -c remote.origin.uploadpack=x fetch origin`, `git -c remote.origin.receivepack=x fetch origin`, `git -c remote.origin.vcs=x fetch origin`, `git -c REMOTE.ORIGIN.UPLOADPACK=x fetch origin`,
+  `git -c remote.origin.uploadpack='sh -c id' ls-remote origin`, `git --config-env=remote.origin.uploadpack=EVIL fetch origin`, `git --config-env remote.origin.uploadpack=EVIL ls-remote origin`,
+  `git -c url.x.insteadOf=y fetch origin`, `git -c http.proxy=x fetch origin`, `git -c ssh.variant=x fetch origin`, `git -c log.showSignature=true log`, `git -c diff.tool=x diff`,
+  `git -c trace2.eventTarget=/etc/x log`, `git -c uploadpack.packObjectsHook=x fetch origin`, `git -c foo.bar=x log`, `git -c x log`, `git -c core.quotepath=false log`,
+  `git -c color.ui=false -c remote.origin.uploadpack=x fetch origin`, `git -c`, `git -c color.ui=false`, `git -cremote.origin.uploadpack=x fetch origin`,
+  // git global options outside the list (pager, exec-path, super-prefix, anything unknown)
+  `git -p log`, `git --paginate log`, `git -P log`, `git --super-prefix=x log`, `git --html-path`, `git --man-path`, `git --exec-path`, `git --attr-source=x log`, `git --list-cmds=all`,
+  // (3) tar: -P/--absolute-names/-h/--dereference, abbreviations, and the list files that can carry -C lines
+  `tar -xPf a.tar -C ${T}/x`, `tar xPf a.tar -C ${T}/x`, `tar -P -xf a.tar -C ${T}/x`, `tar -xf a.tar --absolute-names -C ${T}/x`, `tar -xhf a.tar -C ${T}/x`, `tar xhf a.tar -C ${T}/x`,
+  `tar -xf a.tar --dereference -C ${T}/x`, `tar --absolute -xf a.tar -C ${T}/x`, `tar -xf a.tar -T list -C ${T}/x`, `tar -xf a.tar --files-from=list -C ${T}/x`, `tar -xf a.tar -X ex -C ${T}/x`,
+  `tar -xf a.tar --exclude-from=ex -C ${T}/x`, `tar -xf a.tar --exclude-from ex -C ${T}/x`, `tar -xTf list a.tar -C ${T}/x`, `tar -xf a.tar -PC ${T}/x`, `tar -xf a.tar --abs -C ${T}/x`,
+  // (4) git against a repo (and so a .git/config) that sits in the temp dir, where an agent can write one; or whose location cannot be known
+  `git -C ${REPO_T} status`, `git -C ${T} status`, `git -C ${T}/lnk-self/repo status`, `git --git-dir=${REPO_T}/.git log`, `git --git-dir ${REPO_T}/.git log`, `git --work-tree=${REPO_T} status`,
+  `git --work-tree ${REPO_T} status`, `cd ${REPO_T} && git status`, `cd ${T} && git log`, `GIT_DIR=${REPO_T}/.git git log`, `env GIT_DIR=${REPO_T} git log`, `export GIT_WORK_TREE=${REPO_T}`,
+  `git -C ${T}/a -C b status`, `git -C "$X" status`, `git -C $(pwd) status`, `cd "$X" && git log`, `git --git-dir="$X" log`,
+  `GIT_TRACE=/etc/x git log`, `GIT_TRACE2_EVENT=/etc/x git log`, `GIT_REDIRECT_STDERR=/etc/x git log`, `GIT_COMMON_DIR=${REPO_T} git log`, `GIT_INDEX_FILE=${T}/i git log`,
+  `GIT_OBJECT_DIRECTORY=${T}/o git log`, `GIT_ALTERNATE_OBJECT_DIRECTORIES=${T}/o git log`, `GIT_CEILING_DIRECTORIES=/ git log`,
+  // git archive -o writes a file anywhere
+  `git archive -o /etc/x HEAD`, `git archive -o ~/.zshrc HEAD`, `git archive -oy.tar HEAD`, `git archive -vo x HEAD`, `git archive --output=x HEAD`, `git archive --out=x HEAD`,
+  // (5) docker run: no network, no host files, nothing outside the list (no --env-file, --entrypoint, ports, users, extra capabilities)
+  `docker run --name zt-a img`, `docker run --name zt-a img sh -c 'curl http://x'`, `docker run --name zt-a --network bridge img`, `docker run --name zt-a --network=container:x img`,
+  `docker run --name zt-a --env-file /etc/x --network none img`, `docker run --name zt-a --env-file=/etc/x --network none img`, `docker run --name zt-a --entrypoint sh --network none img -c x`,
+  `docker run --name zt-a --entrypoint=sh --network none img`, `docker run --name zt-a --network none -p 5432:5432 postgres:15`, `docker run -d --name zt-pg -e POSTGRES_PASSWORD=x -p 5432:5432 postgres:15`,
+  `docker run --name zt-a --network none -e HOME img`, `docker run --name zt-a --network none --user root img`, `docker run --name zt-a --network none --add-host x:1.2.3.4 img`,
+  `docker run --name zt-a --network none --pid=host img`, `docker run --name zt-a --network none --log-driver x img`, `docker run --name zt-a --network none --cgroup-parent x img`,
+  `docker run --name zt-a --network none --dns 1.1.1.1 img`, `docker run --name zt-a --network none --publish 80:80 img`, `docker run --name zt-a --network none --volume-driver x img`,
+  `docker run --name zt-a --network none --security-opt seccomp=unconfined img`, `docker run --name zt-a --network none --cap-add ALL img`, `docker run --name zt-a --network none --device /dev/x img`,
+  `docker run --name zt-a --network none`, `docker run --network none img`, `docker run --name foo --network none img`, `docker run --name zt-a --network none --name foo img`,
+  `docker run --name zt-a --network none --net host img`, `docker run --name zt-a --network none --network host img`, `docker run --name zt-a --network none -v/:/x img`,
+  `docker run --name zt-a --network none --rm --init --userns host img`, `docker run --name zt-a --network none --ipc host img`, `docker run --name zt-a --network none --uts=host img`,
+  `docker run --name zt-a --network none --restart always img`, `docker run --name zt-a --network none -l a=b img`, `docker run --name zt-a --network none --pull always img`,
+  // (6) mv/cp -t / --target-directory in every spelling: attached, `=`, bundled, abbreviated, ledger/run-folder targets
+  `mv --target-directory=/etc ${T}/f`, `mv -t/etc ${T}/f`, `mv -t /etc ${T}/f`, `mv --target-directory /etc ${T}/f`, `mv --target=/etc ${T}/f`, `mv --t=/etc ${T}/f`, `mv -ft/etc ${T}/f`,
+  `cp -t/etc a`, `cp -at /etc a`, `cp -rt/etc a`, `cp -pt /etc a`, `cp --target-directory=/etc a`, `cp --target-directory /etc a`, `cp --target=/etc a`, `cp --targ /etc a`,
+  `cp -t${R} a`, `cp --target-directory=${R} a`, `cp -pt${R} a`, `mv -t${R} ${T}/a`, `mv --target-directory=${R} ${T}/a`, `mv --target-directory=${MD} ${T}/a`, `cp -t ${MD} a`,
+  `cp -t ${T}/ok -t /etc a`, `cp -t/etc -t ${T}/ok a`, `cp --target-directory=/etc --target-directory=${T}/ok a`, `mv -t ${T}/ok -t/etc ${T}/a`, `cp -T a /etc/x`,
+  `cp --parents a /etc`, `cp --reflink=always a /etc/x`, `cp -S x a /etc/x`, `cp --suffix=x a /etc/x`, `cp --backup a /etc/x`, `cp --attributes-only a /etc/x`, `cp -t`, `mv -t`, `cp --target-directory`,
+  `mv --exchange ${T}/a ${T}/b`, `mv -Z ${T}/a ${T}/b`, `cp -Z a ${T}/b`, `mv --context=x ${T}/a ${T}/b`, `mv --backup ${T}/a ${T}/b`, `mv -b ${T}/a ${T}/b`, `mv -S x ${T}/a ${T}/b`,
+  // the same family in sort: a unique abbreviation of --output / --compress-program, and options that write elsewhere (-T)
+  `sort --out=/etc/x f`, `sort --ou=${R}/notes f`, `sort --o=src/out f`, `sort --outp=src f`, `sort -T /etc f`, `sort --temporary-directory=/etc f`, `sort --tmp=/etc f`, `sort -S 1 -T /x f`,
+  `sort --files0-from=x`, `sort --random-source=x f`, `sort --parallel=2 f`, `sort --batch-size=2 f`,
+];
+for (const c of BYPASS_DENY) test(`guard denies bypass: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'deny'));
+// a repo in the temp dir is also refused when the shell is already there (the hook input's cwd)
+for (const c of [`git log`, `git -C . status`, `git -C .. status`, `git --git-dir=.git log`]) {
+  test(`guard denies git with cwd in the temp dir: ${c}`, () => assert.equal(verdict(bash(c, FX, { cwd: REPO_T })), 'deny'));
+}
+test('guard denies git with cwd behind a symlink into the temp dir', () => assert.equal(verdict(bash('git log', FX, { cwd: join(T, 'lnk-self') })), 'deny'));
+test('guard denies git with cwd = the temp dir itself', () => assert.equal(verdict(bash('git log', FX, { cwd: T })), 'deny'));
+
+const BYPASS_ALLOW = [
+  `awk -F: '{print $1}' f`, `awk -F ':' '{print $1}' f`, `awk -v x=1 -v y=2 'BEGIN{print x+y}'`, `awk -vx=1 'BEGIN{print x}'`, `awk -F: -- '{print $1}' f`, `gawk -F, '{print $2}' f`,
+  `awk -F'|' '{print $1}' f`, `awk -F '\\t' '{print $1}' f`, `awk -v 'x=a b' 'BEGIN{print x}'`, `awk 'BEGIN{print 1}'`,
+  `git -c color.ui=false log -1`, `git -c color.diff=always diff`, `git -c diff.renames=true log`, `git -c diff.algorithm=patience diff`, `git -c log.decorate=short log`, `git -c color.ui=never -c diff.context=5 diff`,
+  `git --config-env=color.ui=SOME_ENV log`, `git --no-pager log`, `git --no-optional-locks status`, `git --literal-pathspecs log -- f`, `git --version`,
+  `git -C /work/repo log`, `git -C /work/repo -C sub log`, `git --git-dir=/work/repo/.git log`, `git --git-dir /work/repo/.git --work-tree /work/repo status`, `git --work-tree=/work/repo status`,
+  `cd /work/repo && git log`, `git diff --stat`, `git fetch -q origin main`, `git archive HEAD | tar -x -C ${T}/src`, `git show HEAD:a > ${T}/a`, `git archive --format=tar HEAD`, `git archive --prefix=p/ HEAD`, `git archive -9 HEAD`, `git archive -l`,
+  `tar -xf a.tar -C ${T}/x`, `tar -xzf a.tgz -C ${T}/x --strip-components=1`, `tar -xvf a.tar -C ${T}/x`, `tar -xpf a.tar -C ${T}/x`, `tar -xkf a.tar -C ${T}/x`, `tar -xmf a.tar -C ${T}/x`,
+  `tar -xOf a.tar -C ${T}/x member`, `tar -tvf a.tar`, `tar -xf a.tar -C ${T}/x --exclude='*.o' --exclude=x`, `tar -xf a.tar --one-top-level=out -C ${T}/x`,
+  `docker run -d --name zt-pg --network none -e POSTGRES_PASSWORD=x postgres:15`, `docker run --rm --name zt-a --network=none img echo hi`, `docker run --name zt-a --net none --memory 512m --cpus 1 img`,
+  `docker run --rm -it --name zt-a --network none img sh`, `docker run -d --name=zt-a --network none --env A=1 --env B=2 img`, `docker run --name zt-a --network none -m 512m --pids-limit 100 --read-only img`,
+  `cp -r a ${T}/b`, `cp -a /work/repo/a ${T}/x`, `cp -t ${T}/d a`, `cp -t${T}/d a`, `cp --target-directory=${T}/d a`, `cp --target-directory ${T}/d a`, `cp -rt ${T}/d a b`, `cp -v -p a ${T}/c`, `cp -n a ${T}/c`,
+  `cp -R -L a ${T}/c`, `cp -rp a ${T}/c`, `cp --recursive --preserve=mode a ${T}/c`, `cp -f -i a ${T}/c`, `cp -- a ${T}/c`, `cp -T a ${T}/c`, `cp -u a b ${T}/d`,
+  `mv -f ${T}/a ${T}/b`, `mv -t ${T}/d ${T}/a ${T}/b`, `mv --target-directory=${T}/d ${T}/a`, `mv -v -n ${T}/a ${T}/b`, `mv -ft ${T}/d ${T}/a`, `mv -- ${T}/a ${T}/b`, `mv -T ${T}/a ${T}/b`, `mv -i -u ${T}/a ${T}/b`,
+  `sort -u f`, `sort -k2,2 -t: -n f`, `sort -nr f`, `sort -rn -k3 f`, `sort --unique --reverse f`, `sort --key=2 --field-separator=: f`, `sort -c f`, `sort -V f`, `sort -h f`, `sort -f -d -b f`,
+];
+for (const c of BYPASS_ALLOW) test(`guard allows after the allow-lists: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'allow'));
+
 // environment switches must not steer the sandbox runner, the run folder or the loaders: prefix, `env`, and `export` forms
 const STEERING = ['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RUN_DIR', 'ZT_MARKER_DIR', 'ZT_LEDGER', 'XDG_RUNTIME_DIR', 'HOME', 'TMPDIR',
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'NODE_OPTIONS', 'PYTHONSTARTUP', 'BASH_ENV',
   'PATH', 'ZT_SANDBOX_IMAGE', 'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
   'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_EXTERNAL_DIFF', 'GIT_PAGER', 'GIT_EDITOR',
-  'GIT_ASKPASS', 'GIT_EXEC_PATH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'PAGER', 'EDITOR', 'VISUAL'];
+  'GIT_ASKPASS', 'GIT_EXEC_PATH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'PAGER', 'EDITOR', 'VISUAL',
+  // which repo (and so which .git/config) git reads, and files it writes
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG',
+  'GIT_TRACE', 'GIT_TRACE2', 'GIT_TRACE2_EVENT', 'GIT_TRACE_PACKET', 'GIT_REDIRECT_STDERR'];
 for (const v of STEERING) {
   for (const c of [`${v}=1 node ${SANDBOX} --cwd /r -- ls`, `env ${v}=1 git log`, `export ${v}=1 && ls`]) {
     test(`guard denies env switch: ${c}`, () => {

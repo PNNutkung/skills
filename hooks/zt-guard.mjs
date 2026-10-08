@@ -258,8 +258,11 @@ const STEERING_VARS = new Set(['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_
   'PATH', 'ZT_SANDBOX_IMAGE', 'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
   // config-driven code execution through git and pagers/editors
   'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_EXTERNAL_DIFF', 'GIT_PAGER',
-  'GIT_EDITOR', 'GIT_ASKPASS', 'GIT_EXEC_PATH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'PAGER', 'EDITOR', 'VISUAL']);
-const isSteering = v => STEERING_VARS.has(v) || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(v);
+  'GIT_EDITOR', 'GIT_ASKPASS', 'GIT_EXEC_PATH', 'GIT_PROXY_COMMAND', 'GIT_TEMPLATE_DIR', 'PAGER', 'EDITOR', 'VISUAL',
+  // which repo (and so which .git/config) git reads; the GIT_TRACE* family and GIT_REDIRECT_STDERR write files named by the variable
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG',
+  'GIT_REDIRECT_STDERR']);
+const isSteering = v => STEERING_VARS.has(v) || /^GIT_(CONFIG_(KEY|VALUE)_\d+|TRACE\w*)$/.test(v);
 
 // -> { prog, args, assigns } (prog is undefined for an assignment-only segment), { denial } for a bad wrapper option, or null when the segment
 // runs and sets nothing (`command -v`, flow-control header). assigns = names of VAR=val words in the prefix, including those after env/time/...
@@ -340,12 +343,50 @@ const operands = args => {
 };
 const hasFlag = (args, re) => args.some(a => re.test(a));
 
-function cpDest(args) {
-  const i = args.findIndex(a => a === '-t' || a === '--target-directory');
-  if (i >= 0) return args[i + 1];
-  const eq = args.find(a => a.startsWith('--target-directory='));
-  return eq ? eq.slice('--target-directory='.length) : operands(args).at(-1);
+// cp and mv take only the options listed here (no abbreviations, no --parents/--backup/-S/-Z ...: unknown = deny). -t/--target-directory names the
+// destination in every spelling GNU getopt accepts (separate, attached, `=`, inside a bundle, repeated); each one must be checked like a last operand.
+const TRANSFER = {
+  cp: { flags: 'rRapfnvLPHiuT', long: ['recursive', 'archive', 'force', 'no-clobber', 'verbose', 'dereference', 'no-dereference', 'interactive', 'update', 'no-target-directory', 'preserve'] },
+  mv: { flags: 'fnviuT', long: ['force', 'no-clobber', 'verbose', 'interactive', 'update', 'no-target-directory'] },
+};
+// -> { targets, rest } (rest = operands after the options), or null for an option that is not listed
+function transferArgs(name, args) {
+  const spec = TRANSFER[name];
+  const targets = [];
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { rest.push(...args.slice(i + 1)); break; }
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const opt = a.slice(2, eq < 0 ? undefined : eq);
+      if (opt === 'target-directory') {
+        const value = eq < 0 ? args[++i] : a.slice(eq + 1);
+        if (value === undefined) return null;
+        targets.push(value);
+      } else if (!spec.long.includes(opt) || (eq >= 0 && opt !== 'preserve')) return null;
+    } else if (a.length > 1 && a[0] === '-') {
+      for (let j = 1; j < a.length; j++) {
+        if (spec.flags.includes(a[j])) continue;
+        if (a[j] !== 't') return null;
+        const value = a.slice(j + 1) || args[++i];
+        if (value === undefined) return null;
+        targets.push(value);
+        break;
+      }
+    } else rest.push(a);
+  }
+  return { targets, rest };
 }
+// the paths a cp or mv writes: every target; without one, cp writes its last operand (sources are only read) and mv touches every operand
+const transferWrites = (name, { targets, rest }) => (name === 'mv' ? [...targets, ...rest] : targets.length ? targets : [rest.at(-1) ?? '']);
+const transferRule = name => (args, ctx) => {
+  const parsed = transferArgs(name, args);
+  if (!parsed) return deny(name, 'uses an option the guard does not list (only -f -n -v -i -u -T -t DIR and, for cp, -r -R -a -p -L -P -H and --preserve)', FIX_STATE);
+  const writes = transferWrites(name, parsed);
+  if (writes.some(p => isProtected(p, ctx, name === 'mv'))) return deny(name, WHY_RUN_WRITE, FIX_STATE);
+  return needTemp(name, writes, ctx);
+};
 
 // ---------- sed ----------
 // sed can run commands (the e command, the e flag of s///) and write files (w, W, flag w, r, R). So only a tiny, fully parsed language is allowed:
@@ -469,32 +510,57 @@ const GIT_READ = new Set(['log', 'show', 'diff', 'diff-tree', 'diff-index', 'dif
   'whatchanged', 'cherry', 'range-diff', 'version', 'count-objects', 'check-ignore', 'show-branch', 'symbolic-ref']);
 const GIT_REMOTE_WRITERS = new Set(['add', 'set-url', 'remove', 'rm', 'rename', 'set-head', 'set-branches', 'prune', 'update']);
 const GIT_BRANCH_CONFIG_WRITERS = /^(-u|--set-upstream(-to)?|--unset-upstream|--edit-description)(=|$)/;
-// The guard does not inject -c core.fsmonitor= -c core.hooksPath=/dev/null -c core.pager=cat -c protocol.ext.allow=never itself; it DENIES any command that
-// passes a -c for those keys (all of core.* and protocol.* are risky below), so nothing conflicts with git's own defaults. A ~/.gitconfig or .git/config
-// changed through some other channel is out of the guard's reach once written, which is why every write there (redirect, tee, cp, mv, sed -i, git config,
-// git remote set-url, ...) is denied up front.
-// config keys that run a program, load other config, or change what a later git command executes
-const GIT_RISKY_CONFIG = /^(core\.|diff\.(external|.*\.(command|textconv))|pager\.|alias\.|credential|filter\.|gpg|protocol\.|include|merge\.|mergetool|difftool|sequence\.|browser\.|web\.|man\.|interactive\.|trailer\.|uploadpack|receive\.)/i;
-const GIT_OPTS_WITH_VALUE = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix']);
+// `git -c KEY=VALUE` / `--config-env` is an ALLOW-LIST of display-only keys. A deny-list of "risky" keys cannot be complete: remote.<name>.uploadpack, url.*.insteadOf,
+// http.proxy, trace2.eventTarget, log.showSignature, ... all name a program, a host or a file. The guard does not inject config itself; a ~/.gitconfig or
+// .git/config changed through some other channel is out of its reach once written, which is why every write there (redirect, tee, cp, mv, sed -i,
+// git config, git remote set-url, ...) is denied up front, and why git is refused outright on a repo that lives in the temp dir (gitRepoDenial).
+const GIT_DISPLAY_CONFIG = /^(color\.[a-z0-9.]+|diff\.(renames|algorithm|context|noprefix|mnemonicprefix|indentheuristic|interhunkcontext|colormoved)|log\.(date|abbrevcommit|decorate|follow))$/i;
+// global options git accepts before the subcommand, and nothing else: -p/--paginate (pager), --exec-path, --super-prefix, --attr-source ... are denied
+const GIT_GLOBAL_FLAGS = new Set(['--no-pager', '--no-optional-locks', '--no-replace-objects', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs',
+  '--icase-pathspecs', '--bare', '--no-lazy-fetch', '--version']);
+const GIT_GLOBAL_VALUE = new Set(['--git-dir', '--work-tree', '--namespace']); // value after a space or `=`
 // options that run a program, open a pager or write an arbitrary file; git also accepts unique abbreviations, so any prefix of these is denied too
-const GIT_DENIED_LONG = ['--open-files-in-pager', '--output', '--ext-diff', '--textconv', '--exec-path', '--upload-pack', '--receive-pack', '--exec', '--no-index'];
+const GIT_DENIED_LONG = ['--open-files-in-pager', '--output', '--ext-diff', '--textconv', '--exec-path', '--upload-pack', '--receive-pack', '--exec', '--no-index', '--help'];
 
 function gitConfigDenial(kv) {
-  return GIT_RISKY_CONFIG.test(kv) ? deny(`git config ${kv.split('=')[0]}`, 'would run a program named by config or change what git runs', FIX_STATE) : null;
+  const key = kv.split('=')[0];
+  return GIT_DISPLAY_CONFIG.test(key) ? null : deny(`git config ${key}`, 'is not a display-only setting: a config key can run a program, name a host or write a file', FIX_STATE);
 }
-function gitRule(args) {
+// a repo in the temp dir may hold a .git/config the agent wrote (cp the repo there, sed -i its config): it is never judged safe. The same goes for a start
+// directory that cannot be known statically.
+const GIT_TEMP_REPO = 'git in a repo under the temp dir';
+function gitWhereDenial(dir, ctx) {
+  const loc = dir === null ? null : locate(dir, ctx);
+  if (!loc || loc.tail.length) return deny('git', 'cannot be located statically, so its .git/config cannot be trusted', FIX_STATE);
+  return loc.path === ctx.tmp || strictlyInside(loc.path, ctx.tmp)
+    ? deny(GIT_TEMP_REPO, 'could read a .git/config written there, which can name a program', 'Run git only in the repo under review, outside the temp dir.') : null;
+}
+function gitRule(args, ctx) {
+  let cwd = ctx.cwd;
   let i = 0;
+  const bad = a => deny(`git ${a}`, 'is a git option the guard does not allow before the subcommand', FIX_STATE);
   for (; i < args.length; i++) { // global options up to the subcommand
     const a = args[i];
-    if (a === '-c' || /^-c./.test(a)) {
-      const denied = gitConfigDenial(a === '-c' ? args[++i] ?? '' : a.slice(2));
+    if (!a.startsWith('-')) break;
+    const eq = a.indexOf('=');
+    const name = eq < 0 ? a : a.slice(0, eq);
+    if (a === '-C') {
+      const dir = args[++i];
+      const loc = dir === undefined ? null : locate(dir, { ...ctx, cwd });
+      if (!loc || loc.tail.length) return gitWhereDenial(null, ctx);
+      cwd = loc.path;
+    } else if (a === '-c' || name === '--config-env') {
+      const kv = a === '-c' || (a === '--config-env' && eq < 0) ? args[++i] : a.slice(eq + 1);
+      const denied = gitConfigDenial(kv ?? '');
       if (denied) return denied;
-    } else if (a === '--config-env' || a.startsWith('--config-env=')) {
-      const denied = gitConfigDenial(a === '--config-env' ? args[++i] ?? '' : a.slice('--config-env='.length));
-      if (denied) return denied;
-    } else if (GIT_OPTS_WITH_VALUE.has(a)) i++;
-    else if (!a.startsWith('-')) break;
+    } else if (GIT_GLOBAL_VALUE.has(name)) {
+      const value = eq < 0 ? args[++i] : a.slice(eq + 1);
+      if (value === undefined) return bad(a);
+      if (name !== '--namespace') { const denied = gitWhereDenial(value, { ...ctx, cwd }); if (denied) return denied; }
+    } else if (!GIT_GLOBAL_FLAGS.has(a)) return bad(a);
   }
+  const whereDenied = gitWhereDenial(cwd, ctx);
+  if (whereDenied) return whereDenied;
   const sub = args[i];
   if (sub === undefined ? args.some(a => a !== '--version') : !GIT_READ.has(sub)) {
     return deny(`git ${sub ?? args[0] ?? ''}`.trim(), 'is not a read-only git subcommand (it could change the repo under review, its config or hooks, or launch another program)', FIX_STATE);
@@ -506,6 +572,8 @@ function gitRule(args) {
   if (sub === 'branch' && hasFlag(args.slice(i + 1), GIT_BRANCH_CONFIG_WRITERS)) return deny('git branch (upstream/description)', 'would write the repo config', FIX_STATE);
   const denied = [...GIT_DENIED_LONG, ...(sub === 'archive' ? ['--remote'] : [])];
   const end = args.indexOf('--');
+  // `git archive -o FILE` (the short form of --output) writes a file anywhere
+  if (sub === 'archive' && hasFlag(end < 0 ? args.slice(i + 1) : args.slice(i + 1, end), /^-[A-Za-z0-9]*o/)) return deny('git archive -o', 'would write a file outside the temp dir', FIX_STATE);
   for (const a of end < 0 ? args : args.slice(0, end)) {
     const name = a.split('=')[0];
     if (/^-O/.test(a) || (name.startsWith('--') && name.length > 2 && denied.some(d => d.startsWith(name)))) {
@@ -515,15 +583,33 @@ function gitRule(args) {
   return null;
 }
 
-const DOCKER_RUN_FLAGS = ['--volume', '--mount', '--privileged', '--cap-add', '--device', '--security-opt', '--volumes-from'];
-const DOCKER_HOST_NS = /^--(network|net|pid|ipc|uts|userns)$/;
+// docker run: ONLY a container with no network (`--network none`), no host files, no ports and no extra privileges, named zt-*. Options are an allow-list
+// (no --env-file, --entrypoint, -p/--publish, -v/--mount, --user, --add-host, --dns, --cap-add, --privileged, host namespaces ...); the image comes next and
+// whatever follows it is the container's own command. Databases for the integration probe are started by the lead, outside this guard.
+const DOCKER_RUN_FLAGS = new Set(['d', 'i', 't']); // -d -i -t, bundled or not
+const DOCKER_RUN_LONG_FLAGS = new Set(['detach', 'rm', 'interactive', 'tty', 'read-only']);
+const DOCKER_RUN_VALUE = { name: v => /^zt-[\w.-]+$/.test(v), network: v => v === 'none', net: v => v === 'none', env: v => /^[A-Za-z_]\w*=/.test(v), e: v => /^[A-Za-z_]\w*=/.test(v),
+  memory: v => /^\d+[bkmg]?$/i.test(v), m: v => /^\d+[bkmg]?$/i.test(v), cpus: v => /^\d+(\.\d+)?$/.test(v), 'pids-limit': v => /^\d+$/.test(v) };
 function dockerRun(rest) {
-  const named = rest.indexOf('--name');
-  const name = named >= 0 ? rest[named + 1] : rest.find(a => a.startsWith('--name='))?.slice('--name='.length);
-  const risky = rest.some((a, i) => /^-[A-Za-z]*v/.test(a) || DOCKER_RUN_FLAGS.some(f => a === f || a.startsWith(`${f}=`))
-    || (DOCKER_HOST_NS.test(a) && rest[i + 1] === 'host') || /^--(network|net|pid|ipc|uts|userns)=host$/.test(a));
-  return name?.startsWith('zt-') && !risky ? null
-    : deny('docker run', 'needs --name zt-* and no volumes, mounts, privileges or host namespaces', FIX_STATE);
+  const bad = why => deny('docker run', why, 'Use: docker run [-d] [--rm] --name zt-NAME --network none [-e K=V] [--memory N] [--cpus N] [--pids-limit N] IMAGE [COMMAND...]');
+  let name = 0, none = false, i = 0;
+  for (; i < rest.length; i++) {
+    const a = rest[i];
+    if (!a.startsWith('-') || a === '-') break;
+    if (a === '--') { i++; break; }
+    const long = a.startsWith('--');
+    const eq = a.indexOf('=');
+    const opt = long ? a.slice(2, eq < 0 ? undefined : eq) : a[1];
+    if (long ? DOCKER_RUN_LONG_FLAGS.has(opt) && eq < 0 : [...a.slice(1)].every(ch => DOCKER_RUN_FLAGS.has(ch))) continue;
+    if (!Object.hasOwn(DOCKER_RUN_VALUE, opt)) return bad(`has the option ${a.split('=')[0]}, which is not on the list`);
+    const value = long ? (eq < 0 ? rest[++i] : a.slice(eq + 1)) : (a.length > 2 ? a.slice(2).replace(/^=/, '') : rest[++i]);
+    if (value === undefined || !DOCKER_RUN_VALUE[opt](value)) return bad(`has a value for ${a.split('=')[0]} that is not allowed`);
+    if (opt === 'name') name++;
+    if (opt === 'network' || opt === 'net') none = true;
+  }
+  if (name !== 1) return bad('needs exactly one --name zt-*');
+  if (!none) return bad('needs --network none');
+  return rest[i] === undefined ? bad('needs an image') : null;
 }
 function dockerRule(args) {
   const [sub, ...rest] = args;
@@ -541,12 +627,13 @@ function dockerRule(args) {
 
 // tar: list or extract only, from a small set of known options (unknown = deny, so no --to-command, --checkpoint-action, -I/--use-compress-program,
 // --rsh-command, -F/--info-script/--new-volume-script, --remove-files, create/append/update/delete forms). Extraction must land in the temp dir.
-const TAR_SHORT = 'xtvzjJafCpkmOhPTX';
-const TAR_SHORT_VALUE = 'fCTX';
+// not -P/--absolute-names (members written to absolute paths), not -h/--dereference, not -T/-X (list files: a `-C DIR` line inside one redirects extraction)
+const TAR_SHORT = 'xtvzjJafCpkmO';
+const TAR_SHORT_VALUE = 'fC';
 const TAR_LONG = new Set(['extract', 'get', 'list', 'file', 'directory', 'verbose', 'gzip', 'gunzip', 'bzip2', 'xz', 'zstd', 'lzma', 'auto-compress', 'strip-components',
   'wildcards', 'no-wildcards', 'exclude', 'one-top-level', 'no-same-owner', 'no-same-permissions', 'touch', 'ignore-zeros', 'keep-old-files', 'skip-old-files',
-  'keep-newer-files', 'overwrite', 'no-overwrite-dir', 'files-from', 'exclude-from', 'to-stdout', 'preserve-permissions']);
-const TAR_LONG_VALUE = new Set(['file', 'directory', 'strip-components', 'exclude', 'files-from', 'exclude-from']);
+  'keep-newer-files', 'overwrite', 'no-overwrite-dir', 'to-stdout', 'preserve-permissions']);
+const TAR_LONG_VALUE = new Set(['file', 'directory', 'strip-components', 'exclude']);
 
 function tarRule(args, ctx) {
   const bad = why => deny('tar', why, FIX_STATE);
@@ -615,15 +702,37 @@ function nodeRule(args, ctx) {
   return NODE_SCRIPTS.includes(basename(script)) ? deny(`node ${script}`, WHY_NOT_SKILL_SCRIPT) : deny('node');
 }
 
-// sort: no --compress-program (--co = any abbreviation); an output file (-o, --output) is a write and must be under the temp dir
+// sort: ordering options only (unknown = deny, so no --compress-program, -T/--temporary-directory, --files0-from, --random-source, and no unique
+// abbreviation such as --out= or --com= of those). An output file (-o, --output) is a write and must be under the temp dir.
+const SORT_FLAGS = 'bdfghiMnRrsuVzcC';
+const SORT_VALUE = 'kto';
+const SORT_LONG = new Set(['unique', 'reverse', 'numeric-sort', 'human-numeric-sort', 'general-numeric-sort', 'version-sort', 'month-sort', 'ignore-case',
+  'ignore-leading-blanks', 'ignore-nonprinting', 'dictionary-order', 'stable', 'check', 'zero-terminated']);
+const SORT_LONG_VALUE = new Set(['key', 'field-separator', 'output']);
 function sortRule(args, ctx) {
-  if (hasFlag(args, /^--co/)) return deny('sort --compress-program', 'would run a program');
+  const bad = what => deny(`sort ${what}`, 'is an option the guard does not list (it can run a program or write outside the temp dir)', 'Allowed: -b -d -f -g -h -i -M -n -R -r -s -u -V -z -c -C, -k KEY, -t SEP, -o FILE (temp dir only).');
   const outputs = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--') break;
-    if (a.startsWith('--output')) outputs.push(a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[++i] ?? '');
-    else if (/^-[A-Za-z]*o/.test(a)) outputs.push(a.slice(a.indexOf('o') + 1) || (args[++i] ?? ''));
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const name = a.slice(2, eq < 0 ? undefined : eq);
+      if (SORT_LONG.has(name) && eq < 0) continue;
+      if (!SORT_LONG_VALUE.has(name)) return bad(a);
+      const value = eq < 0 ? args[++i] : a.slice(eq + 1);
+      if (value === undefined) return bad(a);
+      if (name === 'output') outputs.push(value);
+    } else if (a.length > 1 && a[0] === '-') {
+      for (let j = 1; j < a.length; j++) {
+        if (SORT_FLAGS.includes(a[j])) continue;
+        if (!SORT_VALUE.includes(a[j])) return bad(a);
+        const value = a.slice(j + 1) || args[++i];
+        if (value === undefined) return bad(a);
+        if (a[j] === 'o') outputs.push(value);
+        break;
+      }
+    }
   }
   return outputs.length ? needTemp('sort -o', outputs, ctx) : null;
 }
@@ -634,11 +743,11 @@ const RULES = {
   docker: dockerRule,
   tar: tarRule,
   rm: (args, ctx) => needTemp('rm', operands(args), ctx),
-  mv: (args, ctx) => needTemp('mv', operands(args), ctx),
+  mv: transferRule('mv'),
   mkdir: (args, ctx) => needTemp('mkdir', operands(args), ctx),
   touch: (args, ctx) => needTemp('touch', operands(args), ctx),
   tee: (args, ctx) => needTemp('tee', operands(args), ctx),
-  cp: (args, ctx) => needTemp('cp', [cpDest(args) ?? ''], ctx), // sources are only read
+  cp: transferRule('cp'), // sources are only read
   sed: sedRule,
   find: args => (hasFlag(args, /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/) ? deny('find -exec/-delete', 'would run commands or modify files') : null),
   rg: args => (hasFlag(args, /^--(pre|hostname-bin)(=|$)/) ? deny('rg --pre', 'would run a program') : null),
@@ -673,19 +782,24 @@ function awkScan(src) {
   }
   return found;
 }
+// awk takes exactly `[-F FS | -FFS | -v VAR=VAL | -vVAR=VAL]... [--] 'program' [files]`: the first operand is THE program. Every other option is denied,
+// including -e/--source (more program text that would go unscanned), -f, -i, -l, -E, --version and any abbreviation of a long option.
+// -> the program text, or null when an option is not listed or there is no program
 function awkProgram(args) {
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '-v' || args[i] === '-F') i++;
-    else if (args[i] === '--') return args[i + 1];
-    else if (!args[i].startsWith('-')) return args[i];
+    const a = args[i];
+    if (a === '--') return args[i + 1] ?? null;
+    if (a === '-F' || a === '-v') { if (args[++i] === undefined) return null; } else if (/^-[Fv]./.test(a)) continue;
+    else if (a.startsWith('-') && a.length > 1) return null;
+    else return a;
   }
-  return undefined;
+  return null;
 }
 const awkRule = args => {
-  const program = awkProgram(args) ?? '';
-  const { pipe, redirect } = awkScan(program);
-  const bad = hasFlag(args, /^(-f|--file|-i|--include|-l|--load|-E|--exec|--source)/) || /\bsystem\s*\(|@(load|include)/.test(program) || pipe || redirect;
-  return bad ? deny('awk', 'would run commands or write files', FIX_STATE) : null;
+  const program = awkProgram(args);
+  const { pipe, redirect } = awkScan(program ?? '');
+  const bad = program === null || /\bsystem\s*\(|@(load|include)/.test(program) || pipe || redirect;
+  return bad ? deny('awk', 'would run commands or write files, or uses an option other than -F, -v and one program', FIX_STATE) : null;
 };
 for (const name of ['awk', 'gawk', 'mawk', 'nawk']) RULES[name] = awkRule;
 
@@ -710,7 +824,7 @@ const readsOnly = (name, args) => READERS.has(name)
   && !(name === 'find' && hasFlag(args, /^-f(print|printf|ls)/));
 
 function touchesRunFiles(name, args, ctx) {
-  if (name === 'cp') { const d = cpDest(args); return d !== undefined && isProtected(d, ctx); }
+  if (name === 'cp') return false; // sources are only read; transferRule judges the destinations in every -t spelling
   if (readsOnly(name, args)) return false;
   const destructive = name === 'rm' || name === 'mv';
   return args.map(a => a.replace(/^(--?[\w-]+|[a-z]+)=/, '')).filter(a => a && !a.startsWith('-')).some(a => isProtected(a, ctx, destructive));
