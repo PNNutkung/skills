@@ -12,8 +12,9 @@ import { checkMatrix } from './gates.mjs';
 // agentType picks the agent definition: its tool list is a structural fence (navigators and the reviewer have no Edit or Write) and a smaller fixed context than
 // a general-purpose agent (measured in runs.md). outside = run by the lead before the Workflow, not by workflow.js.
 // fanout: group = one per file group (groups stream through RED and GREEN with no barrier between them).
-// LIM: pool = agents in flight at once (one rolling pool for the whole run), retry = extra attempts for a dead or null agent, rework = bounded rework passes per stage (R4).
-export const LIM = { pool: 6, retry: 1, rework: 1 };
+// LIM: pool = agents in flight at once (one rolling pool for the whole run), retry = extra attempts for a dead or null agent, rounds = repair rounds per stage (R4):
+// a driver pass, then an independent check, repeated until the check passes, stops making progress or the rounds run out. plan.rounds (1-4) overrides it per run.
+export const LIM = { pool: 6, retry: 1, rounds: 3 };
 export const NODES = [
   { id: 'graph-planner', tier: 'T3', role: 'Partition the planned files into owned groups and their order', needs: [], model: 'opus', effort: 'high', ponytail: 'full', agentType: 'planner', gated: 'only when the import structure is unknown', outside: true, deliverable: 'groups + after edges for plan.json' },
   { id: 'plan', tier: 'T0', role: 'tdd.mjs plan: validate groups, DoD and quotes, snapshot the base tree', needs: ['graph-planner'], model: 'code', deliverable: 'RUN/plan.json + Workflow args' },
@@ -27,7 +28,8 @@ export const NODES = [
   { id: 'final-gate', tier: 'T0', role: 'tdd.mjs final: all group tests together, existing tests that mention the changed modules, scope, whole-diff patch', needs: ['green-navigator', 'integration-tester'], model: 'code', deliverable: 'RUN/gates/final.json + diff/final.patch' },
   { id: 'reviewer', tier: 'T3', role: 'Review the whole diff once: DoD, test integrity, security, reuse, stale text', needs: ['final-gate'], model: 'opus', effort: 'high', ponytail: 'off', agentType: 'code-reviewer', cap: 40, deliverable: 'Findings with a quote and a proof' },
   { id: 'fixer', tier: 'T2', role: 'Fix every finding of one group, nothing else', needs: ['reviewer'], model: 'sonnet', effort: 'medium', ponytail: 'full', agentType: 'tdd-guide', cap: 35, fanout: 'group', gated: 'only for groups with findings', deliverable: 'Fixes + a real run of the group tests' },
-  { id: 'verify', tier: 'T0', role: 'tdd.mjs verify: DoD closure from the gates, fixes still present, reviewer proofs (proofcheck)', needs: ['fixer'], model: 'code', deliverable: 'dod-matrix.md + verify.json' },
+  { id: 'final-verifier', tier: 'T1', role: 'Courier: re-run the final gate after the fixers and name each problem with its file', needs: ['fixer'], model: 'haiku', effort: 'low', ponytail: 'off', agentType: 'code-reviewer', cap: 6, gated: 'only after fixers ran', deliverable: 'ok + problems (leads: the gate file is the fact)' },
+  { id: 'verify', tier: 'T0', role: 'tdd.mjs verify: DoD closure from the gates, fixes still present, reviewer proofs (proofcheck)', needs: ['final-verifier'], model: 'code', deliverable: 'dod-matrix.md + verify.json' },
 ];
 const byId = new Map(NODES.map(n => [n.id, n]));
 const SKILL_CAP = 14000;
@@ -56,11 +58,17 @@ export function criticalPath() {
   return chain;
 }
 
-/** Agents of one run: g groups, integration 0|1, findingGroups = groups that end up with review findings. Reworks (<= 2 per group and stage) are not counted. */
+/** Agents of one run when every first pass is right: g groups, integration 0|1, findingGroups = groups that end up with review findings. Repair rounds are not counted (see worst()). */
 export function plan(g, integration, findingGroups) {
-  const counts = { 'red-driver': g, 'red-navigator': g, 'green-driver': g, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups };
+  const counts = { 'red-driver': g, 'red-navigator': g, 'green-driver': g, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0 };
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
 }
+/**
+ * The ceiling of BUILD agents when every check fails until the rounds run out, per group: RED = 1 driver + 1 matrix rework + (1 + R) checks + R reworks, GREEN = 1 driver +
+ * (1 + R) checks + up to 2 makers a round (a code fix and a strengthening pass) = 5 + 5R. Not counted: the reviewer, the fixers, up to 3 final couriers with their fixers,
+ * and one retry (LIM.retry) of any agent that dies.
+ */
+export const worst = (g, rounds = LIM.rounds) => g * (5 + 5 * rounds);
 // The design this one replaced, as an ESTIMATE (not measured): auditor + 6 agents per group + integration tester + 3 dimension reviewers + one fixer per finding.
 const oldTotal = (g, findings) => 1 + 6 * g + 1 + 3 + findings;
 
@@ -108,7 +116,9 @@ function check() {
   }
   assert.ok(NODES.filter(n => n.fanout).every(n => n.fanout === 'group'), 'work fans out per file group only');
   assert.ok(LIM.pool >= 1 && LIM.pool <= 8, 'pool above 8 risks the gateway stall that once killed 9 reviewers; raise it only from runs.md data');
-  assert.equal(LIM.rework, 1, 'R4: one rework pass and one re-check, then escalate');
+  assert.ok(Number.isInteger(LIM.rounds) && LIM.rounds >= 1 && LIM.rounds <= 4, 'R4: repair rounds are bounded (1-4); a stuck group is stopped earlier by the stall check, never retried forever');
+  assert.equal(byId.get('final-verifier').model, 'haiku', 'the final verifier only runs one gate and copies its lines: a courier, not a judge');
+  assert.deepEqual(byId.get('verify').needs, ['final-verifier'], 'the lead\'s verify comes after the last fix has been re-checked');
   // Tiering guards (tiering.md): valid efforts, no node above high, tier agrees with model, opus only on the planner and the reviewer, checker >= maker.
   const EFFORT = { low: 0, medium: 1, high: 2 }, MODEL = { haiku: 0, sonnet: 1, opus: 2 }, TIER = { T0: 'code', T1: 'haiku', T2: 'sonnet', T3: 'opus' };
   NODES.forEach(n => {
@@ -121,9 +131,11 @@ function check() {
   const atLeast = (c, m) => MODEL[byId.get(c).model] >= MODEL[byId.get(m).model] && EFFORT[byId.get(c).effort] >= EFFORT[byId.get(m).effort];
   [['red-navigator', 'red-driver'], ['green-navigator', 'green-driver'], ['integration-tester', 'green-driver']].forEach(([c, m]) => assert.ok(atLeast(c, m), `${c} must be >= ${m} in model and effort (checker >= maker)`));
   // Structural fences: whoever judges cannot edit.
-  assert.ok(['red-navigator', 'green-navigator', 'reviewer'].every(id => byId.get(id).agentType === 'code-reviewer'), 'navigators and the reviewer use the read-only agent type');
+  assert.ok(['red-navigator', 'green-navigator', 'reviewer', 'final-verifier'].every(id => byId.get(id).agentType === 'code-reviewer'), 'navigators, the reviewer and the final verifier use the read-only agent type');
   assert.ok(['red-driver', 'green-driver', 'fixer', 'integration-tester'].every(id => byId.get(id).agentType === 'tdd-guide'), 'makers use the TDD agent type');
-  assert.equal(plan(3, 0, 1).total, 14, '3 groups: 12 build agents + 1 reviewer + 1 fixer');
+  assert.equal(plan(3, 0, 1).total, 15, '3 groups: 12 build agents + 1 reviewer + 1 fixer + 1 final verifier');
+  assert.equal(plan(3, 0, 0).total, 13, 'no findings: no fixer and no final verifier');
+  assert.equal(worst(3, 3), 60, '3 groups, 3 repair rounds: at most 60 build agents (20 per group, measured on the script with a navigator that never passes)');
   TARGETS.forEach(t => assert.equal(current(t), block(t), `${t.file} block ${t.open} is stale - run: node graph.mjs --write`));
   assert.ok(Buffer.byteLength(readFileSync(join(HERE, 'SKILL.md'))) <= SKILL_CAP, `SKILL.md is over ${SKILL_CAP} bytes: move long text into briefs.md or probes.md`);
   const cp = criticalPath();
@@ -140,5 +152,6 @@ else if (cmd === '--plan' && a.length === 3) {
   const [g, integ, fg] = a.map(Number), { counts, total } = plan(g, integ, fg);
   console.log(`plan: ${g} group(s), integration ${integ}, ${fg} group(s) with findings`);
   Object.entries(counts).filter(([, n]) => n).forEach(([id, n]) => console.log(`  ${id.padEnd(19)} ${n}`));
-  console.log(`  total ${total} agents (+ the graph-planner if used, + reworks); the old design is estimated at ${oldTotal(g, 4)} for the same change (NOT measured)`);
+  console.log(`  total ${total} agents when every first pass is right (+ the graph-planner if used); at most ${worst(g)} build agents if every check fails until ${LIM.rounds} repair rounds per stage run out (a stalled group stops earlier; the reviewer, fixers and couriers come on top)`);
+  console.log(`  the old design is estimated at ${oldTotal(g, 4)} for the same change (NOT measured)`);
 } else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings>');

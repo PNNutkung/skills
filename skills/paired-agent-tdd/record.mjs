@@ -19,6 +19,7 @@ const show = o => Object.entries(o).map(([key, n]) => `${n} ${key}`).join(', ') 
 export function buildRecord({ date, base, ret, verify, greens, measured, note }) {
   const groups = Object.entries(ret.groups ?? {}), states = tally(groups, ([, g]) => g.state);
   const reworks = groups.reduce((n, [, g]) => n + (g.red?.reworks ?? 0) + (g.green?.reworks ?? 0), 0);
+  const stalled = groups.filter(([, g]) => /made no progress/.test(g.reason ?? '')).length; // stopped because the same defects came back
   const mut = { total: 0, killed: 0, survived: 0, timeout: 0, inconclusive: 0, skipped: 0, unverifiable: 0 };
   let mutated = 0;
   for (const g of Object.values(greens)) if (g?.mutation?.score) { mutated++; for (const key of Object.keys(mut)) mut[key] += g.mutation.score[key] ?? 0; }
@@ -27,13 +28,13 @@ export function buildRecord({ date, base, ret, verify, greens, measured, note })
   const d = verify?.dod;
   const data = {
     date, base, groups: Object.fromEntries(groups.map(([id, g]) => [id, g.state])), agents: measured.by, agentTotal: measured.agents.length, units: Math.round(measured.units), calls: measured.calls, wallSec: measured.wallSec,
-    dod: d ? { covered: d.covered, total: d.total, gaps: d.gaps, phantom: d.phantom ?? [] } : null, reworks, mutants: { ...mut, groupsMutated: mutated }, coverage: pcts, findings,
+    dod: d ? { covered: d.covered, total: d.total, gaps: d.gaps, phantom: d.phantom ?? [] } : null, reworks, stalled, converge: ret.verified ? { ok: ret.verified.ok, rounds: ret.verified.rounds } : null, mutants: { ...mut, groupsMutated: mutated }, coverage: pcts, findings,
     verify: verify ? { final: verify.final, overridden: verify.overridden, unfixed: verify.unfixed, notDone: verify.notDone, integration: verify.integration, proofcheck: verify.proofcheck } : null, note: note || undefined,
   };
   const line = [date, `${String(base).slice(0, 8)}`, 'on-job', `${groups.length} group(s): ${show(states)}`, `${Object.entries(measured.by).map(([n, c]) => `${n} ${c}`).join(', ')} (=${measured.agents.length})`,
     `${k(measured.units)} units, ${measured.calls} calls`, `${measured.wallSec} s`,
     d ? `DoD ${d.covered}/${d.total}${d.gaps.length ? ` gaps ${d.gaps.join('; ')}` : ''}${(d.phantom ?? []).length ? `, ${d.phantom.length} phantom row(s)` : ''}` : 'DoD: verify not run',
-    `${reworks} rework(s)`, `mutants ${mut.killed} killed / ${mut.survived} survived / ${mut.skipped + mut.timeout + mut.inconclusive + mut.unverifiable} not decided over ${mutated} group(s)`,
+    `${reworks} rework(s)${stalled ? `, ${stalled} stalled` : ''}${ret.verified ? `, converge ${ret.verified.ok ? 'ok' : 'failing'} in ${ret.verified.rounds}` : ''}`, `mutants ${mut.killed} killed / ${mut.survived} survived / ${mut.skipped + mut.timeout + mut.inconclusive + mut.unverifiable} not decided over ${mutated} group(s)`,
     `coverage ${pcts.join(', ') || 'not configured'}`, `findings ${show(findings)}`,
     verify ? `final ${verify.final}, overridden ${(verify.overridden ?? []).length}, unfixed ${(verify.unfixed ?? []).length}, notDone ${(verify.notDone ?? []).length}` : '', note ?? '', '(one run, no baseline)'].filter(Boolean).join(' | ');
   return { line, data };

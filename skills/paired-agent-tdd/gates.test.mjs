@@ -1,7 +1,7 @@
 // Offline checks for gates.mjs (pure functions, no I/O). Run: node --test gates.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { changedCoverage, checkMatrix, classifyRed, closure, closureMarkdown, outOfScope, parseLcov, parseNumstat, pickAffected, redOk, validatePlan } from './gates.mjs';
+import { changedCoverage, checkMatrix, classifyRed, closure, closureMarkdown, groupClosure, outOfScope, parseLcov, parseNumstat, parseRow, pickAffected, redOk, validatePlan } from './gates.mjs';
 
 const plan = () => ({
   repo: '/r', cmd: 'pytest -q {file}',
@@ -186,4 +186,41 @@ test('closure: a late row (a strengthening pass after GREEN) never credits a pai
   const bad = closure(p, rows, red, green, { a: false, b: true });
   assert.deepEqual(bad.gaps.sort(), ['AC1/edge: unproven', 'AC1/fail: unproven', 'AC1/happy: unproven']);
   assert.deepEqual(closure(p, rows, red, green, { a: true, b: true }).gaps, []);
+});
+
+test('validatePlan: rounds is an integer from 1 to 4', () => {
+  for (const v of [1, 2, 4]) assert.deepEqual(bad(p => { p.rounds = v; }), [], `rounds ${v} is valid: both ends of the range count`);
+  for (const v of [0, 5, 1.5, '2', null]) assert.match(bad(p => { p.rounds = v; }).join(), /rounds must be an integer from 1 to 4/, String(v));
+});
+
+test('parseRow: ID:kind:test:file, the file after the LAST colon so a test name may hold one', () => {
+  assert.deepEqual(parseRow('AC1:happy:test_ac1_happy:tests/test_a.py'), { dod: 'AC1', kind: 'happy', test: 'test_ac1_happy', file: 'tests/test_a.py' });
+  assert.deepEqual(parseRow('AC1:fail:ac1 rejects: empty:tests/t.py'), { dod: 'AC1', kind: 'fail', test: 'ac1 rejects: empty', file: 'tests/t.py' });
+  assert.deepEqual(parseRow('A:happy:t:f'), { dod: 'A', kind: 'happy', test: 't', file: 'f' }, 'a one-character id is a valid id');
+  assert.deepEqual(parseRow('AC1::t:f'), { dod: 'AC1', kind: '', test: 't', file: 'f' }, 'an empty kind is still a row: checkMatrix is what refuses it');
+  for (const s of ['', 'nonsense', 'AC1:happy', 'AC1:happy:file.py', ':happy:t:f']) assert.equal(parseRow(s), null, JSON.stringify(s));
+});
+
+test('groupClosure: a group is judged on its own items; at RED a failing file is enough; at GREEN the verdict and the gate are needed', () => {
+  const p = plan();
+  p.dod[1].kinds = ['happy'];
+  const full = groupClosure(p, 'a', rows.a, red.a, green.a, true, 'green');
+  assert.deepEqual([full.covered, full.total, full.gaps, full.shared], [3, 3, [], []]);
+  assert.deepEqual(full.items.map(i => i.id), ['AC1'], 'AC2 belongs to b');
+  const early = groupClosure(p, 'a', rows.a, red.a, {}, undefined, 'red');
+  assert.deepEqual([early.covered, early.gaps], [3, []], 'GREEN does not exist yet at RED');
+  assert.deepEqual(groupClosure(p, 'a', rows.a, red.a, {}, true, 'green').gaps.sort(), ['AC1/edge: unproven', 'AC1/fail: unproven', 'AC1/happy: unproven']);
+  assert.deepEqual(groupClosure(p, 'a', rows.a, red.a, green.a, false, 'green').gaps.length, 3, 'a GREEN gate that was not ok credits nothing');
+  assert.equal(groupClosure(p, 'a', rows.a, { 'tests/test_a.py': 'passes-already' }, {}, undefined, 'red').gaps.length, 3, 'a file that did not fail at RED proves nothing');
+  assert.deepEqual(groupClosure(p, 'a', [row('AC1', 'happy')], red.a, {}, undefined, 'red').gaps.sort(), ['AC1/edge: missing', 'AC1/fail: missing']);
+});
+
+test('groupClosure: an item another group also owns can be closed there, so its gaps are listed apart and do not block', () => {
+  const p = plan();
+  p.dod[1].kinds = ['happy'];
+  p.groups[1].dod.push('AC1'); // b covers AC1 too
+  const b = groupClosure(p, 'b', rows.b, red.b, green.b, true, 'green');
+  assert.deepEqual(b.gaps, [], 'b alone does not have to close AC1');
+  assert.deepEqual(b.shared.sort(), ['AC1/edge: missing', 'AC1/fail: missing', 'AC1/happy: missing']);
+  assert.equal(groupClosure(p, 'a', rows.a, red.a, green.a, true, 'green').gaps.length, 0);
 });

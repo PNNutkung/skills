@@ -13,13 +13,34 @@
   },
   {
     "skills": ["paired-agent-tdd"],
-    "query": "Continue the paired TDD run: the red-navigator for the config group reported that two tests assert the implementation instead of the DoD, and its re-check after the rework still fails. What happens next?",
+    "query": "Continue the paired TDD run: the red-navigator for the config group reported that two tests assert the implementation instead of the DoD, and its re-check after the first repair reports the same two defects again. What happens next?",
     "files": [],
     "expected_behavior": [
-      "Does one rework pass and one re-check only (bounded rework), never a third attempt",
+      "Recognizes that the same defects came back (no progress) and stops that group at once, without spending the remaining repair rounds",
       "Marks the config group blocked and every group that waits for it blocked, without starting their GREEN",
       "Lists the blocked groups and their reason under notDone in the report; a reported defect is never shipped unaddressed",
-      "Rework prompts keep the hard scope fence and the out-of-scope reporting instruction"
+      "Had the re-check found different defects, a further repair round would run, up to the plan's rounds (default 3), and each repair prompt keeps the hard scope fence and the out-of-scope reporting instruction"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "The green-driver for group parser returned: files [src/parser.py], gateOk false after 3 gate runs, testGaps [mutant X-1 survives at src/parser.py:31]. The green-navigator has not run yet. What does the pipeline do next?",
+    "files": [],
+    "expected_behavior": [
+      "Does not treat the driver's gateOk, gateRuns or testGaps as a result: the green-navigator runs the green gate and the dod check itself, on fresh facts",
+      "Sends a surviving mutant to a test-strengthening pass that edits tests only, because the tests are frozen in GREEN and the green driver may not touch them",
+      "Re-checks after the repair with the green gate run with --retest, and repeats repair and check only while the navigator reports new defects, up to the rounds cap",
+      "Never lets two makers of one group run that group's gate in the same round: a code fix and a strengthening pass side by side only edit"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "The reviewer filed one high finding in group a's source; the fixer says it fixed it. Is the run done, and what checks the result before verify?",
+    "files": [],
+    "expected_behavior": [
+      "Does not take the fixer's word: the fixer re-ran its group gate with --retest, and then a final courier re-runs tdd.mjs final --again on the fixed tree",
+      "Sends each problem the courier names back to the group that owns the file (two fix passes at most), and lists a problem with no owner under notDone instead of guessing",
+      "Keeps reviewed.json as the tree the reviewer saw, so the reviewer's proofs are still checked against it, and still ends with tdd.mjs verify"
     ]
   },
   {

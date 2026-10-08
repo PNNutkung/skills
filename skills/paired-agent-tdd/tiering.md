@@ -7,7 +7,7 @@ Aligned to the global subagent routing: sonnet for analysis, implementation and 
 | Tier | Runs as | Use for |
 |---|---|---|
 | T0 | code, no agent | Everything deterministic: plan validation, snapshots, the red, green and final gates, DoD closure and scope. |
-| T1 | haiku | Not used: every agent node reads code and judges it. Reserve for a pure gather node, and treat its output as leads, not facts. |
+| T1 | haiku | The final verifier only: a courier that runs one gate and copies its lines. Its output is leads, not facts: the gate file is the fact, and the lead's `verify` re-runs the gate. Every other agent reads code and judges it. |
 | T2 | sonnet | Drivers, navigators, fixer, integration tester. Effort medium for makers on routine work; high for checkers whose miss nothing downstream re-reads. |
 | T3 | opus, effort high | Once-per-run judgement over cross-cutting context: the graph-planner (gated) and the single whole-diff reviewer. |
 
@@ -18,7 +18,7 @@ One trivial task (`echo ok`, 1 tool call) per type, all-in subagent tokens, 2026
 | Type | Tokens | Tools | Used for |
 |---|---|---|---|
 | general-purpose | 98,078 | all | nothing |
-| code-reviewer | 41,261 | Read, Grep, Glob, Bash | red-navigator, green-navigator, reviewer: **no Edit, no Write** |
+| code-reviewer | 41,261 | Read, Grep, Glob, Bash | red-navigator, green-navigator, reviewer, final-verifier: **no Edit, no Write** |
 | tdd-guide | 38,189 | Read, Write, Edit, Bash, Grep | red-driver, green-driver, fixer, integration-tester |
 | code-simplifier | 37,490 | Read, Write, Edit, Bash, Grep, Glob | not used (its prompt is about simplifying) |
 
@@ -29,7 +29,7 @@ Before an agent does any work it costs 38-41k tokens with a narrow type against 
 - **R1** No tool-looping agent above effort `high` (check). The harness interrupts an agent silent for ~180 s and a retry restarts from zero, so the mutation budget per group is 60 s by default.
 - **R2** Checker >= maker in model and effort for any node whose miss nothing downstream re-reads (check): red-navigator and green-navigator against their drivers, integration-tester against the green driver. The refactor navigator of the old graph was the declared exception; it is gone.
 - **R3** Opus only on the graph-planner and the reviewer (check).
-- **R4** Bounded rework: a navigator FAIL gets one rework and one re-check, then the group is blocked and so is everything that waits for it. A defect is fixed or listed under `notDone`, never shipped unaddressed.
+- **R4** Repair loop, bounded (check: `LIM.rounds` is 1-4): a stage is a maker pass, then an independent check on fresh gate facts, repeated while the check finds defects. It stops on PASS, when the same defects come back (the repair changed nothing the check can see: no progress), or after `rounds` repairs (default 3, `plan.rounds` 1-4); then the group is blocked and so is everything that waits for it. Inside a pass the maker loops on the real gate (at most 3 runs), so most defects die before a navigator is paid for. A defect is fixed or listed under `notDone`, never shipped unaddressed. Cost: a group that always fails costs up to 5 + 5 x rounds build agents (`graph.mjs --plan` prints the ceiling; the reviewer, fixers and couriers come on top); the stall check and `rounds: 1` are the brakes. **No real run has measured how often a second round saves a group or how often the stall check fires wrongly** ([`runs.md`](./runs.md)).
 - **R5** Move one node's model, effort or agent type at a time, only from measured runs, and log each run in [`runs.md`](./runs.md).
 - **R6** Every tier value is a starting guess, not a finding.
 

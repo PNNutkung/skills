@@ -34,6 +34,16 @@ test('buildRecord: a run with no verify, no mutation and no coverage says so ins
   assert.doesNotMatch(line, /final /);
 });
 
+test('buildRecord: a group stopped for lack of progress and the final courier are counted apart from the rework total', () => {
+  const stalled = { state: 'blocked', reason: 'GREEN made no progress: the same defects came back after repair round 1: x', red: { reworks: 0 }, green: { reworks: 1 } };
+  const { line, data } = buildRecord({ date: '2026-10-09', base: 'abc', ret: { ...ret, groups: { ...ret.groups, c: stalled }, verified: { ok: false, rounds: 2, problems: [{ what: 'x' }] } }, verify, greens, measured });
+  assert.match(line, /\| 3 rework\(s\), 1 stalled, converge failing in 2 \| mutants/);
+  assert.deepEqual([data.stalled, data.converge], [1, { ok: false, rounds: 2 }]);
+  const plain = buildRecord({ date: '2026-10-09', base: 'abc', ret, verify, greens, measured });
+  assert.doesNotMatch(plain.line, /stalled|converge/, 'a run with neither says nothing about them');
+  assert.deepEqual([plain.data.stalled, plain.data.converge], [0, null]);
+});
+
 function agent(dir, name, label, secs) {
   const row = (t, extra) => JSON.stringify({ timestamp: new Date(Date.UTC(2026, 9, 9, 10, 0, t)).toISOString(), message: { role: 'assistant', id: `${name}-${t}`, usage: { input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 2000 }, content: extra } });
   writeFileSync(join(dir, `agent-${name}.jsonl`), `${row(0, [{ type: 'tool_use', id: `${name}-t1` }])}\n${row(secs, [{ type: 'tool_use', id: `${name}-t2` }, { type: 'text', text: 'x' }])}\n`);

@@ -274,6 +274,76 @@ test('final: an existing test that passed before the change and fails after is a
   assert.deepEqual([f.existing.regressions.map(x => x.file), f.existing.preexisting], [['tests/existing_alpha.sh'], ['tests/existing_beta.sh']]);
 });
 
+const ROW_A = 'AC1:happy:test_ac1_happy:tests/test_alpha.sh';
+const dod = (fx, stage, rows = [ROW_A], group = 'a') => fx.tdd('dod', ['--group', group, '--stage', stage, ...rows.flatMap(r => ['--row', r])]);
+
+test('dod: at RED a pair counts when its test is named in its file and the file failed; a row for a test that is not there does not', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  assert.match(dod(fx, 'red').out, /^DOD a stage=red ok=false[\s\S]*no RED gate on record: run `tdd\.mjs red` first/);
+  fx.tdd('red', ['--group', 'a']);
+  let r = dod(fx, 'red');
+  assert.match(r.out, /^DOD a stage=red ok=true covered 1\/1/);
+  assert.match(r.out, /AC1: happy covered \(test_ac1_happy\)/);
+  r = dod(fx, 'red', ['AC1:happy:test_ac1_nowhere:tests/test_alpha.sh']);
+  assert.match(r.out, /ok=false[\s\S]*rows with no such test: AC1\/happy: test_ac1_nowhere is not in tests\/test_alpha\.sh[\s\S]*DoD gaps: AC1\/happy: missing/);
+  assert.match(dod(fx, 'red', ['AC1:happy:test_ac1:tests/test_alpha.sh']).out, /ok=false[\s\S]*test_ac1 is not in/, 'a name that is only the start of another test is not that test');
+  assert.match(dod(fx, 'red', ['nonsense']).out, /ok=false[\s\S]*1 --row not in the form ID:kind:test:file/);
+  assert.match(dod(fx, 'red', []).out, /ok=false[\s\S]*DoD gaps: AC1\/happy: missing/, 'no row, no pair');
+  assert.doesNotMatch(dod(fx, 'red', ['AC1:happy:test_ac1_nowhere:tests/test_alpha.sh']).out, /not in the form/, 'a row that parses but names no test is a phantom, not an unreadable row');
+  assert.equal(fx.tdd('dod', ['--group', 'a']).status, 2, 'dod needs --stage');
+  assert.equal(fx.tdd('dod', ['--stage', 'red']).status, 2, 'dod needs --group');
+  assert.equal(fx.tdd('dod', ['--group', 'zzz', '--stage', 'red']).status, 2);
+  assert.equal(fx.tdd('bogus').status, 2, 'an unknown command is a usage error');
+});
+
+test('dod: a pair whose file passed already at RED is not covered; a gate file only speaks for the tree it ran on', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\ngrep -q old src/alpha.txt\n' });
+  fx.tdd('red', ['--group', 'a']);
+  assert.match(dod(fx, 'red').out, /ok=false[\s\S]*DoD gaps: AC1\/happy: unproven/, 'passes-already proves nothing about the change');
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  assert.match(dod(fx, 'red').out, /ok=false[\s\S]*the RED gate ran before tests\/test_alpha\.sh changed: run it again/, 'an old gate file cannot vouch for a file edited since');
+  fx.tdd('red', ['--group', 'a']);
+  assert.match(dod(fx, 'red').out, /ok=true/);
+});
+
+test('dod: at GREEN the pair needs the GREEN gate ok and unchanged files; a gate that said not ok closes nothing', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA });
+  fx.tdd('red', ['--group', 'a']);
+  put(fx.repo, { 'src/alpha.txt': 'new\n' });
+  fx.tdd('green', ['--group', 'a']);
+  assert.match(dod(fx, 'green').out, /^DOD a stage=green ok=true covered 1\/1/);
+  put(fx.repo, { 'src/alpha.txt': 'newer\n' });
+  assert.match(dod(fx, 'green').out, /ok=false[\s\S]*the GREEN gate ran before src\/alpha\.txt changed/, 'the code changed after the gate ran');
+  put(fx.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\ntrue\n', 'src/alpha.txt': 'new\n' });
+  fx.tdd('green', ['--group', 'a', '--retest']);
+  assert.equal(fx.gate('a.green.json').ok, false, 'a test that passes without the code gives no signal');
+  const r = dod(fx, 'green');
+  assert.match(r.out, /covered 0\/1[\s\S]*the GREEN gate said not ok[\s\S]*DoD gaps: AC1\/happy: unproven/);
+});
+
+test('final: the first run is the reviewer\'s view; --again (a re-run after fixes) never replaces it', t => {
+  const fx = planned(t);
+  put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA, 'src/alpha.txt': 'new\n', 'tests/test_beta.sh': TEST_BETA, 'src/beta.txt': 'beta\n' });
+  assert.match(fx.tdd('final', ['--again']).out, /^FINAL ok=true/);
+  assert.equal(existsSync(join(fx.run, 'gates', 'reviewed.json')), false, 'a re-run is never the reviewer\'s tree');
+  fx.tdd('final');
+  const first = fx.gate('reviewed.json').snapshot;
+  put(fx.repo, { 'src/beta.txt': 'beta two\n' });
+  fx.tdd('final', ['--again']);
+  assert.equal(fx.gate('reviewed.json').snapshot, first);
+  assert.notEqual(fx.gate('final.json').snapshot, first, 'final.json is the latest run');
+});
+
+test('plan: rounds is validated and travels to the Workflow args', t => {
+  const bad = fixture(t, { plan: { rounds: 9 } });
+  assert.match(bad.plan().err, /rounds must be an integer from 1 to 4/);
+  const ok = fixture(t, { plan: { rounds: 2 } });
+  assert.equal(JSON.parse(ok.plan().out.trim().split('\n').pop()).rounds, 2);
+});
+
 test('coverage: changed lines covered below the minimum is a reason; the lcov file comes from the sandboxed command', t => {
   const cover = hits => `printf 'SF:src/alpha.txt\\nDA:1,${hits}\\nend_of_record\\n' > {out}`;
   for (const [hits, ok] of [[0, false], [3, true]]) {

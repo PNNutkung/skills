@@ -16,6 +16,7 @@ export function validatePlan(plan, ticketText) {
   if (typeof plan?.cmd === 'string' && !plan.cmd.includes('{file}')) bad('cmd must contain {file}');
   if (plan?.cover !== undefined && !(typeof plan.cover === 'string' && plan.cover.includes('{out}'))) bad('cover must be a command containing {out} (an lcov file it writes; {files} = the group test files)');
   if (plan?.integration !== undefined && !(relPath(plan.integration?.file) && squash(plan.integration?.goal))) bad('integration needs a relative file and a goal');
+  if (plan?.rounds !== undefined && !(Number.isInteger(plan.rounds) && plan.rounds >= 1 && plan.rounds <= 4)) bad('rounds must be an integer from 1 to 4 (repair rounds per stage before a group is blocked)');
   for (const n of plan?.link ?? []) if (!relPath(n)) bad(`link ${JSON.stringify(n)} must be a normalized relative path inside the repo`);
   for (const p of plan?.ro ?? []) if (typeof p !== 'string' || !p.startsWith('/')) bad(`ro ${JSON.stringify(p)} must be an absolute path`);
   for (const e of plan?.env ?? []) if (!/^[A-Za-z_]\w*=/.test(String(e))) bad(`env ${JSON.stringify(e)} must be K=V`);
@@ -170,6 +171,27 @@ export function closure(plan, rows, red, green, greenOk = {}) {
   });
   const pairs = items.flatMap(i => Object.entries(i.kinds).map(([kind, v]) => ({ dod: i.id, kind, ...v })));
   return { items, covered: pairs.filter(p => p.status === 'covered').length, total: pairs.length, gaps: pairs.filter(p => p.status !== 'covered').map(p => `${p.dod}/${p.kind}: ${p.status}`) };
+}
+
+/** `ID:kind:test:file` (the --row of `tdd.mjs dod`) -> row, or null. The file is what follows the LAST colon, so a test name may hold one. */
+export function parseRow(text) {
+  const t = String(text), i = t.indexOf(':'), j = t.indexOf(':', i + 1), k = t.lastIndexOf(':');
+  return i < 1 || j < 0 || k <= j ? null : { dod: t.slice(0, i), kind: t.slice(i + 1, j), test: t.slice(j + 1, k), file: t.slice(k + 1) };
+}
+
+/**
+ * The closure of ONE group while it is still being built: its own items and rows, judged by the same rules as the whole-run closure.
+ * stage 'red': a pair counts when its test is a valid row whose file failed at RED (GREEN does not exist yet); stage 'green': the full closure.
+ * An item that another group also owns can be closed there, so its gaps are listed as `shared`, not as blockers.
+ * -> { covered, total, gaps (blocking), shared, items }
+ */
+export function groupClosure(plan, gid, rows, red, green, greenOk, stage = 'green') {
+  const g = plan.groups.find(x => x.id === gid), mine = plan.dod.filter(d => g.dod.includes(d.id));
+  const assumed = stage === 'red' ? Object.fromEntries(g.tests.map(f => [f, 'exercises-change'])) : green;
+  const c = closure({ groups: [g], dod: mine }, { [gid]: rows }, { [gid]: red }, { [gid]: assumed }, stage === 'red' ? {} : { [gid]: greenOk });
+  const shared = new Set(mine.filter(d => plan.groups.some(o => o.id !== gid && o.dod.includes(d.id))).map(d => d.id));
+  const blocking = c.gaps.filter(x => !shared.has(x.split('/')[0])), loose = c.gaps.filter(x => shared.has(x.split('/')[0]));
+  return { ...c, gaps: blocking, shared: loose, covered: c.covered, total: c.total };
 }
 
 export function closureMarkdown(c) {

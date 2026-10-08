@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = readFileSync(join(HERE, 'workflow.js'), 'utf8');
-const POOL = JSON.parse(/const LIM = (\{.*\})/.exec(SRC)[1]).pool; // generated from graph.mjs
+const { pool: POOL, rounds: ROUNDS } = JSON.parse(/const LIM = (\{.*\})/.exec(SRC)[1]); // generated from graph.mjs
 const wf = new (Object.getPrototypeOf(async () => {}).constructor)('agent', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', SRC.replace('export ', ''));
 
 const KINDS = ['happy', 'fail', 'edge'];
@@ -32,6 +32,7 @@ function agentsFor(args, over = {}) {
     if (node === 'reviewer') return { findings: [] };
     if (node === 'integration-tester') return { file: 'tests/integration/test_flow.py', exit: 0, findings: [] };
     if (node === 'fixer') return { fixed: [], notFixed: [] };
+    if (node === 'final-verifier') return { ok: true, problems: [] };
     return undefined;
   };
 }
@@ -60,6 +61,9 @@ function launch(args, respond, delay = 0) {
 async function play(args, over = {}, delay = 0) {
   const h = launch(args, agentsFor({ ...BASE, ...args }, over), delay), out = await h.done;
   assert.deepEqual(h.unexpected, [], 'agent called with no canned answer');
+  const broken = /\bNaN\b|undefined|\[object Object\]/; // a prompt or a reason built from a missing value: the mutation probe turned several string joins into NaN and nothing noticed
+  assert.deepEqual(h.calls.filter(c => broken.test(c.prompt)).map(c => c.o.label), [], 'a prompt holds NaN, undefined or [object Object]');
+  assert.deepEqual([...Object.values(out.groups || {}).map(g => g.reason || ''), ...(out.notDone || [])].filter(t => broken.test(t)), [], 'a reason holds NaN, undefined or [object Object]');
   return { out, ...h, n: out.stats && out.stats.agentsByNode, by: label => h.calls.filter(c => c.o.label === label) };
 }
 const idx = (events, e) => events.indexOf(e);
@@ -67,7 +71,12 @@ const idx = (events, e) => events.indexOf(e);
 // 1 plan mode spawns nothing; prompt budgets hold (a prompt word is ~1% of an agent's cost: the fixed context is ~40k tokens, see runs.md)
 let r = await play({ mode: 'plan' });
 assert.equal(r.calls.length, 0);
-assert.deepEqual([r.out.plan.counts['red-driver'], r.out.plan.total], [3, 14]);
+assert.equal(r.out.dryRun, true);
+assert.deepEqual([r.out.plan.counts['red-driver'], r.out.plan.total], [3, 15]);
+assert.deepEqual([r.out.rounds, r.out.worstBuildAgents], [ROUNDS, 3 * (5 + 5 * ROUNDS)], 'the dry run states the ceiling when every check fails until the rounds run out');
+const real = await play({ groups: [grp('a')] });
+assert.equal(r.out.prompts.find(p => p.node === 'green-navigator').promptChars, real.by('green-navigator:a')[0].prompt.length, 'the dry run sizes the navigators with one row per DoD pair, as a real run does');
+assert.equal(r.out.prompts.find(p => p.node === 'red-navigator').promptChars, real.by('red-navigator:a')[0].prompt.length);
 assert.ok(r.out.prompts.filter(p => p.node !== 'reviewer').every(p => p.promptChars < 4608), JSON.stringify(r.out.prompts));
 assert.ok(r.out.prompts.find(p => p.node === 'reviewer').promptChars < 5200);
 
@@ -115,19 +124,68 @@ const thin = () => ({ matrix: rows(a, ['happy']), files: [], reuse: 'none' });
 r = await play({}, { 'red-driver:a': thin, 'red-driver:a:matrix': thin });
 assert.match(r.by('red-navigator:a')[0].prompt, /KNOWN GAPS \(code-checked\): A1\/fail has no test; A1\/edge has no test/);
 
-// 6 a navigator FAIL gets ONE rework and ONE re-check; a second FAIL blocks the group and everything that waits for it
+// 6 the repair loop: a navigator FAIL goes back to the driver and is checked again, round after round, until the check passes, the same defects come back, or the round cap
 r = await play({}, { 'red-navigator:a': () => FAIL('test', 'asserts the implementation') });
 assert.deepEqual([r.by('red-driver:a:rework').length, r.by('red-navigator:a:recheck').length], [1, 1]);
 assert.match(r.by('red-driver:a:rework')[0].prompt, /FIX EXACTLY THESE DEFECTS[\s\S]*asserts the implementation/);
-assert.match(r.by('red-navigator:a:recheck')[0].prompt, /RE-CHECK after one rework[\s\S]*asserts the implementation/);
+assert.match(r.by('red-navigator:a:recheck')[0].prompt, /RE-CHECK 1 after a rework[\s\S]*asserts the implementation/);
 assert.deepEqual([r.out.groups.a.state, r.out.groups.a.red.reworks], ['done', 1]);
-r = await play({}, { 'red-navigator:a': () => FAIL('test', 'wrong invariant'), 'red-navigator:a:recheck': () => FAIL('test', 'still wrong') });
-assert.equal(r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, 2, 'the driver, then exactly one rework');
+r = await play({}, { 'red-navigator:a': { verdict: 'PASS', defects: [], gateOk: false, notes: 'dod said ok=false' } });
+assert.deepEqual([r.by('red-driver:a:rework').length, r.out.groups.a.state], [1, 'done'], 'a PASS that admits a command printed ok=false is not a pass');
+assert.match(r.by('red-driver:a:rework')[0].prompt, /the navigator reported PASS with gateOk=false: dod said ok=false/);
+r = await play({}, { 'red-navigator:a': () => FAIL('test', 'wrong invariant'), 'red-navigator:a:recheck': () => FAIL('test', 'a different weak assertion') });
+assert.deepEqual([r.by('red-driver:a:rework2').length, r.by('red-navigator:a:recheck2').length], [1, 1], 'a second repair round runs when the re-check finds something new');
+assert.match(r.by('red-driver:a:rework2')[0].prompt, /a different weak assertion/);
+assert.doesNotMatch(r.by('red-driver:a:rework2')[0].prompt, /wrong invariant/, 'a round fixes what the last check found, not the whole history');
+assert.deepEqual([r.out.groups.a.state, r.out.groups.a.red.reworks], ['done', 2]);
+let nth = 0;
+const endless = () => FAIL('test', 'defect number ' + (++nth));
+const never = Object.fromEntries(['red-navigator:a', 'red-navigator:a:recheck', 'red-navigator:a:recheck2', 'red-navigator:a:recheck3', 'red-navigator:a:recheck4'].map(l => [l, endless]));
+r = await play({}, never);
+assert.equal(r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, 1 + ROUNDS, 'the driver, then exactly ROUNDS repairs');
 assert.deepEqual([r.out.groups.a.state, r.out.groups.b.state, r.out.groups.c.state], ['blocked', 'blocked', 'done']);
+assert.match(r.out.groups.a.reason, new RegExp('after ' + ROUNDS + ' repair round'));
+assert.equal(r.out.groups.a.red.reworks, ROUNDS);
 assert.match(r.out.groups.b.reason, /waits for group a/);
 assert.equal(r.n['green-driver'], 1, 'only the independent group reached GREEN');
 assert.equal(r.out.notDone.length, 2);
 assert.ok(r.out.reviewed && r.out.postmortemMd.includes('Not done'));
+r = await play({}, { 'red-navigator:a': () => FAIL('test', 'wrong invariant'), 'red-navigator:a:recheck': () => FAIL('test', 'Wrong   invariant!') });
+assert.equal(r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, 2, 'the same defects twice: a repair that changed nothing the check can see is not tried again');
+assert.match(r.out.groups.a.reason, /RED made no progress/);
+nth = 0;
+r = await play({ rounds: 1 }, never);
+assert.equal(r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, 2, 'plan.rounds = 1 is one repair and one re-check');
+assert.match(r.out.groups.a.reason, /after 1 repair round/);
+nth = 0;
+r = await play({ rounds: 9 }, never);
+assert.equal(r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, 1 + ROUNDS, 'an out-of-range plan.rounds falls back to the default');
+assert.equal(r.out.stats.rounds, ROUNDS);
+nth = 0;
+r = await play({ rounds: 4 }, never);
+assert.equal(r.calls.filter(c => /^red-driver:a/.test(c.o.label)).length, 5, 'plan.rounds = 4 is the top of the range');
+assert.deepEqual([r.out.groups.a.red.verdict, r.out.groups.a.red.defects.length, r.out.groups.a.red.reworks], ['FAIL', 1, 4], 'a blocked group keeps the defects that blocked it');
+// the matrix the repair writes replaces the old one (the closure and the next check read it)
+const reworked = { matrix: rows(a).map(m => ({ ...m, test: m.test + '_v2' })), files: ['tests/test_a.py'], reuse: 'none' };
+r = await play({}, { 'red-navigator:a': FAIL('test', 'weak assertion'), 'red-driver:a:rework': reworked });
+assert.deepEqual(r.out.groups.a.matrix.map(m => m.test.slice(-3)), ['_v2', '_v2', '_v2']);
+assert.match(r.by('red-navigator:a:recheck')[0].prompt, /test_a1_happy_case_v2/);
+// the same words at another line are another defect: a group that fixed the first one and now has the next is making progress, not stalling
+const weakAt = line => ({ verdict: 'FAIL', gateOk: false, defects: [{ cls: 'test', what: 'assertion too weak: only checks the truthiness of the result', file: 'tests/test_a.py', line }] });
+r = await play({}, { 'red-navigator:a': () => weakAt(10), 'red-navigator:a:recheck': () => weakAt(30) });
+assert.deepEqual([r.by('red-driver:a:rework2').length, r.out.groups.a.state, r.out.groups.a.red.reworks], [1, 'done', 2]);
+r = await play({}, { 'red-navigator:a': () => weakAt(10), 'red-navigator:a:recheck': () => weakAt(10) });
+assert.match(r.out.groups.a.reason, /RED made no progress/, 'the same defect at the same line is a stall');
+// the same two brakes guard GREEN: the round cap, and the same defects coming back
+nth = 0;
+const neverGreen = Object.fromEntries(['green-navigator:a', 'green-navigator:a:recheck', 'green-navigator:a:recheck2', 'green-navigator:a:recheck3'].map(l => [l, () => FAIL('impl', 'defect number ' + (++nth))]));
+r = await play({ groups: [grp('a')] }, neverGreen);
+assert.equal(r.calls.filter(c => /^green-driver:a/.test(c.o.label)).length, 1 + ROUNDS);
+assert.equal(r.out.groups.a.state, 'blocked');
+assert.match(r.out.groups.a.reason, new RegExp('GREEN still failing its check after ' + ROUNDS + ' repair round'));
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('impl', 'extra feature'), 'green-navigator:a:recheck': FAIL('impl', 'Extra feature') });
+assert.equal(r.calls.filter(c => /^green-driver:a/.test(c.o.label)).length, 2);
+assert.match(r.out.groups.a.reason, /GREEN made no progress: the same defects came back after repair round 1/);
 
 // 7 GREEN: a surviving mutant (cls gap) goes to the test-writer tier, a code defect to the green driver, side by side; the re-check runs with --retest
 const mixed = { verdict: 'FAIL', gateOk: false, defects: [{ cls: 'gap', what: 'mutant X-1 survived: no test pins x > 0' }, { cls: 'impl', what: 'helper duplicates util.slug' }] };
@@ -144,6 +202,45 @@ assert.equal(r.out.groups.a.matrix.filter(m => m.test === 'test_a1_edge_case').l
 assert.ok(r.out.groups.a.matrix.some(m => m.test === 'test_a1_edge_zero'));
 r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('impl', 'extra feature') });
 assert.deepEqual([r.by('red-driver:a:strengthen').length, r.by('green-navigator:a:recheck')[0].prompt.includes('--retest')], [0, false]);
+assert.match(r.by('green-driver:a:rework')[0].prompt, /KEEP EDITING[\s\S]*tdd\.mjs green --run \/tmp\/pat-test --group a`/, 'a lone maker loops on the real gate');
+assert.match(r.by('green-navigator:a:recheck')[0].prompt, /RE-CHECK 1 after a rework/);
+assert.equal(r.out.groups.a.green.reworks, 1);
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('impl', 'extra feature'), 'green-driver:a:rework': { files: ['src/a.py'], reuse: 'none', gateOk: true, gateRuns: 2 }, 'green-driver:a': { files: ['src/a.py'], reuse: 'none', gateOk: false, gateRuns: 3 } });
+assert.deepEqual([r.out.groups.a.green.driver.gateOk, r.out.groups.a.green.driver.gateRuns], [true, 2], 'the record is the LATEST maker\'s claim, not the first pass\'s');
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('impl', 'extra feature'), 'green-navigator:a:recheck': () => null });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.a.reason], ['failed', 'green-navigator returned nothing on re-check 1']);
+// what a green rework reports about the tests is kept: the tests are frozen, so it can only say they are wrong
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('impl', 'extra feature'), 'green-driver:a:rework': { files: ['src/a.py'], reuse: 'none', testDefects: [{ file: 'tests/test_a.py', line: 9, why: 'asserts the old message' }] } });
+assert.deepEqual(r.out.groups.a.green.testDefects, [{ file: 'tests/test_a.py', line: 9, why: 'asserts the old message' }]);
+// two makers on one group never run its gate (they would see each other\'s half-edited tree); the check runs it after both finish
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': mixed, 'red-driver:a:strengthen': strengthened }, 3);
+for (const l of ['green-driver:a:rework', 'red-driver:a:strengthen']) {
+  assert.match(r.by(l)[0].prompt, /never the gate/, l);
+  assert.doesNotMatch(r.by(l)[0].prompt, /tdd\.mjs (red|green) --run/, l);
+}
+assert.doesNotMatch(r.by('green-driver:a:rework')[0].prompt, /Run the gate again after it|cleanup pass/, 'a repair fixes exactly its defects: no cleanup, and no "run the gate" next to "never the gate"');
+assert.match(r.by('green-driver:a')[0].prompt, /cleanup pass[\s\S]*Run the gate again after it/, 'the first pass keeps its one cleanup');
+// a strengthening pass loops on the gate with --retest; once tests were strengthened on purpose every later gate run keeps it, and late rows never reach `dod`
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': FAIL('gap', 'mutant X-9 survived'), 'red-driver:a:strengthen': strengthened, 'green-navigator:a:recheck': FAIL('impl', 'extra feature') });
+assert.match(r.by('red-driver:a:strengthen')[0].prompt, /KEEP EDITING[\s\S]*tdd\.mjs green --run \/tmp\/pat-test --group a --retest/);
+assert.match(r.by('green-navigator:a:recheck2')[0].prompt, /--retest/);
+assert.match(r.by('green-navigator:a:recheck2')[0].prompt, /RE-CHECK 2 after a rework/);
+assert.match(r.by('green-driver:a:rework2')[0].prompt, /tdd\.mjs green --run \/tmp\/pat-test --group a --retest`/, 'after a strengthening round the maker\'s own gate takes --retest too, or it fails on the very edit that was sanctioned');
+assert.doesNotMatch(r.by('green-driver:a')[0].prompt, /--retest/);
+assert.equal(r.out.groups.a.green.reworks, 2);
+assert.doesNotMatch(r.by('green-navigator:a:recheck2')[0].prompt, /test_a1_edge_zero/, 'a late row is never offered to dod: it cannot have failed at RED');
+assert.equal(r.out.groups.a.state, 'done');
+// a frozen test that was changed (cls test) is RESTORED, not "strengthened", and its gate run stays WITHOUT --retest: that flag would silence the very reason that was reported
+const changedTest = FAIL('test', 'tests changed since RED: tests/test_a.py (3 line(s) removed)');
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': changedTest });
+const restore = r.by('red-driver:a:strengthen')[0].prompt;
+assert.match(restore, /driver: RESTORE the tests[\s\S]*git show <snapshot>:<file>[\s\S]*gates\/a\.red\.json[\s\S]*tests changed since RED/);
+assert.doesNotMatch(restore, /mutants SURVIVED|--retest/);
+assert.doesNotMatch(r.by('green-navigator:a:recheck')[0].prompt, /--retest/);
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': { verdict: 'FAIL', gateOk: false, defects: [{ cls: 'gap', what: 'mutant X-1 survived' }, { cls: 'test', what: 'tests changed since RED: tests/test_a.py' }] } });
+assert.match(r.by('red-driver:a:strengthen')[0].prompt, /driver: STRENGTHEN[\s\S]*mutants SURVIVED[\s\S]*Undo that[\s\S]*--retest/);
+assert.match(r.by('green-navigator:a:recheck')[0].prompt, /--retest/, 'a strengthening in the same round sanctions it');
+assert.ok(r.calls.every(c => /At most \d+ tool calls/.test(c.prompt)), 'every brief states its call cap, a strengthening pass included');
 
 // 8 rolling pool: never more than POOL agents in flight, and the pool really fills
 const MANY = Array.from({ length: 12 }, (_, i) => grp('g' + i));
@@ -153,7 +250,8 @@ assert.equal(r.live.max, POOL, 'pool never filled or overflowed: ' + r.live.max)
 // 9 the reviewer: findings become proofcheck clusters; a medium without a checkable proof is unproven; ONE fixer per owning group, never two on a file
 const F = (title, severity, file, mode = 'read', extra = {}) => ({ title, severity, file, startLine: 3, endLine: 4, hazard: 'h ' + title, failureScenario: 's', quote: 'code ' + title, suggestedFix: 'do x', anchorable: true, proof: { mode, ref: file + ':3-4', quote: 'code ' + title }, ...extra });
 const found = [F('Validation missing', 'high', 'src/a.py'), F('Weak assertion', 'medium', 'tests/test_a.py', 'inferred'), F('Stale example', 'low', 'src/b.py', 'none'), F('Doc drift', 'low', 'README.md', 'none'), F('naming', 'nit', 'src/c.py', 'none')];
-r = await play({}, { reviewer: { findings: found }, 'fixer:a': { fixed: ['x'], notFixed: [] } });
+r = await play({}, { reviewer: { findings: found }, 'fixer:a': { fixed: ['x'], notFixed: [{ id: 'R-zzz', why: 'needs a schema change' }] } });
+assert.deepEqual(r.out.fixes.a.notFixed, [{ id: 'R-zzz', why: 'needs a schema change' }], 'what a fixer could not fix is kept, never dropped');
 const byTitle = t => r.out.clusters.find(c => c.title === t);
 assert.deepEqual(['Validation missing', 'Weak assertion', 'Stale example', 'naming'].map(t => [byTitle(t).status, byTitle(t).evidence]), [['confirmed', 'read'], ['unproven', 'none'], ['pending-code-check', 'none'], ['unverified-nit', 'none']]);
 assert.ok(/^R-[0-9a-z]+$/.test(byTitle('Validation missing').id) && byTitle('Validation missing').proof.ref === 'src/a.py:3-4');
@@ -210,6 +308,7 @@ assert.match(rev, /check every number in an example/, 'the stale-example finding
 
 // 13 integration test: once, after every group is done, before the reviewer; skipped when a group is not done
 const integ = { file: 'tests/integration/test_flow.py', goal: 'drive the full path against a real database' };
+assert.equal((await play({ mode: 'plan', integration: integ })).out.plan.counts['integration-tester'], 1, 'the dry run counts the integration tester once');
 r = await play({ integration: integ });
 assert.equal(r.n['integration-tester'], 1);
 assert.ok(idx(r.events, 'end integration-tester') < idx(r.events, 'start reviewer'));
@@ -255,4 +354,75 @@ assert.match(r.by('fixer:_extra')[0].prompt, /ONLY docs\/guide\.md\./);
 assert.doesNotMatch(r.by('fixer:_extra')[0].prompt, /zshrc|release\.yml|other\/x/);
 assert.equal(r.out.fixes._byHand.notFixed.length, 3);
 
-console.log('ok - paired-agent-tdd workflow.js: 18 scenarios');
+// 19 a maker is told to loop on the real gate with the same commands its navigator runs; the navigators check the DoD pairs in code with `tdd.mjs dod`
+r = await play({ groups: [grp('a')] });
+const rd = r.by('red-driver:a')[0].prompt, gd = r.by('green-driver:a')[0].prompt, rnv = r.by('red-navigator:a')[0].prompt, gnv = r.by('green-navigator:a')[0].prompt;
+assert.match(rd, /KEEP EDITING[\s\S]*tdd\.mjs red --run \/tmp\/pat-test --group a` and `[^`]*tdd\.mjs dod --run \/tmp\/pat-test --group a --stage red --row 'ID:kind:test:file'/);
+assert.match(gd, /KEEP EDITING[\s\S]*tdd\.mjs green --run \/tmp\/pat-test --group a`[\s\S]*testGaps/);
+assert.ok([rd, gd].every(p => /At most 3 gate runs; return gateOk/.test(p)), 'the maker\'s own loop is bounded');
+assert.match(rnv, /tdd\.mjs red --run \/tmp\/pat-test --group a` then `[^`]*tdd\.mjs dod --run \/tmp\/pat-test --group a --stage red --row 'A1:happy:test_a1_happy_case:tests\/test_a\.py' --row 'A1:fail:test_a1_fail_case:tests\/test_a\.py' --row 'A1:edge:test_a1_edge_case:tests\/test_a\.py'`/);
+assert.match(gnv, /tdd\.mjs green --run \/tmp\/pat-test --group a` then `[^`]*--stage green --row 'A1:happy:test_a1_happy_case:tests\/test_a\.py'/);
+assert.match(gnv, /gateOk = true only if every command printed ok=true/);
+const quote = [{ dod: 'A1', kind: 'happy', test: "test_a1_happy_it's", file: 'tests/test_a.py' }, { dod: 'A1', kind: 'fail', test: 'test_a1_fail_x', file: 'tests/test_a.py' }, { dod: 'A1', kind: 'edge', test: 'test_a1_edge_x', file: 'tests/test_a.py' }];
+r = await play({ groups: [grp('a')] }, { 'red-driver:a': { matrix: quote, files: ['tests/test_a.py'], reuse: 'none' } });
+assert.ok(r.by('red-navigator:a')[0].prompt.includes("--row 'A1:happy:test_a1_happy_it'\\''s:tests/test_a.py'"), 'a quote in a test name is escaped for the shell');
+assert.equal(r.out.groups.a.red.driver.gateOk, undefined, 'a driver that reports no gate result is recorded as such, not as ok');
+r = await play({ groups: [grp('a')] }, { 'red-driver:a': { matrix: rows(grp('a')), files: ['tests/test_a.py'], reuse: 'none', gateOk: true, gateRuns: 2 }, 'green-driver:a': { files: ['src/a.py'], reuse: 'none', gateOk: false, gateRuns: 3, testGaps: [{ file: 'src/a.py', line: 4, why: 'mutant X-1 survives' }] } });
+assert.deepEqual([r.out.groups.a.red.driver, r.out.groups.a.green.driver.gateRuns, r.out.groups.a.green.driver.testGaps.length], [{ gateOk: true, gateRuns: 2 }, 3, 1], 'what the maker\'s own loop ended on is kept for the record, never trusted: the navigator runs the gate again');
+
+// 20 converge: after the fixers a courier re-runs the final gate; what it names goes back to the owning group; two rounds at most; what cannot be placed is not done
+const one = [F('Validation missing', 'high', 'src/a.py')], fixedA = { fixed: ['x'], notFixed: [] };
+r = await play({}, { reviewer: { findings: one }, 'fixer:a': fixedA });
+assert.deepEqual([r.n['final-verifier'], r.out.verified], [1, { ok: true, rounds: 1, problems: [] }]);
+assert.match(r.by('final-verifier')[0].prompt, /tdd\.mjs final --run \/tmp\/pat-test --again/);
+assert.deepEqual([r.by('final-verifier')[0].o.agentType, r.by('final-verifier')[0].o.model, r.by('final-verifier')[0].o.effort], ['code-reviewer', 'haiku', 'low']);
+assert.match(r.by('fixer:a')[0].prompt, /KEEP EDITING[\s\S]*tdd\.mjs green --run \/tmp\/pat-test --group a --retest/, 'a fixer loops on its group gate');
+assert.doesNotMatch(r.by('fixer:a')[0].prompt, /tdd\.mjs final/);
+r = await play({});
+assert.deepEqual([r.n['final-verifier'], r.out.verified], [undefined, null], 'no fixer ran, so there is nothing to re-check');
+const bad1 = { ok: false, problems: [{ file: 'tests/test_a.py', group: '', what: 'group tests fail together: tests/test_a.py' }, { file: 'tests/test_old.py', group: 'b', what: 'existing tests broken by the change: tests/test_old.py' }, { file: 'notes.txt', group: '', what: 'files outside the plan changed: notes.txt' }] };
+r = await play({}, { reviewer: { findings: one }, 'fixer:a': fixedA, 'final-verifier': bad1 });
+assert.deepEqual(r.calls.filter(c => /^fixer:.*:final/.test(c.o.label)).map(c => c.o.label).sort(), ['fixer:a:final', 'fixer:b:final'], 'a file owned by a group goes to it; an unowned test goes to the group the courier named');
+assert.match(r.by('fixer:a:final')[0].prompt, /group tests fail together[\s\S]*never edit an existing test[\s\S]*ONLY tests\/test_a\.py, src\/a\.py\./);
+assert.doesNotMatch(r.by('fixer:a:final')[0].prompt, /test_old|notes\.txt/);
+assert.doesNotMatch(r.by('fixer:a:final')[0].prompt, /test_a\.py:\d/, 'a problem names a file, not a line range it does not have');
+assert.match(r.by('fixer:a:final')[0].prompt, /KEEP EDITING/);
+assert.deepEqual([r.out.verified.ok, r.out.verified.rounds, r.n['final-verifier']], [true, 2, 2]);
+assert.deepEqual(r.out.verified.fixers.map(f => f.group).sort(), ['a', 'b']);
+const still = { ok: false, problems: [{ file: 'tests/test_a.py', group: 'a', what: 'group tests fail together: tests/test_a.py' }] };
+r = await play({}, { reviewer: { findings: one }, 'fixer:a': fixedA, 'final-verifier': still, 'final-verifier:2': still, 'final-verifier:3': still });
+assert.deepEqual(r.calls.filter(c => /^fixer:a:final/.test(c.o.label)).map(c => c.o.label), ['fixer:a:final', 'fixer:a:final2'], 'two fix passes at most; the last verdict is reported, not fixed again');
+assert.deepEqual([r.out.verified.ok, r.out.verified.rounds, r.n['final-verifier']], [false, 3, 3]);
+assert.ok(r.out.notDone.some(n => /final gate still failing after 3 round\(s\): tests\/test_a\.py group tests fail together/.test(n)));
+r = await play({}, { reviewer: { findings: one }, 'fixer:a': fixedA, 'final-verifier': { ok: false, problems: [{ file: 'notes.txt', group: '', what: 'files outside the plan changed: notes.txt' }] } });
+assert.equal(r.calls.filter(c => /:final/.test(c.o.label)).length, 0, 'a problem with no owner is not guessed at: it is left to the lead');
+assert.deepEqual([r.out.verified.ok, r.n['final-verifier']], [false, 1]);
+assert.ok(r.out.notDone.some(n => /notes\.txt/.test(n)));
+r = await play({}, { reviewer: { findings: one }, 'fixer:a': fixedA, 'final-verifier': () => null });
+assert.deepEqual([r.out.verified.ok, r.out.failed.map(f => f.id)], [false, ['final-verifier']]);
+assert.ok(r.out.notDone.some(n => /final verifier returned nothing/.test(n)));
+r = await play({ rounds: 1 }, { reviewer: { findings: one }, 'fixer:a': fixedA, 'final-verifier': still, 'final-verifier:2': still });
+assert.deepEqual([r.calls.filter(c => /:final/.test(c.o.label)).length, r.n['final-verifier'], r.out.verified.rounds], [1, 2, 2], 'plan.rounds = 1 is one fix pass and one re-check');
+// fixers of dependent groups never run side by side: b's gate builds on a's working-tree files, so b's fixer waits for a's; an independent group does not wait
+const threeF = [F('in a', 'low', 'src/a.py', 'none'), F('in b', 'low', 'src/b.py', 'none', { startLine: 20, endLine: 21 }), F('in c', 'low', 'src/c.py', 'none', { startLine: 40, endLine: 41 })];
+let freeA;
+const heldA = new Promise(res => { freeA = res; });
+const hf = launch({}, agentsFor(BASE, { reviewer: { findings: threeF } }), l => (l === 'fixer:a' ? heldA : 0));
+await tick(80);
+assert.ok(hf.events.includes('start fixer:c') && hf.events.includes('end fixer:c'), 'an independent group fixes while a is still being fixed');
+assert.ok(hf.events.includes('start fixer:a') && !hf.events.includes('start fixer:b'), 'b waits for a\'s fixer: its gate would see a half-edited a');
+freeA();
+await hf.done;
+assert.ok(idx(hf.events, 'end fixer:a') < idx(hf.events, 'start fixer:b'));
+// the true ceiling of build agents per group is 5 + 5R, reached when the matrix needs a rework, every RED check fails R times and every GREEN round needs a code fix AND a strengthening pass
+let mix = 0;
+const thinMatrix = () => ({ matrix: rows(a, ['happy']), files: ['tests/test_a.py'], reuse: 'none' });
+const failsR = () => FAIL('test', 'weak assertion ' + (++mix));
+const both = () => ({ verdict: 'FAIL', gateOk: false, defects: [{ cls: 'gap', what: 'mutant ' + (++mix) + ' survived' }, { cls: 'impl', what: 'extra behavior ' + mix }] });
+const rr = n => Object.fromEntries(Array.from({ length: n }, (_, i) => [`red-navigator:a${i ? ':recheck' + (i > 1 ? i : '') : ''}`, failsR]));
+const gg = n => Object.fromEntries(Array.from({ length: n }, (_, i) => [`green-navigator:a${i ? ':recheck' + (i > 1 ? i : '') : ''}`, both]));
+r = await play({ groups: [grp('a')] }, { 'red-driver:a': thinMatrix, 'red-driver:a:matrix': thinMatrix, ...rr(ROUNDS), ...gg(ROUNDS) });
+assert.equal(r.calls.filter(c => ['red-driver', 'red-navigator', 'green-driver', 'green-navigator'].includes(c.o.label.split(':')[0]) && c.o.label.split(':')[1] === 'a').length, 5 + 5 * ROUNDS, 'the documented worst case is reached and not exceeded');
+assert.equal(r.out.groups.a.state, 'done');
+
+console.log('ok - paired-agent-tdd workflow.js: 20 scenarios');

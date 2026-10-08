@@ -22,6 +22,7 @@ A **snapshot** is a git commit built with a temporary index from `base + chosen 
 | `link[]` | repo-relative dirs (a venv) symlinked into every sandbox tree and mounted read-only; editable installs that point inside the repo are granted too |
 | `ro[]`, `env[]` | extra read-only dirs (the real interpreter install: a version-manager shim reads `$HOME`, which the sandbox hides) and `K=V` for the program inside; `PYTHONDONTWRITEBYTECODE=1` is always added |
 | `timeout`, `jobs` | seconds per command (120), parallel runs per gate (4) |
+| `rounds` | repair rounds per stage before a group is blocked, 1 to 4 (default 3, `LIM.rounds` in `graph.mjs`); 1 is one repair and one re-check |
 | `mutation` | `{max: 12, budget: 60, off}`; `killExits: [1]` for pytest (exit 2 = collection error = inconclusive) |
 | `cover`, `coverMin` | command that writes an lcov file to `{out}` (`{files}` = the group's test files); minimum % of changed lines covered (80) |
 | `integration` | `{file, goal}`: the one file the integration tester may create |
@@ -43,9 +44,13 @@ Runs `testprobe.mjs` (pass on HEAD, fail with the group's code reverted, 2 extra
 | N mutants survived | each is a test gap, with an id, `file:line`, the operator and a stamp `ZT-MUTANT <id> <file>:<line> <op> exit=0` that is citable as `{mode: executed, ref: <run>}` |
 | changed-line coverage below `coverMin` | instrumented changed lines only; a file with no lcov entry is listed as no data, not as 100% |
 
-## final (`tdd.mjs final --run RUN`)
+## dod (`tdd.mjs dod --run RUN --group G --stage red|green --row ID:kind:test:file ...`)
 
-All groups' tests run together on the integrated snapshot (they can pass alone and fail together). Existing tests that **mention a changed module by name** (heuristic, over-approximates, capped at 12) run on the integrated tree; one that fails is re-run on the base: failing now but not before = **regression**, failing in both = already failing. The stray-file scope check **blocks here** (a scan that fails because a file vanished mid-scan is reported as `strayScan`, never as a failure), and `diff/final.patch` is written. The integration test is **not** run by the gates (it needs its real dependency, which the sandbox has not): its agent runs it for real and `verify` reads the exit code from the return.
+The group's DoD pairs, asked at any moment: it runs nothing (a few git reads), so a maker can ask after every edit and a navigator can check in code what it would otherwise judge by reading. The rows are the driver's **claim**; the facts are the working tree and the gate file. A pair counts only if (1) its row is valid (`checkMatrix`: the id set apart in the name, one test one pair, the group's own file), (2) the test name exists in that file now as a whole identifier, (3) the file's verdict in the gate file is right (stage `red`: `fails` or `fails-to-load`; stage `green`: also `exercises-change`, and the GREEN gate was ok) and (4) **the gate file is not stale**: the group's files are compared with the tree the gate ran on, and a file edited since means "run the gate again", never a pass on an old file. A DoD item another group also owns can be closed there, so its gaps are listed as `also owned by another group`, not as blockers. Output: `DOD G stage=S ok=... covered n/m`, then `not ok:` reasons and one line per item. A `late` row (a strengthening pass) is never offered, as in `verify`.
+
+## final (`tdd.mjs final --run RUN [--again]`)
+
+`--again` is the re-run after fixes (the final courier): it prints and writes `final.json` but never `reviewed.json`, which stays the tree the reviewer saw. All groups' tests run together on the integrated snapshot (they can pass alone and fail together). Existing tests that **mention a changed module by name** (heuristic, over-approximates, capped at 12) run on the integrated tree; one that fails is re-run on the base: failing now but not before = **regression**, failing in both = already failing. The stray-file scope check **blocks here** (a scan that fails because a file vanished mid-scan is reported as `strayScan`, never as a failure), and `diff/final.patch` is written. The integration test is **not** run by the gates (it needs its real dependency, which the sandbox has not): its agent runs it for real and `verify` reads the exit code from the return.
 
 ## verify (`tdd.mjs verify --run RUN --ret return.json`)
 
@@ -54,6 +59,14 @@ All groups' tests run together on the integrated snapshot (they can pass alone a
 - `unfixed`: a reviewer finding whose quoted code is still in its file after the fixers (a nit is reported, never sent to a fixer, so never `unfixed`).
 - `integration`: `ok`, `<file> exited N`, or `not run`; anything but `ok` is listed under `notDone`.
 - `proofcheck.mjs` re-checks every reviewer proof against the tree the reviewer saw (`reviewed.json`) and the ledger.
+
+## The repair loop (`workflow.js`), stated
+
+A stage = a maker pass, then a navigator on fresh gate facts (`gate` then `dod`), repeated while it reports defects (a PASS that admits `gateOk=false` counts as a defect). The maker's own loop is the same commands, at most 3 gate runs; what it reports (`gateOk`, `gateRuns`, `testGaps`) is a claim kept for the record: the navigator runs the gate again. The loop ends on PASS, after `rounds` repairs, or when the defects come back unchanged: the stall check compares the sorted (class, file, line, first 200 normalized characters) of each defect between two rounds. A reworded defect defeats it and the round cap ends the loop instead; that costs rounds, while a false "same" would block a group that is making progress, so the key is strict. Per group the ceiling is **5 + 5R build agents** (RED: driver, matrix rework, R+1 checks, R reworks; GREEN: driver, R+1 checks, up to two makers a round); the reviewer, fixers, couriers and retries come on top.
+
+**Test repairs.** A surviving mutant (`gap`) goes to a strengthening pass and from then on every gate run takes `--retest`; a frozen test that was changed, or a DoD pair that no longer closes (`test`), goes to a restore pass (compare with the version in the RED snapshot, put back what was removed, skipped, loosened or renamed) and its gate run stays **without** `--retest`, which would silence the very reason reported. Two makers on one group in one round never run the gate (it would see a half-edited tree); the next check does, and a repair carries no cleanup pass.
+
+**After review.** Fixers of dependent groups run in `after` order (a group's gate builds on its dependencies' working-tree files); independent groups fix side by side. Then a courier re-runs `final --again`; each problem goes to the group that owns its file (or the group the courier names for an unowned test); check, fix, check, and once more when `rounds` allows (two fix passes at most). A problem with no owner is listed under `notDone`, not guessed at; a failure caused by another group's code goes to the owner of the failing file, whose fence may not reach the cause (then `notFixed` and `notDone`).
 
 ## Limits, stated
 

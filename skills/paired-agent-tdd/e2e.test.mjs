@@ -88,23 +88,36 @@ export const title = text => slugify(text).split('-').filter(Boolean).map(w => w
 `;
 const rows = (id, tests, file) => tests.map(([kind, test]) => ({ dod: id, kind, test, file }));
 
-// what a navigator is told to run: the command inside the backticks of its prompt, here with the stub runner
+// what an agent is told to run: the command inside the backticks of its prompt, here with the stub runner. A maker's loop and its navigator's check use the SAME commands.
 function gate(prompt) {
-  const m = /node (\S+\/tdd\.mjs) (red|green|final) --run ([^\s`]+)(?: --group (\w+))?( --retest)?/.exec(prompt);
+  const m = /node (\S+\/tdd\.mjs) (red|green|final) --run ([^\s`]+)(?: --group (\w+))?( --retest)?( --again)?/.exec(prompt);
   assert.ok(m, 'the prompt names no gate command');
-  const out = spawnSync(process.execPath, [m[1], m[2], '--run', m[3], ...(m[4] ? ['--group', m[4]] : []), ...(m[5] ? ['--retest'] : []), '--runner', RUNNER], { encoding: 'utf8' });
+  const out = spawnSync(process.execPath, [m[1], m[2], '--run', m[3], ...(m[4] ? ['--group', m[4]] : []), ...(m[5] ? ['--retest'] : []), ...(m[6] ? ['--again'] : []), '--runner', RUNNER], { encoding: 'utf8' });
   assert.equal(out.status, 0, out.stderr);
   return out.stdout;
 }
-const verdict = out => (/ok=true/.test(out) ? { verdict: 'PASS', defects: [], gateOk: true } : { verdict: 'FAIL', gateOk: false, defects: [/survived/.test(out) ? { cls: 'gap', what: out.match(/survivor [^\n]*/)?.[0] ?? 'a mutant survived' } : { cls: 'impl', what: out.slice(0, 300) }] });
+const sh = cmd => { const out = spawnSync('sh', ['-c', cmd], { encoding: 'utf8' }); assert.equal(out.status, 0, out.stderr); return out.stdout; };
+const dods = prompt => [...prompt.matchAll(/`(node \S+\/tdd\.mjs dod [^`(]+)`/g)].map(m => sh(m[1])); // the navigator's dod commands, rows already filled in by the script
+const dodWith = (prompt, rows) => sh(`${/(node \S+\/tdd\.mjs dod --run \S+ --group \w+ --stage \w+)/.exec(prompt)[1]}${rows.map(r => ` --row '${r.dod}:${r.kind}:${r.test}:${r.file}'`).join('')}`); // a maker names its own rows
+const verdict = (out, dd = []) => (/ok=true/.test(out) && dd.every(d => /ok=true/.test(d)) ? { verdict: 'PASS', defects: [], gateOk: true } : { verdict: 'FAIL', gateOk: false, defects: [/survived/.test(out) ? { cls: 'gap', what: out.match(/survivor [^\n]*/)?.[0] ?? 'a mutant survived' } : { cls: 'impl', what: [out, ...dd].join('\n').slice(0, 300) }] });
 
+// The makers follow the commands in THEIR prompts, as the real ones are told to: group a's drivers loop on the real gate; group b's first GREEN pass is lazy (a bug, no gate run),
+// so its navigator's real gate refuses it and the repair loop does the rest.
+const ROWS_A = [...rows('AC1', [['happy', 'test_ac1_happy_words'], ['fail', 'test_ac1_fail_non_string'], ['edge', 'test_ac1_edge_empty']], 'tests/test_slug.mjs'), ...rows('AC2', [['happy', 'test_ac2_happy_cut'], ['edge', 'test_ac2_edge_no_trailing_dash']], 'tests/test_slug.mjs')];
+const ROWS_B = rows('AC3', [['happy', 'test_ac3_happy_words'], ['fail', 'test_ac3_fail_non_string'], ['edge', 'test_ac3_edge_empty']], 'tests/test_title.mjs');
+const BUGGY_TITLE = `import { slugify } from './slug.mjs';
+export const title = text => slugify(text).split('-').filter(Boolean).join(' ');
+`;
+const ok = out => /ok=true/.test(out);
 const sawGate = [];
 const script = {
-  'red-driver:a': () => { put('tests/test_slug.mjs', WEAK); return { matrix: [...rows('AC1', [['happy', 'test_ac1_happy_words'], ['fail', 'test_ac1_fail_non_string'], ['edge', 'test_ac1_edge_empty']], 'tests/test_slug.mjs'), ...rows('AC2', [['happy', 'test_ac2_happy_cut'], ['edge', 'test_ac2_edge_no_trailing_dash']], 'tests/test_slug.mjs')], files: ['tests/test_slug.mjs'], reuse: 'none' }; },
-  'red-driver:b': () => { put('tests/test_title.mjs', TITLE_TEST); return { matrix: rows('AC3', [['happy', 'test_ac3_happy_words'], ['fail', 'test_ac3_fail_non_string'], ['edge', 'test_ac3_edge_empty']], 'tests/test_title.mjs'), files: ['tests/test_title.mjs'], reuse: 'none' }; },
-  'green-driver:a': () => { put('src/slug.mjs', SLUG); return { files: ['src/slug.mjs'], reuse: 'none', cleanup: 'none' }; },
-  'green-driver:b': () => { put('src/title.mjs', TITLE); return { files: ['src/title.mjs'], reuse: 'codebase', cleanup: 'none' }; },
-  'red-driver:a:strengthen': () => { put('tests/test_slug.mjs', STRONG); return { matrix: rows('AC2', [['edge', 'test_ac2_edge_default_length']], 'tests/test_slug.mjs'), files: ['tests/test_slug.mjs'], reuse: 'none' }; },
+  'red-driver:a': prompt => { put('tests/test_slug.mjs', WEAK); const red = gate(prompt), d = dodWith(prompt, ROWS_A); return { matrix: ROWS_A, files: ['tests/test_slug.mjs'], reuse: 'none', gateOk: ok(red) && ok(d), gateRuns: 1 }; },
+  'red-driver:b': () => { put('tests/test_title.mjs', TITLE_TEST); return { matrix: ROWS_B, files: ['tests/test_title.mjs'], reuse: 'none' }; },
+  'green-driver:a': prompt => { put('src/slug.mjs', SLUG); const out = gate(prompt); return { files: ['src/slug.mjs'], reuse: 'none', cleanup: 'none', gateOk: ok(out), gateRuns: 1, testGaps: [...out.matchAll(/survivor (\S+) (\S+):(\d+)/g)].map(m => ({ file: m[2], line: Number(m[3]), why: `mutant ${m[1]} survives` })) }; },
+  'green-driver:b': () => { put('src/title.mjs', BUGGY_TITLE); return { files: ['src/title.mjs'], reuse: 'codebase', cleanup: 'none' }; },
+  'green-driver:b:rework': prompt => { put('src/title.mjs', TITLE); const out = gate(prompt); return { files: ['src/title.mjs'], reuse: 'codebase', cleanup: 'none', gateOk: ok(out), gateRuns: 1 }; },
+  'red-driver:a:strengthen': prompt => { put('tests/test_slug.mjs', STRONG); const out = gate(prompt); return { matrix: rows('AC2', [['edge', 'test_ac2_edge_default_length']], 'tests/test_slug.mjs'), files: ['tests/test_slug.mjs'], reuse: 'none', gateOk: ok(out), gateRuns: 1 }; },
+  'final-verifier': prompt => { const out = gate(prompt); return { ok: ok(out), problems: [] }; },
   reviewer: prompt => {
     gate(prompt);
     const line = readFileSync(join(repo, 'src/slug.mjs'), 'utf8').split('\n').findIndex(l => l.includes('TODO')) + 1;
@@ -113,13 +126,13 @@ const script = {
   'fixer:a': prompt => {
     const id = /^(R-\S+) \[/m.exec(prompt)[1];
     put('src/slug.mjs', readFileSync(join(repo, 'src/slug.mjs'), 'utf8').split('\n').filter(l => !l.includes('TODO')).join('\n'));
-    return { fixed: [id], notFixed: [] };
+    return { fixed: [id], notFixed: [], gateOk: ok(gate(prompt)), gateRuns: 1 }; // the fixer's own loop: its group gate, with --retest
   },
 };
 const calls = [];
 const agent = async (prompt, o) => {
   calls.push({ label: o.label, prompt });
-  if (/^(red|green)-navigator:/.test(o.label)) { const out = gate(prompt); sawGate.push([o.label, out.split('\n')[0]]); return verdict(out); }
+  if (/^(red|green)-navigator:/.test(o.label)) { const out = gate(prompt), dd = dods(prompt); sawGate.push([o.label, out.split('\n')[0], dd.map(d => d.split('\n')[0])]); return verdict(out, dd); }
   const f = script[o.label];
   assert.ok(f, `no script for ${o.label}`);
   return f(prompt);
@@ -128,16 +141,26 @@ const out = await wf(agent, parallel, async () => [], () => {}, () => {}, ARGS, 
 
 // ---- what the run did ----
 assert.deepEqual([out.groups.a.state, out.groups.b.state], ['done', 'done'], JSON.stringify(out.notDone));
-assert.deepEqual(calls.map(c => c.label).filter(l => /strengthen|recheck/.test(l)), ['red-driver:a:strengthen', 'green-navigator:a:recheck'], 'the weak tests left a mutant alive: one strengthening, one re-check');
+assert.deepEqual(calls.map(c => c.label).filter(l => /strengthen|recheck|rework/.test(l)).sort(), ['green-driver:b:rework', 'green-navigator:a:recheck', 'green-navigator:b:recheck', 'red-driver:a:strengthen'],
+  'a: the weak tests left a mutant alive (one strengthening, one re-check); b: the lazy first pass was refused (one rework, one re-check)');
 assert.ok(sawGate.some(([l, first]) => l === 'green-navigator:a' && /ok=false/.test(first)), 'the first GREEN gate refused the weak tests: ' + JSON.stringify(sawGate));
 assert.ok(sawGate.some(([l, first]) => l === 'green-navigator:a:recheck' && /ok=true/.test(first)));
+assert.ok(sawGate.some(([l, first]) => l === 'green-navigator:b' && /ok=false/.test(first)), 'the real gate saw the buggy title fail its own tests');
+assert.ok(sawGate.some(([l, first, dd]) => l === 'green-navigator:b:recheck' && /ok=true/.test(first) && dd.every(d => /ok=true covered 3\/3/.test(d))));
 assert.match(calls.find(c => c.label === 'green-navigator:a:recheck').prompt, /--retest/);
-assert.equal(out.groups.a.green.reworks, 1);
+assert.deepEqual([out.groups.a.green.reworks, out.groups.b.green.reworks, out.groups.a.red.reworks], [1, 1, 0]);
+assert.ok(sawGate.some(([l, , dd]) => l === 'red-navigator:a' && /^DOD a stage=red ok=true covered 5\/5/.test(dd[0])), 'the navigator checked the DoD pairs in code, not by reading');
+assert.deepEqual(out.groups.a.red.driver, { gateOk: true, gateRuns: 1 }, 'the red driver looped on the real gate and the dod command from its own prompt');
+assert.equal(out.groups.a.green.driver.gateOk, false, 'the green driver saw the surviving mutants itself, before any navigator');
+assert.ok(out.groups.a.green.driver.testGaps.length >= 1);
+assert.deepEqual(out.groups.b.green.driver, { gateOk: true, gateRuns: 1, testGaps: undefined }, 'b\'s record is its LATEST maker\'s claim: the rework that ran the gate itself, not the lazy first pass');
 assert.deepEqual(out.groups.a.matrix.map(m => m.test).slice(-1), ['test_ac2_edge_default_length']);
 assert.equal(out.groups.a.matrix.at(-1).late, true, 'the strengthening row is marked late: it never failed at RED, so the closure does not credit it');
 assert.equal(out.clusters.length, 1);
 assert.deepEqual([out.clusters[0].status, out.clusters[0].evidence], ['confirmed', 'read']);
 assert.deepEqual(out.fixes.a.fixed, [out.clusters[0].id]);
+assert.deepEqual([out.fixes.a.gateOk, out.verified], [true, { ok: true, rounds: 1, problems: [] }], 'the fixer re-ran its group gate; the courier re-ran the final gate on the fixed tree');
+assert.equal(out.stats.agentsByNode['final-verifier'], 1);
 
 // ---- the lead's T0 audit ----
 const retFile = join(dir, 'return.json');
@@ -151,6 +174,7 @@ assert.deepEqual(res.proofcheck, { confirmed: 1 }, 'the reviewer proof is checke
 assert.match(readFileSync(join(run, 'dod-matrix.md'), 'utf8'), /DoD closure: 8\/8/);
 const g = name => JSON.parse(readFileSync(join(run, 'gates', name), 'utf8'));
 assert.deepEqual([g('a.green.json').ok, g('b.green.json').ok, g('a.green.json').mutation.survivors.length], [true, true, 0]);
+assert.notEqual(g('reviewed.json').snapshot, g('final.json').snapshot, 'the courier\'s re-run (--again) did not replace the tree the reviewer saw');
 assert.ok(g('b.green.json').mutation.score.killed >= 1, 'group b was mutated too');
 
 // the user's repo holds only the agents' own edits: no commit, no ref, no stray file
@@ -163,4 +187,4 @@ if (REAL) {
   assert.ok(ledger.length >= 10, `the sandbox ledger has the gate runs: ${ledger.length}`);
   assert.ok(Object.values(g('a.red.json').tests).every(t => t.run), 'every RED run carries a ZT-RUN id');
 }
-console.log(`ok - paired-agent-tdd end to end${REAL ? ' (REAL sandbox)' : ''}: plan -> workflow -> gates -> verify (8/8 DoD pairs, 1 mutant-driven strengthening, 1 fixed finding)`);
+console.log(`ok - paired-agent-tdd end to end${REAL ? ' (REAL sandbox)' : ''}: plan -> workflow -> gates -> verify (8/8 DoD pairs, makers loop on the real gate, 1 mutant-driven strengthening, 1 refused lazy pass repaired, 1 fixed finding re-checked)`);

@@ -3,7 +3,8 @@
 //   node tdd.mjs plan   --plan plan.json                 validate, snapshot the base tree, create the run folder RUN, print the Workflow args (JSON)
 //   node tdd.mjs red    --run RUN --group G               the group's NEW tests must FAIL now (class: assertion | load error | passes already)
 //   node tdd.mjs green  --run RUN --group G [--retest]    the group's tests pass, exercise the change, did not change since RED, stay in scope; mutants; coverage
-//   node tdd.mjs final  --run RUN                         every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch
+//   node tdd.mjs dod    --run RUN --group G --stage red|green --row ID:kind:test:file ...   the group's DoD pairs from its gate file and the working tree (instant, no run)
+//   node tdd.mjs final  --run RUN [--again]               every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch (--again: a re-run after fixes)
 //   node tdd.mjs verify --run RUN --ret return.json       DoD closure from the gate files, fixes still present, reviewer proofs (proofcheck.mjs)
 //   node tdd.mjs snap   --run RUN --on REV [--files a,b]  print the sha of REV + those working-tree files (no --files: the whole working tree)
 // A snapshot is a git commit of the working tree built with a temporary index: no ref, no index and no file of the user's repo changes (only loose objects are added).
@@ -18,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { changedCoverage, classifyRed, closure, closureMarkdown, outOfScope, parseLcov, parseNumstat, pickAffected, redOk, validatePlan } from './gates.mjs';
+import { changedCoverage, classifyRed, closure, closureMarkdown, groupClosure, outOfScope, parseLcov, parseNumstat, parseRow, pickAffected, redOk, validatePlan } from './gates.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ZT = resolve(process.env.ZT_DIR ?? join(HERE, '..', 'zero-trust-review'));
@@ -184,6 +185,34 @@ async function green(ctx, gid, retest) {
     cover ? `  coverage: ${cover.error ?? `${cover.pct ?? 'n/a'}% of ${cover.total} changed line(s), min ${cover.min}%${cover.noData.length ? `, no data for ${cover.noData.join(', ')}` : ''}${Object.keys(cover.uncovered).length ? `; uncovered ${spread(Object.entries(cover.uncovered))}` : ''}`}` : '  coverage: not configured']);
 }
 
+const escapeRe = t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const isNamed = (repo, rev, r) => typeof r.test === 'string' && r.test !== '' && new RegExp(`(?<![A-Za-z0-9_])${escapeRe(r.test)}(?![A-Za-z0-9_])`).test(showText(repo, rev, r.file));
+
+/**
+ * The DoD pairs of ONE group while it is built: no test is run, so a driver can ask after every edit. The rows are a claim; the facts are the working tree (is the test
+ * named in its file?) and the gate file (did the file fail at RED, pass at GREEN, is the gate ok?). A gate file only speaks for the tree it ran on: edited since, it is stale.
+ */
+function dod(ctx, gid, stage, rowTexts) {
+  const { plan } = ctx, g = group(plan, gid);
+  if (stage !== 'red' && stage !== 'green') fail(2, 'dod needs --stage red|green');
+  const parsed = rowTexts.map(parseRow), gate = readGate(ctx, `${gid}.${stage}.json`), files = stage === 'red' ? g.tests : [...g.tests, ...g.src];
+  const cur = snapOf(ctx, files), reasons = [], phantom = [];
+  const stale = gate?.snapshot ? parseNumstat(git(plan.repo, ['diff', '--numstat', gate.snapshot, cur, '--', ...files])).changed : [];
+  const rows = parsed.filter(Boolean).filter(r => isNamed(plan.repo, cur, r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
+  const verdicts = name => Object.fromEntries((readGate(ctx, name)?.tests ?? []).map(t => [t.file, t.verdict]));
+  const c = groupClosure(plan, gid, rows, verdicts(`${gid}.red.json`), verdicts(`${gid}.green.json`), readGate(ctx, `${gid}.green.json`)?.ok === true, stage);
+  const unreadable = rowTexts.length - parsed.filter(Boolean).length;
+  if (unreadable) reasons.push(`${unreadable} --row not in the form ID:kind:test:file`);
+  if (!gate) reasons.push(`no ${stage.toUpperCase()} gate on record: run \`tdd.mjs ${stage}\` first`);
+  else if (stale.length) reasons.push(`the ${stage.toUpperCase()} gate ran before ${stale.join(', ')} changed: run it again`);
+  else if (stage === 'green' && !gate.ok) reasons.push('the GREEN gate said not ok');
+  if (phantom.length) reasons.push(`rows with no such test: ${phantom.join('; ')}`);
+  if (c.gaps.length) reasons.push(`DoD gaps: ${c.gaps.join(', ')}`);
+  const ok = reasons.length === 0;
+  say([`DOD ${gid} stage=${stage} ok=${ok} covered ${c.covered}/${c.total}${c.shared.length ? ` (also owned by another group: ${c.shared.join(', ')})` : ''}`, ...(ok ? [] : [`  not ok: ${reasons.join('; ')}`]),
+    ...c.items.map(i => `  ${i.id}: ${Object.entries(i.kinds).map(([k, v]) => `${k} ${v.status}${v.tests.length ? ` (${v.tests.join(', ')})` : ''}`).join(', ')}`)]);
+}
+
 async function coverage(ctx, g, snap, base) {
   const { plan } = ctx;
   if (!plan.cover) return null;
@@ -198,7 +227,7 @@ async function coverage(ctx, g, snap, base) {
   return cov;
 }
 
-async function final(ctx, quiet) {
+async function final(ctx, quiet, again) {
   const { plan } = ctx, own = new Set(plan.groups.flatMap(g => g.tests)), snap = snapOf(ctx, planFiles(plan));
   // the integration test needs its real dependency, which the sandbox has not: its agent runs it for real and reports the exit code (verify reads it)
   const skip = new Set([...own, ...(plan.integration?.file ? [plan.integration.file] : [])]);
@@ -223,7 +252,7 @@ async function final(ctx, quiet) {
   if (stray.files.length) reasons.push(`files outside the plan changed: ${stray.files.slice(0, 5).join(', ')}`);
   const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing: { ran: affected.run, more: affected.more, regressions, preexisting }, outOfScope: stray.files, strayScan: stray.error };
   writeGate(ctx, 'final.json', out);
-  if (!quiet && !readGate(ctx, 'reviewed.json')) writeGate(ctx, 'reviewed.json', out); // the FIRST final run is the reviewer's view: its proofs are checked against that tree, not the post-fix one
+  if (!quiet && !again && !readGate(ctx, 'reviewed.json')) writeGate(ctx, 'reviewed.json', out); // the FIRST final run is the reviewer's view: its proofs are checked against that tree, not the post-fix one (--again: a re-run after fixes never is)
   if (!quiet) say([`FINAL ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
     `  group tests together: ${together.filter(r => r.exit === 0).length}/${together.length} pass`,
     `  existing tests that mention the changed modules: ${affected.run.length} run${affected.more ? ` (+${affected.more} not run)` : ''}, ${regressions.length} broken by this change, ${preexisting.length} already failing before`,
@@ -238,8 +267,7 @@ async function verify(ctx, retPath) {
   const fileMap = (gid, stage) => Object.fromEntries((readGate(ctx, `${gid}.${stage}.json`)?.tests ?? []).map(t => [t.file, t.verdict]));
   const rows = {}, redMap = {}, greenMap = {}, greenOk = {}, phantom = [];
   const snapNow = snapOf(ctx, planFiles(plan)); // a claimed test must exist by name in its file now: a row is a claim, the file is the fact
-  const escape = t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const named = r => typeof r.test === 'string' && r.test !== '' && new RegExp(`(?<![A-Za-z0-9_])${escape(r.test)}(?![A-Za-z0-9_])`).test(showText(plan.repo, snapNow, r.file));
+  const named = r => isNamed(plan.repo, snapNow, r);
   for (const g of plan.groups) {
     rows[g.id] = (ret.groups?.[g.id]?.matrix ?? []).filter(r => named(r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
     redMap[g.id] = fileMap(g.id, 'red'); greenMap[g.id] = fileMap(g.id, 'green');
@@ -305,15 +333,16 @@ function cmdPlan(o) {
 
 // ---------------------------------------------------------------- main
 try {
-  const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' } }, args: process.argv.slice(3), strict: true });
+  const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true } }, args: process.argv.slice(3), strict: true });
   const cmd = process.argv[2];
   if (cmd === 'plan') cmdPlan(v);
-  else if (['red', 'green', 'final', 'verify', 'snap'].includes(cmd)) {
+  else if (['red', 'green', 'final', 'verify', 'snap', 'dod'].includes(cmd)) {
     const ctx = load(v);
     if (cmd === 'snap') process.stdout.write(`${snapOf(ctx, v.files === undefined ? undefined : v.files.split(',').filter(Boolean), v.on ?? ctx.plan.base)}\n`);
-    else if (cmd === 'final') await final(ctx, false);
+    else if (cmd === 'dod') dod(ctx, v.group ?? fail(2, 'dod needs --group'), v.stage, v.row ?? []);
+    else if (cmd === 'final') await final(ctx, false, v.again);
     else if (cmd === 'verify') await verify(ctx, v.ret ?? fail(2, 'verify needs --ret'));
     else if (cmd === 'red') await red(ctx, v.group ?? fail(2, 'red needs --group'));
     else await green(ctx, v.group ?? fail(2, 'green needs --group'), v.retest);
-  } else fail(2, 'usage: tdd.mjs plan|red|green|final|verify|snap (see the header of tdd.mjs)');
+  } else fail(2, 'usage: tdd.mjs plan|red|green|dod|final|verify|snap (see the header of tdd.mjs)');
 } catch (e) { fail(1, e.message); }
