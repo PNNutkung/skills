@@ -167,7 +167,7 @@ Workflow({ scriptPath: "<skillDir>/workflow.js", args: { ...triageJson, repo, sh
 
 Then write the return's `boardMd` and `postmortemMd` verbatim to `$RUN/board.md` and `$RUN/postmortem.md` (the postmortem tells the next run what to do and not do). **Step 2b, no guessing:** save the return as `$RUN/return.json`, run `node $SK/proofcheck.mjs --ret $RUN/return.json --repo . --head <sha> --run $RUN`, and report from its adjusted clusters; it writes `$RUN/evidence.md` and `verified.json`. When the review is done, `node $SK/note.mjs deactivate`.
 
-`scratch` = the session scratchpad; `sha` defaults to triage `head`; agents Read their points from `checklist.md`. Read the **compact return** only: `{mode, counts, stats, notReviewed, clusters[{id,status,severity,file,startLine,endLine,points,anchorable,title,hazard,failureScenario,suggestedFix,verdicts}], notApplicable, questions, unverified}`. Confirmed critical/high -> Critical Blockers; refuted -> one line; out-of-scope -> refactor CR; unverified/disputed -> Grilling as questions, never as facts.
+`scratch` = the session scratchpad; `sha` defaults to triage `head`; agents Read their points from `checklist.md`. Read the **compact return** only: `{mode, counts, stats, notReviewed, clusters[{id,status,severity,file,startLine,endLine,points,anchorable,title,hazard,failureScenario,suggestedFix,replacement?,verdicts}], notApplicable, questions, unverified}`. Confirmed critical/high -> Critical Blockers; refuted -> one line; out-of-scope -> refactor CR; unverified/disputed -> Grilling as questions, never as facts.
 
 ## Step 3 — Point out the code on the review host
 
@@ -175,7 +175,7 @@ Cite each finding as `path:line` | permalink pinned to the reviewed SHA | findin
 
 ## Step 3b — Suggest the fix for a line range, do not describe it
 
-A mechanical fix is an **applyable suggestion block**, not prose; judgment calls stay prose. Before posting or reporting one, Read [`suggestions.md`](./suggestions.md): fence per host and its line arithmetic (GitLab `suggestion:-A+B`, GitHub `start_line`/`line`), span cap, verbatim lines, new side only, no trailing-newline drift.
+A mechanical fix is an **applyable suggestion block**, not prose; judgment calls stay prose. The reviewer's `replacement` is the block body (the lead writes no code). Before posting or reporting one, Read [`suggestions.md`](./suggestions.md): fence per host, span cap, verbatim lines, new side only.
 
 ## Step 4 — Write the report to the OS temp directory
 

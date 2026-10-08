@@ -2,7 +2,11 @@
 
 Rules for Step 3b of SKILL.md. Read before posting or reporting any `suggestion` fence.
 
-A mechanical fix is an **applyable suggestion block**, not prose; judgment calls stay prose. The fence is host-specific (commands: [`hosts.md`](./hosts.md)):
+A mechanical fix is an **applyable suggestion block**, not prose; judgment calls stay prose.
+
+**Who writes the block: the reviewer, never the lead** (the lead-only rule holds). A mechanical finding carries `replacement` in the compact return: the exact new text of its `startLine..endLine`, kept only for an anchorable finding whose fix no navigator changed (<= 2400 chars; a longer or changed fix stays prose in `suggestedFix`). The lead checks it against the rules below and wraps it in the host's fence; it never composes code itself, and a finding with no `replacement` gets no block. Post a block only for a finding that `proofcheck` left `confirmed`. An on-demand request ("suggest a fix for lines 42 to 58") with no `replacement` yet goes to ONE sonnet reviewer agent given the range and these rules; the lead relays its text.
+
+The fence is host-specific (commands: [`hosts.md`](./hosts.md)):
 
 - **GitLab:** `suggestion:-A+B`: `A` lines above and `B` below the anchored line, replaced wholesale (one line = `-0+0`). For lines `xx..yy` anchor (`new_line`) at `xx`, `B = yy - xx`, span `B + 1` lines: 142-158 -> `-0+16`. Compute it, don't eyeball it.
 - **GitHub:** a plain ```` ```suggestion ```` fence; the range comes from the comment, not the fence: `start_line=xx`, `line=yy`, `side=RIGHT`, `start_side=RIGHT`. Example: 142-158 -> `start_line=142`, `line=158`; the fence body replaces exactly lines 142..158.

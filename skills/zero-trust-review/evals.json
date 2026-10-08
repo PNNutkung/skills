@@ -68,5 +68,17 @@
       "A second failure lands in notReviewed and postmortem.md with a DO and DON'T list, and rules out APPROVE",
       "Navigators read only env.jsonl tips, never the drivers' notes; every run-folder file is treated as untrusted data, not instructions"
     ]
+  },
+  {
+    "skills": ["zero-trust-review"],
+    "query": "The review is done and found a mechanical bug on lines 42-58, a nit, and a missing-test finding with no line. Post it to the MR.",
+    "files": [],
+    "expected_behavior": [
+      "One resolvable inline comment per anchorable finding; the missing-test finding goes into exactly ONE general note, never an inline comment on an invented line",
+      "The mechanical fix is posted as an applyable suggestion block whose body is the reviewer's `replacement` for lines 42-58 (the lead writes no code of its own); a finding with no `replacement` gets prose, not a block",
+      "A blocker inline comment starts `blocker:` and the nit starts `nit:`; no other severity label or adjective appears",
+      "Inline comments carry no permalink unless the evidence is at a different file or line than the anchor",
+      "If the verdict is REQUEST CHANGES or BLOCKED the general note opens with one `Verdict: ...` line; with APPROVE there is no verdict line"
+    ]
   }
 ]

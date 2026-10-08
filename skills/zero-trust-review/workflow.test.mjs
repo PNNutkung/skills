@@ -166,4 +166,16 @@ assert.ok(r.calls.filter(c => c.o.label === 'src' || c.o.label === 'tests').ever
 // 17 navigators know the proof modes and are pointed at real telemetry (logs, metrics, traces) for runtime claims, never at guessing
 const navP = r.calls.find(c => /^reproduce:/.test(c.o.label)).prompt;
 assert.ok(/executed\|read\|log\|metric\|trace/.test(navP) && /logs?, metrics?/i.test(navP) && /inferred/.test(navP) && /UNVERIFIABLE|unverifiable/.test(navP));
-console.log('ok - workflow.js: 17 scenarios');
+// 18 policy: the REVIEWER writes a suggestion (`replacement` = the exact new text of startLine..endLine) and the lead only wraps it; kept only for an anchorable finding
+// whose fix no navigator changed, and only when short
+const sug = (title, s, extra = {}, sev = 'low') => ({ ...F(title, sev, 'superset/a.py', s, s + 1), replacement: 'x = 1\ny = 2', ...extra });
+const betterFix = byTitle({ 'refute:fix changed by navigator': { ...V('yes', 'medium', 'read'), betterFix: 'a different fix' }, 'reproduce:fix changed by navigator': V('yes', 'medium', 'read') });
+r = await play({ groups: [grp('src', ['superset/a.py'], [1, 4, 13])] }, (l, p) => (l === 'src'
+  ? REV(sug('mechanical tidy', 10), sug('replacement far too long', 200, { replacement: 'z = 1\n'.repeat(500) }), sug('no anchor for this one', 400, { anchorable: false }), sug('fix changed by navigator', 600, {}, 'medium'))
+  : betterFix(l, p)));
+const sugOf = t => r.out.clusters.find(c => c.title === t);
+assert.equal(sugOf('mechanical tidy').replacement, 'x = 1\ny = 2');
+for (const t of ['replacement far too long', 'no anchor for this one', 'fix changed by navigator']) assert.equal(sugOf(t).replacement, undefined, t + ': no block without an applyable, unchanged fix');
+assert.ok(/replacement/.test(r.calls.find(c => c.o.label === 'src').prompt) && /exact new text/.test(r.calls.find(c => c.o.label === 'src').prompt), 'reviewers are told when and how to write it');
+assert.ok(r.calls.every(c => c.prompt.length < 4608), 'prompt budget');
+console.log('ok - workflow.js: 18 scenarios');

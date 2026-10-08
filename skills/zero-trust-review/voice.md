@@ -9,4 +9,5 @@ Direct, technical, specific, zero padding:
 - Cut hedges ("might potentially", "it appears that", "I believe"); real uncertainty is precision: say what is `UNVERIFIED` and why.
 - Cut filler ("Let's dive into", "It's worth noting", "In order to", "leverage", "utilize", "ensure that", opening "Furthermore").
 - No closing summary or "Great work!" (the Verdict is the only summary), no enthusiasm or apology: severity is the section a finding sits in, not the adjective before it.
+- Inline labels are `blocker:` and `nit:` as a prefix, nothing else; the verdict line in the general note is the only summary.
 - Contractions, short sentences; never compress evidence: keep every file:line, permalink and verified/unverified marker.
