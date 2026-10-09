@@ -19,6 +19,7 @@ export function validatePlan(plan, ticketText) {
   if (plan?.rounds !== undefined && !(Number.isInteger(plan.rounds) && plan.rounds >= 1 && plan.rounds <= 4)) bad('rounds must be an integer from 1 to 4 (repair rounds per stage before a group is blocked)');
   if (plan?.maxRepairs !== undefined && !(Number.isInteger(plan.maxRepairs) && plan.maxRepairs >= 0 && plan.maxRepairs <= 40)) bad('maxRepairs must be an integer from 0 to 40 (repair passes for the whole run; groups still failing then are paused, not blocked)');
   if (plan?.smoke !== undefined && !(Array.isArray(plan.smoke) && plan.smoke.length >= 1 && plan.smoke.length <= 3 && plan.smoke.every(relPath))) bad('smoke must list 1 to 3 relative test files that already pass at the base (plan runs one first: it proves the sandbox and the test command work)');
+  if (plan?.sandbox !== undefined && typeof plan.sandbox !== 'boolean') bad('sandbox must be true or false (true runs the gates in the zero-trust-review sandbox; the default runs the test command directly)');
   for (const n of plan?.link ?? []) if (!relPath(n)) bad(`link ${JSON.stringify(n)} must be a normalized relative path inside the repo`);
   for (const p of plan?.ro ?? []) if (typeof p !== 'string' || !p.startsWith('/')) bad(`ro ${JSON.stringify(p)} must be an absolute path`);
   for (const e of plan?.env ?? []) if (!/^[A-Za-z_]\w*=/.test(String(e))) bad(`env ${JSON.stringify(e)} must be K=V`);

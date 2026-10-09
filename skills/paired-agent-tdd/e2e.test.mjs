@@ -1,5 +1,5 @@
 // End to end: the REAL workflow.js and the REAL tdd.mjs gates (plan, red, green with mutants, final, verify) in a fixture git repo, with SCRIPTED agents that edit
-// files and run the gate commands from their prompts exactly as the real agents are told to. No model. The sandbox is a stub runner. Run: node e2e.test.mjs
+// files and run the gate commands from their prompts exactly as the real agents are told to. No model. The gates run through direct-run.mjs (E2E_REAL=1: the real sandbox). Run: node e2e.test.mjs
 // It proves the two halves fit: the args plan prints, the commands the prompts name, the gate files verify reads, the return shape and the reviewer proofs.
 import assert from 'node:assert';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -15,22 +15,13 @@ const parallel = ts => Promise.all(ts.map(async t => { try { return await t(); }
 
 const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pat-e2e-')));
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
-const repo = join(dir, 'repo'), stub = join(dir, 'stub'), tmp = join(dir, 'tmp');
-for (const d of [repo, stub, tmp]) mkdirSync(d);
+const repo = join(dir, 'repo'), tmp = join(dir, 'tmp');
+for (const d of [repo, tmp]) mkdirSync(d);
 process.env.TMPDIR = tmp; // the per-user zt-review base (where plan makes the run folder, and the only place the ledger tools approve one) lives in the fixture
 process.env.ZT_MARKER_DIR = join(dir, 'marker'); // never the user's own active review marker
 let run = '';
-writeFileSync(join(stub, 'runner.mjs'), `
-import { spawnSync } from 'node:child_process';
-const a = process.argv.slice(2);
-if (a[0] === '--check') { console.log('stub'); process.exit(0); }
-const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1), val = k => flags[flags.indexOf(k) + 1];
-const env = { ...process.env };
-flags.forEach((f, i) => { if (f === '--env') { const kv = flags[i + 1]; env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1); } });
-process.exit(spawnSync(cmd[0], cmd.slice(1), { cwd: val('--cwd'), env, stdio: 'inherit' }).status ?? 1);
-`);
-const REAL = process.env.E2E_REAL === '1'; // opt-in: the real sandbox runner and this node binary instead of the stub
-const RUNNER = REAL ? join(HERE, '..', 'zero-trust-review', 'sandbox-run.mjs') : join(stub, 'runner.mjs');
+const REAL = process.env.E2E_REAL === '1'; // opt-in: the zero-trust-review sandbox and this node binary instead of the direct runner (the default of a plan)
+const RUNNER = REAL ? join(HERE, '..', 'zero-trust-review', 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs');
 const NODE = realpathSync(process.execPath);
 const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
 const put = (p, text) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), text); };
@@ -88,7 +79,7 @@ export const title = text => slugify(text).split('-').filter(Boolean).map(w => w
 `;
 const rows = (id, tests, file) => tests.map(([kind, test]) => ({ dod: id, kind, test, file }));
 
-// what an agent is told to run: the command inside the backticks of its prompt, here with the stub runner. A maker's loop and its navigator's check use the SAME commands.
+// what an agent is told to run: the command inside the backticks of its prompt, here with the same runner. A maker's loop and its navigator's check use the SAME commands.
 function gate(prompt) {
   const m = /node (\S+\/tdd\.mjs) (red|green|final) --run ([^\s`]+)(?: --group (\w+))?( --retest)?( --again)?/.exec(prompt);
   assert.ok(m, 'the prompt names no gate command');

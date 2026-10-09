@@ -189,6 +189,11 @@ test('closure: a late row (a strengthening pass after GREEN) never credits a pai
   assert.deepEqual(closure(p, rows, red, green, { a: true, b: true }).gaps, []);
 });
 
+test('validatePlan: sandbox is a boolean', () => {
+  for (const v of [true, false]) assert.deepEqual(bad(p => { p.sandbox = v; }), [], String(v));
+  for (const v of ['yes', 1, null]) assert.match(bad(p => { p.sandbox = v; }).join(), /sandbox must be true or false/, String(v));
+});
+
 test('validatePlan: smoke lists 1 to 3 relative test files', () => {
   for (const v of [['tests/test_ok.py'], ['a', 'b', 'c']]) assert.deepEqual(bad(p => { p.smoke = v; }), [], `${v.length} file(s) is valid: both ends of the range count`);
   for (const v of [[], ['a', 'b', 'c', 'd'], ['/abs.py'], ['../x.py'], 'tests/x.py', [3]]) assert.match(bad(p => { p.smoke = v; }).join(), /smoke must list 1 to 3 relative test files/, JSON.stringify(v));

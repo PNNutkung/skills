@@ -13,7 +13,7 @@ npx skills add PNNutkung/skills --skill '*' -a claude-code -g
 
 # or pick one
 npx skills add PNNutkung/skills --skill zero-trust-review
-npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review   # paired-agent-tdd borrows the sandbox runner and probes of zero-trust-review
+npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review   # paired-agent-tdd borrows the probes (and optionally the sandbox runner) of zero-trust-review
 ```
 
 Claude Code only, to also get the `zero-trust-review` guard and telemetry-capture hooks (skills alone do not include hooks):
@@ -27,7 +27,7 @@ Claude Code only, to also get the `zero-trust-review` guard and telemetry-captur
 
 | Skill | What it does |
 | --- | --- |
-| [`paired-agent-tdd`](skills/paired-agent-tdd) | TDD as driver/navigator pairs, one pipeline per file group on a Workflow script (`graph.mjs`, `workflow.js`). Plain-code gates (`tdd.mjs`) run the tests in a sandbox, mutate the new code and check that tests cover the definition of done, so agents judge facts instead of claims. Every stage is a repair loop, not one shot: makers edit and re-run the real gate, navigators re-check on fresh facts, and the loop ends on a pass, on no progress, or at a round cap. `plan` proves the sandbox runs the repo's tests before an agent is paid (a broken environment never passes for a valid RED). One run-wide repair budget caps the spend; a group still failing is paused, and `tdd.mjs resume` writes a continue file from the gate files (no agent, no tokens) that holds a stalled group, stops a broken sandbox and sets the next budget, so the next run restarts only what is left. |
+| [`paired-agent-tdd`](skills/paired-agent-tdd) | TDD as driver/navigator pairs, one pipeline per file group on a Workflow script (`graph.mjs`, `workflow.js`). Plain-code gates (`tdd.mjs`) run the tests (directly by default, in the sandbox with `plan.sandbox: true`), mutate the new code and check that tests cover the definition of done, so agents judge facts instead of claims. Every stage is a repair loop, not one shot: makers edit and re-run the real gate, navigators re-check on fresh facts, and the loop ends on a pass, on no progress, or at a round cap. `plan` proves the runner runs the repo's tests before an agent is paid (a broken environment never passes for a valid RED). One run-wide repair budget caps the spend; a group still failing is paused, and `tdd.mjs resume` writes a continue file from the gate files (no agent, no tokens) that holds a stalled group, stops a broken environment and sets the next budget, so the next run restarts only what is left. |
 | [`zero-trust-review`](skills/zero-trust-review) | Strict review of a branch diff against a 30-point production-hazard checklist, tiered and cost-capped (`quick` / `standard` / `deep`). Cites findings as permalinks on the review host (GitLab, GitHub, or git-only). |
 | [`ai-code-delivery`](skills/ai-code-delivery) | Delivery runbook for agent-written code: feature-flag gating, trunk/leaf review depth, PR proof template, fresh-context review, 80/20 readiness gate, canary rollout. Hands the diff review to `zero-trust-review`. |
 
@@ -38,7 +38,7 @@ Both skills use the same model and effort tiering policy. See `skills/zero-trust
 - Node 18+ (`graph.mjs`, workflow tests, `sandbox-run.mjs`, `testprobe.mjs`) and Python 3 (`triage.py`).
 - `zero-trust-review` states no guess as a fact: findings quote real code, claims carry a proof (code `file:line`, a sandbox run, or real logs/metrics/traces), and `proofcheck.mjs` re-verifies them in plain code. It runs change-request code only inside a sandbox (macOS `sandbox-exec`, Linux `bwrap`, or docker via `ZT_SANDBOX_IMAGE`); with none, probes report `unverifiable` and never run bare.
 - `zero-trust-review` works on any git repo. To read change-request metadata and post comments it uses the host CLI: [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab or [`gh`](https://cli.github.com) for GitHub (per-host commands in `skills/zero-trust-review/hosts.md`); without one it runs git-only and writes the report only. Its Step 0 reads the skill location from `SK` (default `~/.claude/skills/zero-trust-review`); set `SK` if the CLI installed it elsewhere.
-- `paired-agent-tdd` needs the Workflow tool (per-node model, effort and agent type), git, Node 18+ and the sibling `zero-trust-review` skill (its sandbox runner, mutation probe and `proofcheck.mjs`; `ZT_DIR` points elsewhere).
+- `paired-agent-tdd` needs the Workflow tool (per-node model, effort and agent type), git, Node 18+ and the sibling `zero-trust-review` skill (its mutation probe, `proofcheck.mjs` and, only with `plan.sandbox: true`, its sandbox runner; `ZT_DIR` points elsewhere).
 
 ## Telemetry
 

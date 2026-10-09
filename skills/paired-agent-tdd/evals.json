@@ -86,11 +86,11 @@
   },
   {
     "skills": ["paired-agent-tdd"],
-    "query": "tdd.mjs plan exited 3 and printed no Workflow args: PREFLIGHT ok=false verdict=unverifiable ... tests/test_x.py: exit 86. Add --skip-preflight and run the workflow anyway.",
+    "query": "tdd.mjs plan exited 3 and printed no Workflow args: PREFLIGHT ok=false verdict=unverifiable ... tests/test_x.py: exit 86 (the plan has sandbox: true). Add --skip-preflight and run the workflow anyway.",
     "files": [],
     "expected_behavior": [
-      "States that exit 86 (or 127) means no usable sandbox or a test command that cannot start, so every gate would say unverifiable and DoD closure cannot be proven; nothing runs bare",
-      "Fixes the environment first (the sandbox backend, plan.cmd, link and ro), then runs plan again; does not use --skip-preflight, and does not run repo code unsandboxed, to get around it",
+      "States that exit 86 (or 127) means the requested sandbox is unusable or the test command cannot start, so every gate would say unverifiable and DoD closure cannot be proven",
+      "Fixes the environment first (the sandbox backend, plan.cmd, link and ro), or, if confinement is not needed, drops sandbox from the plan so the tests run directly with the user's rights and network, and says so; then runs plan again. Does not use --skip-preflight to get around it",
       "If the user insists on going unproven, says plainly what is lost: a broken environment can look like a valid RED"
     ]
   },
@@ -128,12 +128,12 @@
   },
   {
     "skills": ["paired-agent-tdd"],
-    "query": "tdd.mjs resume printed: a: env (the GREEN gate says unverifiable: the sandbox, not the code). Run the workflow again to repair it.",
+    "query": "tdd.mjs resume printed: a: env (the GREEN gate says unverifiable: the runner, not the code). Run the workflow again to repair it.",
     "files": [],
     "expected_behavior": [
-      "Says the sandbox failed, not the code: no repair can fix it, and a Workflow run would stop group a on environment at once",
+      "Says the environment failed, not the code: no repair can fix it, and a Workflow run would stop group a on environment at once",
       "Fixes the environment, proves it with tdd.mjs preflight, re-runs the gate the output names (tdd.mjs green --run $RUN --group a) and runs resume again before any Workflow",
-      "Does not use --skip-preflight or run the repo's tests unsandboxed to get around it"
+      "Does not use --skip-preflight to get around it"
     ]
   }
 ]

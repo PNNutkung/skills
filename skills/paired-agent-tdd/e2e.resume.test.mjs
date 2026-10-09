@@ -1,4 +1,4 @@
-// End to end for "continue after a failure": the REAL workflow.js and the REAL gates in a fixture repo, scripted agents, a stub sandbox runner. Run 1 has no repair budget and
+// End to end for "continue after a failure": the REAL workflow.js and the REAL gates in a fixture repo, scripted agents, the direct runner (E2E_REAL=1: the real sandbox). Run 1 has no repair budget and
 // a lazy GREEN pass, so its group is PAUSED. `tdd.mjs resume` writes RUN/continue.json from the gate files alone (no agent, no token). Run 2 gets that file as args.resume and
 // spends only what is left: one repair, one check, the review. Run: node e2e.resume.test.mjs
 import assert from 'node:assert';
@@ -15,20 +15,13 @@ const parallel = ts => Promise.all(ts.map(async t => { try { return await t(); }
 
 const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pat-resume-')));
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
-const repo = join(dir, 'repo'), stub = join(dir, 'stub'), tmp = join(dir, 'tmp');
-for (const d of [repo, stub, tmp]) mkdirSync(d);
+const repo = join(dir, 'repo'), tmp = join(dir, 'tmp');
+for (const d of [repo, tmp]) mkdirSync(d);
 process.env.TMPDIR = tmp;
 process.env.ZT_MARKER_DIR = join(dir, 'marker');
-writeFileSync(join(stub, 'runner.mjs'), `
-import { spawnSync } from 'node:child_process';
-const a = process.argv.slice(2);
-if (a[0] === '--check') { console.log('stub'); process.exit(0); }
-const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1), val = k => flags[flags.indexOf(k) + 1];
-process.exit(spawnSync(cmd[0], cmd.slice(1), { cwd: val('--cwd'), env: process.env, stdio: 'inherit' }).status ?? 1);
-`);
-const REAL = process.env.E2E_REAL === '1'; // opt-in: the real sandbox runner and this node binary instead of the stub
+const REAL = process.env.E2E_REAL === '1'; // opt-in: the zero-trust-review sandbox and this node binary instead of the direct runner (the default of a plan)
 const NODE = realpathSync(process.execPath);
-const RUNNER = REAL ? join(HERE, '..', 'zero-trust-review', 'sandbox-run.mjs') : join(stub, 'runner.mjs');
+const RUNNER = REAL ? join(HERE, '..', 'zero-trust-review', 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs');
 const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
 const put = (p, text) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), text); };
 git('init', '-q');

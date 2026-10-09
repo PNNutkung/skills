@@ -565,7 +565,7 @@ r = await play({ groups: [grp('a')] });
 assert.deepEqual([r.out.groups.a.red.reworks, r.out.groups.a.green.reworks], [0, 0], 'a group that needed nothing spent nothing');
 
 // 27 environment, hold, hint, escalation and the budget of a continued run
-assert.match((await play({ sandbox: 'none' })).out.error, /no sandbox/, 'with no sandbox every gate says unverifiable: no agent is started');
+assert.match((await play({ sandbox: 'none' })).out.error, /no usable runner/, 'with no runner every gate says unverifiable: no agent is started');
 assert.equal((await play({ sandbox: 'stub', preflight: 'ok' })).out.error, undefined);
 r = await play({ groups: [grp('a')] }, { 'red-navigator:a': () => FAIL('env', 'RED gate: tests/test_a.py is unverifiable') });
 assert.deepEqual([r.by('red-driver:a:rework').length, r.out.groups.a.state, r.out.stats.repairsLeft], [0, 'paused', BASE.maxRepairs], 'a navigator that names the environment stops the group at once: no repair is spent on it');
@@ -573,7 +573,7 @@ assert.match(r.out.groups.a.reason, /^environment, not code \(RED\): RED gate: t
 r = await play({ groups: [grp('a')] }, { 'red-driver:a': { ...stuck, remaining: [{ cls: 'env', what: 'sandbox is unverifiable' }] } });
 assert.deepEqual([r.by('red-navigator:a').length, r.by('red-driver:a:rework').length, r.out.groups.a.state], [0, 0, 'paused'], 'a maker that reports the environment as what remains is believed: nothing is spent after it');
 assert.match(r.calls[0].prompt, /A verdict `unverifiable`[\s\S]*unverifiable \(timeout\)` is not that[\s\S]*never the code[\s\S]*cls env/, 'makers are told, and told that a hanging test is theirs');
-assert.match((await play({ groups: [grp('a')] })).by('red-navigator:a')[0].prompt, /gate verdict `unverifiable` \(not `unverifiable \(timeout\)`[^)]*\) is the sandbox, not the code: report that ONE defect as cls env/, 'navigators are told');
+assert.match((await play({ groups: [grp('a')] })).by('red-navigator:a')[0].prompt, /gate verdict `unverifiable` \(not `unverifiable \(timeout\)`[^)]*\) is the environment, not the code: report that ONE defect as cls env/, 'navigators are told');
 r = await only(ent('env', { why: 'the RED gate says unverifiable: the sandbox, not the code. Fix it' }));
 assert.deepEqual([r.out.stats.total, r.out.groups.a.state, r.n.reviewer], [0, 'paused', undefined], 'an env entry costs no agent at all');
 assert.match(r.out.groups.a.reason, /^environment, not code: the RED gate says unverifiable/);

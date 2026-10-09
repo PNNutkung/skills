@@ -11,8 +11,8 @@
 //   node tdd.mjs snap   --run RUN --on REV [--files a,b]  print the sha of REV + those working-tree files (no --files: the whole working tree)
 // A snapshot is a git commit of the working tree built with a temporary index: no ref, no index and no file of the user's repo changes (only loose objects are added).
 // Group snapshots hold the BASE tree plus ONLY that group's files (and the groups it waits for), so a gate never sees another group's half-written edit.
-// Every test command runs through the sandbox runner of the zero-trust-review skill (ZT_DIR overrides where it lives): exit 86 = no sandbox, 124 = timeout, and the
-// run id of each command is in RUN/exec.jsonl. RUN is made by `plan` under the per-user zt-review base (the only place the ledger tools approve) and gets NO marker:
+// Every test command runs through a runner: direct-run.mjs (no confinement: your rights, your network) unless plan.sandbox is true, which selects the sandbox runner of the
+// zero-trust-review skill (ZT_DIR overrides where it lives; exit 86 = no sandbox). Exit 124 = timeout, and the run id of each command is in RUN/exec.jsonl. RUN is made by `plan` under the per-user zt-review base (the only place the ledger tools approve) and gets NO marker:
 // the review-only guard hook must not restrict the agents that write the code. Gates write RUN/gates/*.json and RUN/diff/*.patch.
 // Exit: 0 (results are data, read `ok`); 2 usage or invalid plan; 3 no trusted run dir; 1 other error.
 import { execFileSync, spawn } from 'node:child_process';
@@ -78,6 +78,8 @@ function needs(plan, g) { // every group g waits for, directly or not
   return [...seen].map(id => group(plan, id));
 }
 
+// where the test commands run: direct (no confinement) unless plan.sandbox asks for the zero-trust-review sandbox; --runner overrides both
+const runnerOf = (plan, o) => resolve(o.runner ?? (plan.sandbox ? join(ZT, 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs')));
 const trustedRun = dir => { // the explicit flag alone: another candidate (env, marker) must never stand in for a bad one
   let real = '';
   try { real = realpathSync(resolve(dir ?? '')); } catch { /* missing */ }
@@ -88,11 +90,11 @@ function load(o) {
   if (!run) fail(3, '--run must be the run folder `tdd.mjs plan` created (under the per-user zt-review base; yours and closed to others)');
   let plan;
   try { plan = JSON.parse(readFileSync(join(run, 'plan.json'), 'utf8')); } catch { fail(3, `no ${join(run, 'plan.json')}: run \`tdd.mjs plan\` first`); }
-  process.env.ZT_RUN_DIR = run; // sandbox-run.mjs appends its ledger (one entry per command, ZT-RUN <id>) to RUN/exec.jsonl
+  process.env.ZT_RUN_DIR = run; // the runner appends its ledger (one entry per command, ZT-RUN <id>) to RUN/exec.jsonl
   const linked = (plan.link ?? []).map(n => realpathSync(join(plan.repo, n)));
   const env = [...(plan.env ?? []), ...(plan.env ?? []).some(e => e.startsWith('PYTHONDONTWRITEBYTECODE=')) ? [] : ['PYTHONDONTWRITEBYTECODE=1']];
   const ro = [...linked, ...lib.editableRoots(linked, plan.repo), ...(plan.ro ?? []).map(p => resolve(p))];
-  const runner = resolve(o.runner ?? join(ZT, 'sandbox-run.mjs'));
+  const runner = runnerOf(plan, o);
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   mkdirSync(join(run, 'diff'), { recursive: true, mode: 0o700 });
   return { run, plan, linked, jobs: plan.jobs ?? 4, probe: { runner, env, ro, timeout: plan.timeout ?? 120, tail: TAIL_KEPT } };
@@ -198,7 +200,7 @@ async function green(ctx, gid, retest) {
   const patch = writeDiff(ctx, `${gid}.green.patch`, ['diff', '-U10', baseDeps, snap, '--', ...g.tests, ...g.src]);
   const mut = plan.mutation ?? {}, kill = plan.killExits ? ['--kill-exits', plan.killExits.join(',')] : [];
   const [probe, mutants, cover] = await Promise.all([
-    child(ctx, 'testprobe.mjs', baseDeps, snap, g.tests, 'gp', ['--flake', '2']),
+    child(ctx, 'testprobe.mjs', baseDeps, snap, g.tests, 'gp', ['--flake', '2', ...(g.src.some(f => !lib.isSource(f)) ? ['--src', g.src.join(',')] : [])]), // a config file the tests need is reverted too
     mut.off ? { reason: 'switched off in the plan' } : child(ctx, 'mutate.mjs', baseDeps, snap, g.tests, 'gm', ['--max', String(mut.max ?? MUTATION.max), '--budget', String(mut.budget ?? MUTATION.budget), ...kill]),
     coverage(ctx, g, snap, baseDeps),
   ]);
@@ -429,12 +431,12 @@ async function cmdPlan(o) {
   let repo;
   try { repo = realpathSync(plan.repo); git(repo, ['rev-parse', '--git-dir']); } catch { fail(2, `repo is not a git repository: ${plan.repo}`); }
   if (git(repo, ['rev-parse', '--show-prefix']).trim()) fail(2, `repo must be the top level of its work tree, not a subdirectory (${plan.repo}): snapshots are tree-relative`);
-  const notSource = plan.groups.flatMap(g => g.src.filter(f => !lib.isSource(f)).map(f => `${g.id}: ${f}`));
-  if (notSource.length) fail(2, `src files the probes never count as source (a test-like path, a data or config file): ${notSource.join(', ')}; the group could never be judged green. Move them out of src.`);
+  const testLike = plan.groups.flatMap(g => g.src.filter(f => lib.TEST.test(f)).map(f => `${g.id}: ${f}`)); // config and data files are fine as src (green passes them to the probe); a test-like path would be counted as a test
+  if (testLike.length) fail(2, `src files with a test-like path: ${testLike.join(', ')}; the probes would count them as tests and the group could never be judged green. Move them out of src.`);
   const marker = readMarker({ env: process.env });
   if (marker) fail(3, `a zero-trust-review run is still active (${marker}): its guard hook would deny the test commands of the agents that write code. Finish it or run: node ${join(ZT, 'note.mjs')} deactivate`);
-  const runner = resolve(o.runner ?? join(ZT, 'sandbox-run.mjs')), backend = lib.backendOf(runner);
-  if (backend === 'none') fail(3, `no usable sandbox (${runner} --check failed): every gate would be unverifiable, and the code of a change request never runs bare. Fix it (see zero-trust-review) and run plan again`);
+  const runner = runnerOf(plan, o), backend = lib.backendOf(runner);
+  if (backend === 'none') fail(3, `no usable runner (${runner} --check failed): every gate would be unverifiable.${plan.sandbox ? ' plan.sandbox is true: fix the sandbox (see zero-trust-review) or drop plan.sandbox to run the tests directly.' : ''} Fix it and run plan again`);
   const scratch = plan.scratch ? resolve(plan.scratch) : join(realpathSync(tmpdir()), `pat-${process.pid}-${Date.now().toString(36)}`);
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const real = realpathSync(scratch);

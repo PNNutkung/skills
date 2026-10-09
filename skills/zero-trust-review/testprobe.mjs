@@ -13,8 +13,8 @@ import { NO_SANDBOX, TEST, TIMEOUT, DOC, backendOf, changes, clear, editableRoot
 const MAX_LINES = 6;
 
 function parse() {
-  const { values, ...common } = parseProbeArgs({ flake: { type: 'string', default: '3' } });
-  return { ...common, flake: intOption(values, 'flake', 0) };
+  const { values, ...common } = parseProbeArgs({ flake: { type: 'string', default: '3' }, src: { type: 'string', default: '' } });
+  return { ...common, flake: intOption(values, 'flake', 0), src: new Set(values.src.split(',').filter(Boolean)) }; // --src: files the caller declares as source whatever their name (a config file the tests need)
 }
 
 const run = (o, copy, file) => runIn(o, copy, o.cmd.replaceAll('{file}', () => shq(file)));
@@ -52,7 +52,7 @@ function summarize(tests) {
 
 async function main() {
   const o = parse();
-  const changed = changes(o.repo, o.base, o.head), sources = changed.filter(c => isSource(c.path));
+  const changed = changes(o.repo, o.base, o.head), sources = changed.filter(c => isSource(c.path) || o.src.has(c.path));
   const files = o.tests ?? changed.filter(c => c.status !== 'D' && TEST.test(c.path) && !DOC.test(c.path)).map(c => c.path);
   let backend = backendOf(o.runner), tests = [];
   if (files.length) {

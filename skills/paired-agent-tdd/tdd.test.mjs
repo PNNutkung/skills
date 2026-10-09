@@ -567,6 +567,29 @@ test('plan: every try timing out, or a command that cannot start, stops the plan
   }
 });
 
+test('plan: with no --runner the tests run through direct-run.mjs (the preflight runs a real test through it); plan.sandbox: true asks for the zero-trust-review sandbox instead', t => {
+  const run = (fx, extra = []) => spawnSync(process.execPath, [TDD, 'plan', '--plan', join(fx.dir, 'plan.json'), ...extra], { encoding: 'utf8', env: { ...process.env, TMPDIR: fx.tmp, ZT_MARKER_DIR: join(fx.dir, 'marker') } });
+  const direct = run(fixture(t));
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.deepEqual([JSON.parse(direct.stdout.trim()).sandbox, JSON.parse(direct.stdout.trim()).preflight], ['direct', 'ok']);
+  assert.match(direct.stderr, /PREFLIGHT ok=true verdict=ok: tests\/existing_alpha\.sh passed/);
+  const boxed = run(fixture(t, { plan: { sandbox: true } }));
+  if (boxed.status === 0) assert.notEqual(JSON.parse(boxed.stdout.trim()).sandbox, 'direct', 'the sandbox backend of this machine, not the direct runner');
+  else { assert.equal(boxed.status, 3); assert.match(boxed.stderr, /plan\.sandbox is true: fix the sandbox/, 'no sandbox here: the refusal says how to run directly'); }
+});
+
+test('config files are fine as group src: the GREEN probe reverts them too, so a test that needs the config exercises the change', t => {
+  const fx = fixture(t, { files: { 'config/alpha.json': '{"mode":"old"}\n' }, plan: p => ({ groups: [{ ...PLAN(p).groups[0], src: ['config/alpha.json'] }], dod: PLAN(p).dod.slice(0, 1) }) });
+  const r = fx.plan();
+  assert.equal(r.status, 0, r.err);
+  put(fx.repo, { 'tests/test_alpha.sh': '# test_ac1_happy\ngrep -q new config/alpha.json\n' });
+  assert.match(fx.tdd('red', ['--group', 'a']).out, /RED a ok=true/);
+  put(fx.repo, { 'config/alpha.json': '{"mode":"new"}\n' });
+  const g = fx.tdd('green', ['--group', 'a']);
+  assert.match(g.out, /GREEN a ok=true/, g.out);
+  assert.deepEqual([fx.gate('a.green.json').tests[0].verdict, fx.gate('a.green.json').outOfScope], ['exercises-change', []]);
+});
+
 test('plan: preflight runs a test that passes at the base through the sandbox before anything else; the verdict travels in the args', t => {
   const fx = fixture(t);
   const r = fx.plan();
@@ -589,13 +612,14 @@ test('plan: a sandbox that cannot run the tests stops the plan (exit 3, nothing 
   assert.equal(JSON.parse(skip.out.trim()).preflight, 'skipped');
 });
 
-test('plan: no usable sandbox at all exits 3 before anything is created', t => {
+test('plan: no usable runner at all exits 3 before anything is created', t => {
   const fx = fixture(t);
   const dead = join(fx.stub, 'dead-runner.mjs');
   writeFileSync(dead, 'process.exit(1);\n');
   const r = fx.plan(['--runner', dead]);
   assert.equal(r.status, 3);
-  assert.match(r.err, /no usable sandbox/);
+  assert.match(r.err, /no usable runner[\s\S]*Fix it and run plan again/);
+  assert.doesNotMatch(r.err, /plan\.sandbox is true/, 'the sandbox hint only appears when the plan asked for the sandbox');
   assert.deepEqual(readdirSync(fx.tmp), [], 'no scratch dir, no run folder');
 });
 
@@ -767,16 +791,16 @@ test('verify: a reviewer finding whose code is still there after the fix is unfi
   assert.deepEqual(v.unfixed, ['C-2 medium src/alpha.txt:1 finding C-2']);
 });
 
-test('plan refuses: a subdirectory of a work tree, a src file the probes never count as source, an active review marker; it resolves a moving base to a sha', t => {
+test('plan refuses: a subdirectory of a work tree, a src file with a test-like path, an active review marker; it resolves a moving base to a sha', t => {
   const sub = fixture(t, { plan: repo => ({ repo: join(repo, 'sub') }) });
   mkdirSync(join(sub.repo, 'sub'));
   const r = sub.plan();
   assert.equal(r.status, 2);
   assert.match(r.err, /top level of its work tree/);
-  const cfg = fixture(t, { plan: p => ({ groups: [{ ...PLAN(p).groups[0], src: ['src/app_config.py'] }], dod: PLAN(p).dod.slice(0, 1) }) });
+  const cfg = fixture(t, { plan: p => ({ groups: [{ ...PLAN(p).groups[0], src: ['src/test_alpha_helper.txt'] }], dod: PLAN(p).dod.slice(0, 1) }) });
   const c = cfg.plan();
   assert.equal(c.status, 2);
-  assert.match(c.err, /never count as source[\s\S]*a: src\/app_config\.py/);
+  assert.match(c.err, /src files with a test-like path: a: src\/test_alpha_helper\.txt/);
   const marked = fixture(t);
   const md = join(marked.dir, 'marker'), live = join(marked.dir, 'live-run');
   for (const d of [md, live]) { mkdirSync(d); chmodSync(d, 0o700); }
