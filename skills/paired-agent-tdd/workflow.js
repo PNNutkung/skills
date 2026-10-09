@@ -54,7 +54,7 @@ const A = args || {}
 const dry = A.mode === 'plan'
 for (const k of ['repo', 'base', 'cmd', 'skillDir', 'runDir']) if (!A[k]) return { error: 'args must be the JSON that `tdd.mjs plan` prints; missing ' + k }
 const G = Array.isArray(A.groups) ? A.groups : [], DOD = Array.isArray(A.dod) ? A.dod : []
-if (A.sandbox === 'none') return { error: 'no sandbox: every gate would say unverifiable and no agent could judge anything. Fix it, then run `tdd.mjs plan` again' }
+if (A.sandbox === 'none') return { error: 'no usable runner for the test commands: every gate would say unverifiable and no agent could judge anything. Fix it (or drop plan.sandbox), then run `tdd.mjs plan` again' }
 if (!G.length || !DOD.length) return { error: 'args need at least one group and one DoD item' }
 const byId = Object.fromEntries(G.map(g => [g.id, g]))
 const loops = (id, seen) => (seen.includes(id) ? true : (byId[id] ? (byId[id].after || []).some(d => loops(d, seen.concat(id))) : false))
@@ -145,7 +145,7 @@ const dodCmd = (g, stage, rows) => TDD + ' dod --run ' + RUN + ' --group ' + g.i
 // that is making progress (and everything after it), a false "different" only costs a round, so the line and most of the text are part of the key.
 const sig = ds => (ds || []).map(d => [d.cls || '', d.file || '', d.line || '', String(d.what || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 200)].join('|')).sort().join('\n')
 // The loop every maker runs on itself with the SAME commands its navigator will run, so "done" is something it saw in a real run, not a feeling.
-const KEEP = 'KEEP EDITING until the gate says ok; never stop at a first draft. Every gate command is a real run in the sandbox. At most 3 gate runs; return gateOk (true only when every command printed ok=true) and gateRuns. A verdict `unverifiable` (the sandbox or the test command cannot run; `unverifiable (timeout)` is not that: a test or code that hangs is yours to fix) is the environment, never the code: edit nothing for it, return gateOk=false and remaining = one {cls env, what}.'
+const KEEP = 'KEEP EDITING until the gate says ok; never stop at a first draft. Every gate command is a real run. At most 3 gate runs; return gateOk (true only when every command printed ok=true) and gateRuns. A verdict `unverifiable` (the runner or the test command cannot run; `unverifiable (timeout)` is not that: a test or code that hangs is yours to fix) is the environment, never the code: edit nothing for it, return gateOk=false and remaining = one {cls env, what}.'
 const ADMIT = ' If you stop with gateOk=false, list under `remaining` every reason you could not fix ({cls impl|test|gap, file, line, what}; a surviving mutant is cls gap): the next pass starts from that list, so no check is spent on a failure you already know.'
 const ALONE = 'Another maker edits the other file set of this group right now: run only your own test files, never the gate; the check runs it after you both finish.'
 const redLoop = g => KEEP + ' Write the tests, run each file once and read why it fails, then run `' + gateCmd('red', g) + '` and `' + dodCmd(g, 'red') + '` (one --row per test you wrote). Anything but ok=true (a class other than fails or fails-to-load, a DoD gap, a row naming a test that is not in its file): fix the tests, run both again.' + ADMIT
@@ -187,7 +187,7 @@ function greenPrompt(g, o) {
     'RETURN: files = source files touched; cleanup; reuse; testDefects; testGaps; outOfScope; gateOk; gateRuns; remaining; notes (<= 400 chars). ' + cap('green-driver'),
   ].filter(Boolean).join('\n\n')
 }
-const NAV_TAIL = 'RETURN: verdict PASS|FAIL; defects = only what MUST be fixed, each {cls test|impl|gap|scope|env, file, line, what, fix}, at most 6 (anything softer goes in notes); a gate verdict `unverifiable` (not `unverifiable (timeout)`, which is a hanging test or code: cls impl or test) is the sandbox, not the code: report that ONE defect as cls env and nothing else; gateOk = true only if every command printed ok=true; notes <= 400 chars. A claim you did not see in command output or in a file you read is not a fact. '
+const NAV_TAIL = 'RETURN: verdict PASS|FAIL; defects = only what MUST be fixed, each {cls test|impl|gap|scope|env, file, line, what, fix}, at most 6 (anything softer goes in notes); a gate verdict `unverifiable` (not `unverifiable (timeout)`, which is a hanging test or code: cls impl or test) is the environment, not the code: report that ONE defect as cls env and nothing else; gateOk = true only if every command printed ok=true; notes <= 400 chars. A claim you did not see in command output or in a file you read is not a fact. '
 function redNavPrompt(g, rows, chk, recheck, n) {
   return [
     head(g, 'navigator: verify the RED tests; you did not write them, so judge them independently', 'red-navigator'),
@@ -215,7 +215,7 @@ const integPrompt = () => [
   TOOLS.replace('your own test files, one at a time', 'that one file'), 'Run it for real and report the exit code; every defect it exposes is a finding string with the output. RETURN: file, exit, findings, notes. ' + cap('integration-tester'),
 ].join('\n\n')
 const SEVERITY = 'SEVERITY: critical = data loss, security flaw or production outage; high = a likely bug or a DoD item not met; medium = a plausible risk or a weak test; low = minor; nit = style. A hazard in untouched code is not a finding unless this diff newly routes traffic through it.'
-const PROOF_RULE = 'PROOF (a tool re-checks every ref and quote): read = ref path:startLine-endLine in the reviewed tree, quote copied verbatim from it; executed = ref the id after `ZT-RUN` that a sandbox run printed, quote verbatim from its output; inferred = a guess, allowed only for low and nit. medium and above need executed or read. quote = the offending code verbatim (<= 300 chars); replacement = the exact new text of startLine..endLine for a mechanical fix of <= 40 lines, else empty.'
+const PROOF_RULE = 'PROOF (a tool re-checks every ref and quote): read = ref path:startLine-endLine in the reviewed tree, quote copied verbatim from it; executed = ref the id after `ZT-RUN` that a gate run printed, quote verbatim from its output; inferred = a guess, allowed only for low and nit. medium and above need executed or read. quote = the offending code verbatim (<= 300 chars); replacement = the exact new text of startLine..endLine for a mechanical fix of <= 40 lines, else empty.'
 const reviewPrompt = () => [
   'ROLE: reviewer, the final gate: read the WHOLE change once and file only what you can substantiate. No AI or automation wording in findings: a sharp engineer, defect first, concrete failing input.\n' + WHERE,
   'FIRST command, once (T0 facts for the integrated tree: all group tests together, existing tests that mention the changed modules, scope): `' + TDD + ' final --run ' + RUN + '`. Then Read ' + RUN + '/diff/final.patch and, per group, ' + RUN + '/gates/<group>.green.json (mutants, coverage). Groups: ' + G.map(g => g.id + ' (' + g.tests.concat(g.src).join(', ') + ')').join('; '),

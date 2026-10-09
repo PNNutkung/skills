@@ -90,6 +90,14 @@ test('no-signal explains itself when only tests changed', t => {
   assert.deepEqual([out.tests[0].verdict, out.tests[0].reason], ['no-signal', 'no changed source files']);
 });
 
+test('--src: a file the caller declares as source is restored to BASE too, whatever its name (a config file the tests need)', t => {
+  const fx = fixture(t, { base: { 'config/app.json': '{"mode":"old"}\n', 'tests/cfg.sh': 'grep -q new config/app.json\n' }, head: { 'src/value.txt': 'old\n', 'config/app.json': '{"mode":"new"}\n' } });
+  const plain = probe(fx, ['--tests', 'tests/cfg.sh']).out.tests[0];
+  assert.deepEqual([plain.verdict, plain.reason], ['no-signal', 'no changed source files'], 'a config file alone is not source: nothing is reverted, so the test seems to pin nothing');
+  const declared = probe(fx, ['--tests', 'tests/cfg.sh', '--src', 'config/app.json']).out.tests[0];
+  assert.deepEqual([declared.verdict, declared.head.exit !== declared.base.exit], ['exercises-change', true], 'declared as source it is reverted, and the test fails without it');
+});
+
 test('fails-on-head: exit code kept, stderr tail capped at 200 chars', t => {
   const { out } = probe(fixture(t, { head: { 'tests/bad.sh': 'echo boom-' + 'x'.repeat(300) + ' >&2; exit 3\n' } }));
   const [r] = out.tests;
