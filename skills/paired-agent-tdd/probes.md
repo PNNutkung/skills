@@ -85,6 +85,14 @@ A fresh GREEN verdict outranks a stale RED one (tests grow after GREEN on purpos
 - `integration`: `ok`, `<file> exited N`, or `not run`; anything but `ok` is listed under `notDone`.
 - `proofcheck.mjs` re-checks every reviewer proof against the tree the reviewer saw (`reviewed.json`) and the ledger.
 
+## Naming rule (after `verify`, before the commit)
+
+The DoD closure matches a row to its test by the `test_ac<ID>_<kind>_…` name, so those names stay until `verify` passes: renamed earlier, the pair is reported `missing`. When the repo has a test naming rule:
+
+1. Rename each `test_ac<ID>_<kind>_…` the run added to a name that states the expected behavior and the state that triggers it: Python `test_should_<behavior>_when_<state>`, TS/JS `should <behavior> when <state>`. Keep the id in a section comment (`# AC1 happy`), not in the name. A rename changes no logic, so the lead may do it, or the group's fixer.
+2. Stage the files and run the guard: `python3 ${TEST_NAME_GUARD_BIN:-$HOME/.claude/hooks/test-name-guard.py} --staged`. Exit 1 lists the names still to rename; exit 0 is clean. The hook is [`hooks/test-name-guard`](../../hooks/test-name-guard) in this repo. Registered in the settings, it also denies a `git commit` that adds a bad name, so this step gets the run there first. Without the hook, check the names by hand against the rule.
+3. Run the full suite after the rename, since the tests changed name. Do not re-run `verify`: it would report the renamed rows as missing.
+
 ## The repair loop (`workflow.js`), stated
 
 A stage = a maker pass, then a navigator on fresh gate facts (`gate` then `dod`), repeated while it reports defects (a PASS that admits `gateOk=false` counts as a defect). The maker's own loop is the same commands, at most 3 gate runs; what it reports (`gateOk`, `gateRuns`, `testGaps`) is a claim kept for the record: the navigator runs the gate again. The loop ends on PASS, after `rounds` repairs, or when the defects come back unchanged: the stall check compares the sorted (class, file, line, first 200 normalized characters) of each defect between two rounds. A reworded defect defeats it and the round cap ends the loop instead; that costs rounds, while a false "same" would block a group that is making progress, so the key is strict. Per group the ceiling is **5 + 5R build agents** (RED: driver, matrix rework, R+1 checks, R reworks; GREEN: driver, R+1 checks, up to two makers a round); the reviewer, fixers, couriers and retries come on top.
