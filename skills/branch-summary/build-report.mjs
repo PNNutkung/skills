@@ -8,7 +8,7 @@
 //
 // usage: node build-report.mjs <report.md> <report.html>
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -29,7 +29,8 @@ export function buildReport(markdown, template) {
   return template.replace(/__TITLE__|__MD_JSON__|__SCRIPT_HASH__/g, (m) => values[m]);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// argv[1] is the link when the skill is installed as a symlink; import.meta.url is the real path.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [mdPath, htmlPath] = process.argv.slice(2);
   if (!mdPath || !htmlPath) {
     console.error('usage: node build-report.mjs <report.md> <report.html>');

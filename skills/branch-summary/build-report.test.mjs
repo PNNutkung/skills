@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +72,22 @@ test('should write the report file when run with two paths', () => {
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), htmlPath);
   assert.equal(dataOf(readFileSync(htmlPath, 'utf8')), hostile);
+});
+
+test('should write the report file when run through a symlinked skill directory', () => {
+  // The skill is installed as a symlink into a clone, so argv[1] is the link, not the real path.
+  const dir = mkdtempSync(join(tmpdir(), 'branch-summary-link-'));
+  const link = join(dir, 'skill');
+  symlinkSync(fileURLToPath(here('./')), link);
+  const mdPath = join(dir, 'report.md');
+  const htmlPath = join(dir, 'report.html');
+  writeFileSync(mdPath, '# Linked\nbody');
+  const run = spawnSync(process.execPath, [join(link, 'build-report.mjs'), mdPath, htmlPath], {
+    encoding: 'utf8',
+  });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.trim(), htmlPath);
+  assert.equal(dataOf(readFileSync(htmlPath, 'utf8')), '# Linked\nbody');
 });
 
 const cspOf = (html) => html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
