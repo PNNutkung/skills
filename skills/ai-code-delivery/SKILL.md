@@ -1,6 +1,6 @@
 ---
 name: ai-code-delivery
-description: Use when shipping, reviewing or releasing code written by an AI agent: deciding how to gate it behind a feature flag, how deeply to review it, what proof a PR must carry, or how to roll it out. Not for the production-hazard review of a diff itself; that is zero-trust-review.
+description: "Use when shipping, reviewing or releasing code written by an AI agent: deciding how to gate it behind a feature flag, how deeply to review it, what proof a PR must carry, or how to roll it out. Not for the production-hazard review of a diff itself; that is zero-trust-review."
 ---
 
 # AI Code Delivery
