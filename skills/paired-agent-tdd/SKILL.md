@@ -9,7 +9,7 @@ TDD (RED, GREEN) as **driver/navigator pairs**, one pipeline per file group, run
 
 **Requires:** Node 18+, git, the Workflow tool, the sibling skill `zero-trust-review` (sandbox runner, mutation probe, `proofcheck.mjs`; `ZT_DIR` if it lives elsewhere), and nothing else: the gates run the test command **directly** (your rights, your network); `plan.sandbox: true` confines it in the zero-trust-review sandbox (macOS `sandbox-exec`, Linux `bwrap`, docker). Agent types `tdd-guide` and `code-reviewer` (the judges have no Edit or Write).
 
-Cost levers ([`runs.md`](./runs.md)): no barrier between groups, gates are code not agents, one whole-diff reviewer, one fixer per group, narrow agent types (~40k tokens before an agent works).
+Cost levers ([`runs.md`](./runs.md)): no barrier between groups, gates are code, one whole-diff reviewer, one fixer per group, narrow agent types.
 
 ## Progress checklist
 
@@ -18,13 +18,14 @@ Cost levers ([`runs.md`](./runs.md)): no barrier between groups, gates are code 
 - [ ] 1 tdd.mjs plan ok; agent count shown (confirm if > 25)
 - [ ] 2 Workflow run; compact return read, saved as return.json
 - [ ] 3 tdd.mjs verify: DoD closure, unfixed, overridden, notDone, proofcheck
+- [ ] 3b Rename test_ac* to the naming rule; guard passes
 - [ ] 4 Full suite and lint on changed files, once; record the run; report
 ```
 
 ## When to use
 
 - A multi-file change with tests expected, whose files split into groups that can be owned independently (**one owner per file**: teammates share one working tree).
-- Not for single-file or one-line changes (use `tdd` or a lone subagent), exploration, or work with no tests. One group with no fan-out still gets independent verification, nothing more.
+- Not for single-file or one-line changes (use `tdd` or a lone subagent), exploration, or work with no tests. One group with no fan-out still gets independent verification.
 
 ## Step 0 — Write plan.json (the lead, no agent)
 
@@ -45,7 +46,7 @@ node $SK/tdd.mjs plan --plan plan.json > args.json    # validates, snapshots the
 node $SK/graph.mjs --plan <groups> <integration 0|1> <groups expected to get findings>
 ```
 
-`plan` refuses an invalid plan with every error at once (unknown DoD id, a file with two owners, a cycle, a quote not in the ticket) and a runner that cannot run the repo's tests (**preflight**: a test that passes at the base must pass there; a wrong `cmd`, a missing venv or, with `sandbox: true`, no sandbox stop here, never as a fake RED; `--skip-preflight` goes on unproven). The base is HEAD, or a snapshot of the dirty working tree; your repo's index, refs and files are never touched. Show the user the groups, the DoD (assumed items marked), the agent count and the ceiling `--plan` prints. **If the total exceeds 25, confirm before spending.**
+`plan` refuses an invalid plan with every error at once (unknown DoD id, a file with two owners, a cycle, a quote not in the ticket) and a runner that cannot run the repo's tests (**preflight**, [`probes.md`](./probes.md): a wrong `cmd`, a missing venv or no sandbox stops here, never as a fake RED; `--skip-preflight` goes on unproven). The base is HEAD, or a snapshot of the dirty working tree; your repo's index, refs and files are never touched. Show the user the groups, the DoD (assumed items marked), the agent count and the ceiling `--plan` prints. **If the total exceeds 25, confirm before spending.**
 
 ## Step 2 — Run
 
@@ -55,7 +56,7 @@ Workflow({ scriptPath: "$SK/workflow.js", args: <the JSON in args.json> })
 
 `mode: "plan"` is a dry run (counts, ceiling, prompt sizes). Read the **compact return** only: `{groups{state, reason, red, green, matrix, files}, clusters, fixes, verified, notDone, stats, boardMd, postmortemMd}`. Save it as `return.json`; write `boardMd` and `postmortemMd` into `$RUN`.
 
-**Continue after a failure** (a group `failed`, `blocked` or `paused`, or the run died): `node $SK/tdd.mjs resume --run $RUN [--ret return.json] [--max-repairs N]` reads the gate files (no agent, no tokens), prints the next run's budget and agent ceiling, and writes `$RUN/continue.json`. Run the Workflow again with `args: {...args, resume: <that file>}`: the file sets the budget (default 2 per group still working), done groups cost nothing, the others restart where they stopped with the defects the gates and navigators found. A group on `env` (a gate said `unverifiable`: fix the runner, re-run that gate) or `hold` (the same defects stalled and nothing changed: edit, or `--hint G=text`, `--escalate G` for one opus maker, `--retry G`) spends nothing until you decide.
+**Continue after a failure** (a group `failed`, `blocked` or `paused`, or the run died): `node $SK/tdd.mjs resume --run $RUN [--ret return.json] [--max-repairs N]` reads the gate files (no agent, no tokens), prints the next run's budget and agent ceiling, and writes `$RUN/continue.json`. Run the Workflow again with `args: {...args, resume: <that file>}`: the file sets the budget (default 2 per group still working), done groups cost nothing, the others restart where they stopped with the defects the gates and navigators found. A group on `env` (a gate said `unverifiable`: fix the runner, re-run that gate) or `hold` (the same defects stalled; options in [`probes.md`](./probes.md) "resume") spends nothing until you decide.
 
 ## Step 3 — Verify, then report
 
@@ -63,7 +64,7 @@ Workflow({ scriptPath: "$SK/workflow.js", args: <the JSON in args.json> })
 node $SK/tdd.mjs verify --run $RUN --ret return.json
 ```
 
-It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** any DoD gap, `final: false`, an `overridden` entry (a navigator said PASS against its own gate), an `unfixed` finding or a `notDone` group (a failed integration test included) remains; say so with the numbers. Then run the project's full suite once (background) and lint on the changed files only. Report: DoD matrix, blocked groups with their reason, findings by proof status, assumed DoD items.
+It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** any DoD gap, `final: false`, an `overridden` entry (a navigator said PASS against its own gate), an `unfixed` finding or a `notDone` group (a failed integration test included) remains; say so with the numbers. Then rename tests to the repo's naming rule, if any (probes.md, "Naming rule"), run the project's full suite once (background) and lint on the changed files only. Report: DoD matrix, blocked groups with their reason, findings by proof status, assumed DoD items.
 
 **Record every real run** (one line, no baseline): `node $SK/record.mjs --run $RUN --ret return.json --transcript <the transcript dir the Workflow result prints> --note "<job>" --append $SK/runs.md`. Run `verify` first; cost and time come from the transcript.
 
