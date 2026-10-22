@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Scripts: only the one inline block below (by hash) and jsdelivr. Everything else, including
+       images other than data: URIs, network calls, frames and forms, is blocked. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-__SCRIPT_HASH__' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+  <title>__TITLE__</title>
+  <!-- Exact versions with integrity hashes, so a changed CDN file does not run. To bump one:
+       curl -s <url> | openssl dgst -sha384 -binary | openssl base64 -A  (prefix the result with sha384-) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@14.1.4/marked.min.js" integrity="sha384-lqPzN0kmFw9t2syAMwVPM4VbAyqsz/lPyYWbb2Xt6nSPM0WPNrpSWCUBgdcAdgnC" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.17/dist/purify.min.js" integrity="sha384-P0JNneQf81HOl9VwNXK76cQ9VMD6Nfsnepxb0cCOg8+UzEdzgPHAPV4wVQrvYQSx" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js" integrity="sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2" crossorigin="anonymous"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+           max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+    pre, code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    pre { background: rgba(127,127,127,0.12); padding: 0.75rem 1rem; border-radius: 6px; overflow-x: auto; }
+    code { background: rgba(127,127,127,0.12); padding: 0.1em 0.35em; border-radius: 4px; }
+    pre code { background: transparent; padding: 0; }
+    table { border-collapse: collapse; }
+    th, td { border: 1px solid rgba(127,127,127,0.4); padding: 0.4em 0.7em; }
+    .mermaid { background: transparent; }
+    #copy-btn { position: fixed; top: 1rem; right: 1rem; padding: 0.5rem 0.9rem;
+                border-radius: 6px; border: 1px solid rgba(127,127,127,0.5);
+                background: Canvas; color: CanvasText; cursor: pointer; font-size: 0.9rem; }
+    #copy-btn:hover { background: rgba(127,127,127,0.15); }
+  </style>
+</head>
+<body>
+  <button id="copy-btn" type="button">Copy as Markdown</button>
+  <main id="rendered"></main>
+
+  <script type="application/json" id="md-source">__MD_JSON__</script>
+
+  <script>
+    (function () {
+      // The report text comes from a branch (commit messages, file names, code
+      // comments), so it is untrusted. It reaches this page as inert JSON data and
+      // is never markup: marked turns it into HTML, DOMPurify keeps only a fixed
+      // set of tags, attributes and URL schemes, and mermaid runs in strict mode.
+      const src = JSON.parse(document.getElementById('md-source').textContent);
+
+      const escapeHtml = (s) =>
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+      // marked 13+ passes a token to renderer overrides; returning false falls back
+      // to the default renderer. A mermaid fence becomes an escaped diagram source.
+      marked.use({
+        gfm: true,
+        breaks: false,
+        renderer: {
+          code({ text, lang }) {
+            if ((lang || '').trim().split(/\s+/)[0] === 'mermaid') {
+              return '<div class="mermaid">' + escapeHtml(text) + '</div>';
+            }
+            return false;
+          },
+        },
+      });
+
+      DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+        if (node.tagName === 'A') node.setAttribute('rel', 'noopener noreferrer');
+      });
+      const clean = DOMPurify.sanitize(marked.parse(src), {
+        ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'hr', 'ul', 'ol', 'li',
+          'blockquote', 'pre', 'code', 'em', 'strong', 'del', 'sup', 'sub', 'a', 'table',
+          'thead', 'tbody', 'tr', 'th', 'td', 'details', 'summary', 'div', 'span', 'input'],
+        ALLOWED_ATTR: ['href', 'title', 'class', 'align', 'colspan', 'rowspan', 'start', 'open',
+          'type', 'checked', 'disabled'],
+        RETURN_DOM_FRAGMENT: true,
+      });
+      document.getElementById('rendered').appendChild(clean);
+
+      // strict: no click handlers, labels encoded. htmlLabels off: labels are SVG text, so
+      // markup in a label (an img with a remote src) is shown as text, never created.
+      // secure: keys a diagram's own %%{init}%% directive may not override (a directive could
+      // otherwise turn htmlLabels back on). The first six are mermaid's defaults, listed
+      // because setting this key replaces them.
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'default',
+        securityLevel: 'strict',
+        htmlLabels: false,
+        flowchart: { htmlLabels: false },
+        class: { htmlLabels: false },
+        state: { htmlLabels: false },
+        secure: ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'suppressErrorRendering',
+          'maxEdges', 'htmlLabels', 'flowchart', 'class', 'state'],
+      });
+      mermaid.run({ querySelector: '.mermaid', suppressErrors: true });
+
+      const btn = document.getElementById('copy-btn');
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(src);
+        } catch (e) {
+          // Fallback for non-secure contexts / older browsers.
+          const ta = document.createElement('textarea');
+          ta.value = src;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          ta.remove();
+        }
+        const original = btn.textContent;
+        btn.textContent = 'Copied ✓';
+        setTimeout(() => { btn.textContent = original; }, 2000);
+      });
+    })();
+  </script>
+</body>
+</html>
