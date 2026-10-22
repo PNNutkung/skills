@@ -21,6 +21,12 @@ flowchart LR
   click B call window.__xss.push('mermaid-click')
 ```
 
+```mermaid
+%%{init: {"securityLevel": "loose", "htmlLabels": true, "flowchart": {"htmlLabels": true}}}%%
+flowchart LR
+  A["<img src=x onerror=window.__xss=(window.__xss||[]).concat('mermaid-init')>"] --> B["y"]
+```
+
 | Column | Value |
 | --- | --- |
 | a | b |

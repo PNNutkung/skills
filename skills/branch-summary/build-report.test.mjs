@@ -1,6 +1,7 @@
 // node --test skills/branch-summary
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,9 +42,9 @@ test('should escape the title when the first heading holds markup', () => {
 });
 
 test('should replace each placeholder once when the markdown contains the placeholders', () => {
-  const md = '# __MD_JSON__ and __TITLE__\nbody __TITLE__';
+  const md = '# __MD_JSON__ and __TITLE__ and __SCRIPT_HASH__\nbody __TITLE__';
   const html = buildReport(md, template);
-  assert.ok(html.includes('<title>__MD_JSON__ and __TITLE__</title>'));
+  assert.ok(html.includes('<title>__MD_JSON__ and __TITLE__ and __SCRIPT_HASH__</title>'));
   assert.equal(dataOf(html), md);
 });
 
@@ -71,4 +72,36 @@ test('should write the report file when run with two paths', () => {
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), htmlPath);
   assert.equal(dataOf(readFileSync(htmlPath, 'utf8')), hostile);
+});
+
+const cspOf = (html) => html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
+
+test('should allow exactly the inline script by hash when the report is built', () => {
+  const html = buildReport(hostile, template);
+  const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assert.equal(inline.length, 1);
+  const hash = createHash('sha256').update(inline[0][1], 'utf8').digest('base64');
+  assert.ok(cspOf(html).includes(`script-src 'sha256-${hash}' https://cdn.jsdelivr.net`));
+});
+
+test('should not allow unsafe script sources when the policy is read', () => {
+  const csp = cspOf(buildReport(hostile, template));
+  assert.match(csp, /^default-src 'none';/);
+  const scriptSrc = csp.split(';').find((part) => part.trim().startsWith('script-src'));
+  assert.ok(!/unsafe/.test(scriptSrc), scriptSrc);
+});
+
+test('should pin every CDN script to an exact version with an integrity hash', () => {
+  const tags = template.match(/<script src="[^"]+"[^>]*><\/script>/g) || [];
+  assert.equal(tags.length, 3);
+  for (const tag of tags) {
+    assert.match(tag, /src="https:\/\/cdn\.jsdelivr\.net\/npm\/[a-z]+@\d+\.\d+\.\d+\//, tag);
+    assert.match(tag, /integrity="sha384-[A-Za-z0-9+/]{64}"/, tag);
+    assert.match(tag, /crossorigin="anonymous"/, tag);
+  }
+});
+
+test('should refuse a template without exactly one inline script', () => {
+  assert.throws(() => buildReport('# t', '<script>a</script><script>b</script>__MD_JSON__'), /exactly one inline script/);
+  assert.throws(() => buildReport('# t', '__MD_JSON__'), /exactly one inline script/);
 });

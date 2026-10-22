@@ -7,6 +7,7 @@
 // JSON, renders it with marked, and sanitizes the result (see report-template.html).
 //
 // usage: node build-report.mjs <report.md> <report.html>
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -19,8 +20,13 @@ export function buildReport(markdown, template) {
     .replace(/</g, '\\u003c')
     .split(String.fromCharCode(0x2028)).join('\\u2028')
     .split(String.fromCharCode(0x2029)).join('\\u2029');
+  // The CSP lets the template's one inline script run, by hash, and no other inline code.
+  const inline = [...template.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  if (inline.length !== 1) throw new Error('the template must hold exactly one inline script');
+  const scriptHash = createHash('sha256').update(inline[0][1], 'utf8').digest('base64');
+  const values = { __TITLE__: title, __MD_JSON__: json, __SCRIPT_HASH__: scriptHash };
   // One pass over the template: replaced text is never scanned for placeholders again.
-  return template.replace(/__TITLE__|__MD_JSON__/g, (m) => (m === '__TITLE__' ? title : json));
+  return template.replace(/__TITLE__|__MD_JSON__|__SCRIPT_HASH__/g, (m) => values[m]);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

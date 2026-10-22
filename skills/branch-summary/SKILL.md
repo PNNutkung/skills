@@ -292,7 +292,7 @@ Steps:
 
 ### HTML report
 
-`report-template.html` loads `marked`, `DOMPurify` and `mermaid` from pinned CDN URLs, so the file is self-contained apart from those three scripts and opens directly from disk. It renders the markdown, keeps only a fixed set of tags, attributes and URL schemes, runs mermaid in `strict` mode with SVG labels, blocks remote images, and adds a "Copy as Markdown" button that returns the source unchanged. Do not edit the template to loosen any of this: the report text comes from commit messages, file names and comments, which the branch's author controls.
+`report-template.html` loads `marked`, `DOMPurify` and `mermaid` from jsdelivr at exact versions with `integrity` hashes, so the file is self-contained apart from those three scripts and opens directly from disk. It renders the markdown, keeps only a fixed set of tags, attributes and URL schemes, and runs mermaid in `strict` mode with SVG labels and a locked config (a diagram's `%%{init}%%` cannot turn HTML labels back on). Its Content-Security-Policy allows only the one inline script, by hash, and the CDN: no remote images, no network calls, no inline event handlers. A "Copy as Markdown" button returns the source unchanged. Do not edit the template to loosen any of this: the report text comes from commit messages, file names and comments, which the branch's author controls. To bump a library, change its version and its hash together (the command is in the template).
 
 ### Template
 
