@@ -23,7 +23,10 @@ Claude Code only, to also get the `zero-trust-review` guard and telemetry-captur
 /plugin install pnnutkung-skills@pnnutkung-skills
 ```
 
-A standalone hook that is not part of the plugin: [`hooks/test-name-guard`](hooks/test-name-guard) denies a `git commit` that adds a test not named `should ... when ...` (Python and TypeScript/JavaScript). Install steps are in its README.
+Two standalone hooks that are not part of the plugin. Install steps are in each README.
+
+- [`hooks/test-name-guard`](hooks/test-name-guard) denies a `git commit` that adds a test not named `should ... when ...` (Python and TypeScript/JavaScript).
+- [`hooks/pr-test-tiers`](hooks/pr-test-tiers) denies `gh pr create` / `glab mr create` unless the branch ships unit, integration and e2e tests, with real dependencies in containers and a stated reason for any mock. It only warns at `git commit` and reminds when a test file is created.
 
 ## Skills
 
