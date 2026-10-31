@@ -30,7 +30,7 @@ Reject any agent-authored PR that lacks reproducible proof. Every PR follows thi
 
 ```markdown
 - [ ] Feature flag: <flag name that controls this code>
-- [ ] Tests: <unit / component / snapshot result; the tests assert real invariants, not no-ops>
+- [ ] Tests: <unit / integration / e2e results, each tier named; container used, or mock + reason; the tests assert real invariants, not no-ops>
 - [ ] Proof:
   - UI change: <screenshot or short screen recording>
   - Backend / infra change: <runtime log or CLI execution trace>
