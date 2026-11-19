@@ -161,13 +161,73 @@ test("a written test's kill counts only for its finding's survivor, in a run of 
   assert.deepEqual(otherMutant.reasons, ["killed mutant is not the finding's survivor"]);
   assert.deepEqual(checkWritten({ ...entry, finding: 'F9' }, ctx).reasons, ["killed mutant is not the finding's survivor"]);
   const otherTest = checkWritten({ ...entry, path: 'tests/unit/test_b.py' }, ctx);
-  assert.deepEqual(otherTest.reasons, ['kill run does not run tests/unit/test_b.py']);
+  assert.deepEqual(otherTest.reasons, ['pass run does not run tests/unit/test_b.py', 'kill run does not run tests/unit/test_b.py']);
+});
+
+test("a written test's runs must run its own path, matched at a path boundary", () => {
+  const { ctx: base } = fixture();
+  const ctx = { ...base, findings: data.findings };
+  const [entry] = data.tests_written, [, kill] = entry.proofs;
+  // the runs run tests/unit/test_a.py: a.py is another file, whose name test_a.py merely ends with
+  assert.deepEqual(checkWritten({ ...entry, path: 'a.py' }, ctx).reasons, ['pass run does not run a.py', 'kill run does not run a.py']);
+  const otherPass = { mode: 'executed', ref: 'r8', exit: 0, quote: '1 passed' }; // a passing run of tests/unit/test_other.py
+  assert.deepEqual(checkWritten({ ...entry, proofs: [otherPass, kill] }, ctx).reasons, ['pass run does not run tests/unit/test_a.py']);
+});
+
+test('only a stamp with exit 1 is a kill: pytest exit 2 is a collection error', () => {
+  const { ctx: base } = fixture();
+  const ctx = { ...base, findings: data.findings };
+  const [entry] = data.tests_written, [pass] = entry.proofs;
+  const exit2 = { mode: 'executed', ref: 'r11', quote: 'ZT-MUTANT m1 src/a.py:3 flip exit=2' };
+  assert.equal(checkProof(exit2, ctx).ok, true, 'the run itself is in the ledger');
+  assert.deepEqual(checkWritten({ ...entry, proofs: [pass, exit2] }, ctx).reasons, ['no killed mutant proof']);
+});
+
+// a stand-in for pr-test-tiers.py: prints inv.json from its cwd, so the test also proves it runs in --repo with --inventory
+const STUB_TIERS = 'import sys\nif sys.argv[1:] != ["--inventory"]:\n    sys.exit(1)\nprint(open("inv.json").read())\n';
+const skipPy = spawnSync('python3', ['--version']).status !== 0 && 'python3 not available';
+const counts = (unit, integration, e2e) => ({ unit, integration, e2e });
+const INV = { modules: { src: counts(3, 1, 0), 'a|b': counts(0, 0, 0) }, unmapped: ['tests/unit/test_x.py'], unmapped_tiers: counts(1, 0, 0), untiered: [] };
+function withInventory(inv) {
+  const fx = fixture(), dir = mk('qa-fnd-tiers-'), tiersPy = join(dir, 'tiers.py');
+  writeFileSync(tiersPy, STUB_TIERS);
+  writeFileSync(join(fx.repo, 'inv.json'), typeof inv === 'string' ? inv : JSON.stringify(inv));
+  return { ...fx, tiersPy, ctx: loadContext({ run: fx.run, repo: fx.repo, head: 'HEAD', requirements: data.requirements, tmp: fx.tmp, tiersPy }) };
+}
+const missing = { id: 'M1', kind: 'missing-tier', tier: 'e2e', title: 'no e2e tests: proposed setup Playwright' };
+
+test('a missing tier is verified only when the inventory has no test of it, tiered or untiered', { skip: skipPy }, () => {
+  assert.deepEqual(checkFinding(missing, withInventory(INV).ctx), { ok: true, reasons: [] }, 'no requirement needed');
+  assert.deepEqual(checkFinding({ ...missing, tier: 'unit' }, withInventory(INV).ctx).reasons, ['the inventory has 4 unit test files'], 'modules plus unmapped');
+  const unmappedE2e = { ...INV, unmapped_tiers: counts(1, 0, 1) };
+  assert.deepEqual(checkFinding(missing, withInventory(unmappedE2e).ctx).reasons, ['the inventory has 1 e2e test file']);
+  assert.deepEqual(checkFinding(missing, withInventory({ ...INV, untiered: ['tests/test_a.py'] }).ctx).reasons, ['untiered tests exist: ask the user which tier they are']);
+  assert.deepEqual(checkFinding({ ...missing, tier: 'smoke' }, withInventory(INV).ctx).reasons, ['unknown tier smoke']);
+  assert.match(checkFinding(missing, withInventory({ modules: [] }).ctx).reasons.join(), /inventory: not the shape/);
+  assert.match(checkFinding(missing, withInventory('not json').ctx).reasons.join(), /^inventory: /);
+});
+
+test('a missing tier with no inventory is unverified', () => {
+  const { ctx } = fixture();
+  assert.deepEqual(checkFinding(missing, ctx).reasons, ['no inventory: pass --tiers-py']);
+});
+
+test('the inventory renders as an escaped table, and a verified missing tier comes first under Test gaps', { skip: skipPy }, () => {
+  const { ctx } = withInventory({ ...INV, untiered: ['tests/a_b.py'] });
+  const d = { ...data, findings: [...data.findings, { ...missing, title: 'no e2e tests' }] };
+  const md = renderReport(d, verifyAll(d, ctx), ctx.inventory);
+  assert.match(md, /## Inventory\n\n\| module \| unit \| integration \| e2e \|\n\|---\|---\|---\|---\|\n\| src \| 3 \| 1 \| 0 \|\n\| a\\\|b \| 0 \| 0 \| 0 \|\n\| _unmapped_ \| 1 \| 0 \| 0 \|/);
+  assert.match(md, /Untiered test files \(1\): tests\/a\\_b\.py/);
+  const verified = renderReport({ ...data, findings: [data.findings[0], missing] }, verifyAll({ ...data, findings: [data.findings[0], missing] }, withInventory(INV).ctx), INV);
+  const gaps = verified.slice(verified.indexOf('## Test gaps'));
+  assert.ok(gaps.indexOf('**M1**') > 0 && gaps.indexOf('**M1**') < gaps.indexOf('**F1**'), gaps);
+  assert.match(gaps, /\*\*M1\*\* no e2e tests: proposed setup Playwright \\\[missing\\-tier, e2e\\\]/);
 });
 
 test('every item lands in exactly one report section, and unverified is listed', () => {
   const { ctx } = fixture();
   const verdicts = verifyAll(data, ctx);
-  const md = renderReport(data, verdicts, 'a1 inventory line');
+  const md = renderReport(data, verdicts, INV);
   const ids = [...md.matchAll(/^- \*\*([^*]+)\*\*/gm)].map(m => m[1]).sort();
   assert.deepEqual(ids, ['F1', 'F2', 'F3', 'R1', 'R2', 'U1', 'tests/unit/test\\_a.py'].sort());
   const section = id => md.slice(0, md.indexOf(`**${id}**`)).split('\n').filter(l => l.startsWith('## ')).pop();
@@ -201,4 +261,16 @@ test('the CLI writes the report into the run folder and prints counts', () => {
   const link = join(mk('qa-fnd-link-'), 'findings.mjs');
   symlinkSync(join(HERE, 'findings.mjs'), link);
   assert.equal(spawnSync('node', [link, '--run', '/nonexistent'], { encoding: 'utf8' }).status, 2, 'a symlinked CLI still runs');
+});
+
+test('the CLI runs --tiers-py itself and no longer reads an inventory file', { skip: skipPy }, () => {
+  const { repo, run, tmp, tiersPy } = withInventory(INV);
+  const file = join(mk('qa-fnd-in-'), 'findings.json');
+  writeFileSync(file, JSON.stringify({ ...data, findings: [...data.findings, missing] }));
+  const go = (...a) => spawnSync('node', [join(HERE, 'findings.mjs'), '--run', run, '--repo', repo, '--head', 'HEAD', '--findings', file, ...a], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp } });
+  const r = go('--tiers-py', tiersPy);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).verified, 6, 'the missing tier is verified');
+  assert.match(readFileSync(join(run, 'report.md'), 'utf8'), /## Inventory\n\n\| module /);
+  assert.equal(go('--inventory', file).status, 2, '--inventory FILE is gone: an agent-written file is no proof');
 });

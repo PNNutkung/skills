@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // No proof, no finding: re-checks every proof the agent wrote against ground truth in plain code, then writes the markdown report.
-//   node findings.mjs --run DIR --repo DIR --head REV --findings FILE [--inventory FILE] [--out FILE]
+//   node findings.mjs --run DIR --repo DIR --head REV --findings FILE [--tiers-py PATH] [--out FILE]
 // Ground truth: the repo at HEAD (git show, never the working tree), and in the run dir exec.jsonl (runner ledger), answers.md, ticket.md.
+// --tiers-py: pr-test-tiers.py, which it runs itself (`--inventory`, in --repo) for the report's inventory and the missing-tier check.
 // A finding whose proof fails is listed under Unverified with its reasons, never dropped.
 // Prints {report, verified, unverified, unconfirmed} (counts). Exit: 0 ok; 2 usage error; 1 other error.
 import { execFileSync } from 'node:child_process';
@@ -22,6 +23,10 @@ const MUTANT = /^ZT-MUTANT (\S+) \S+:\d+ \S+ exit=(\d+)$/;
 const REF_RE = /^(.+):(\d+)$/;
 const HEAD_RE = /^[A-Za-z0-9][\w./@^~{}-]*$/;
 const NOT_TRUSTED = 'ledger not trusted';
+const KILL_EXITS = [1]; // a test failed; pytest exit 2 (collection error) is a mutant that does not even import, not a kill
+const TIERS = ['unit', 'integration', 'e2e']; // as in pr-test-tiers.py
+const INVENTORY_TIMEOUT_MS = 60e3;
+const NO_INVENTORY = 'no inventory: pass --tiers-py';
 const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim();
 const has = (hay, quote) => norm(quote) !== '' && norm(hay).includes(norm(quote));
 const ok = () => ({ ok: true });
@@ -47,8 +52,22 @@ function gitShow(repo, head, path) {
   try { return execFileSync('git', ['-C', repo, 'show', `${head}:${path}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 16 << 20 }); } catch { return null; }
 }
 
+const isCounts = c => !!c && typeof c === 'object' && TIERS.every(t => Number.isInteger(c[t]) && c[t] >= 0);
+const isNames = a => Array.isArray(a) && a.every(s => typeof s === 'string');
+const isInventory = inv => !!inv?.modules && typeof inv.modules === 'object' && !Array.isArray(inv.modules)
+  && Object.values(inv.modules).every(isCounts) && isCounts(inv.unmapped_tiers) && isNames(inv.unmapped) && isNames(inv.untiered);
+
+// The inventory comes from running pr-test-tiers.py, never from a file the agent wrote.
+function runInventory(tiersPy, repo) {
+  if (!tiersPy) return { inventoryError: NO_INVENTORY };
+  try {
+    const inv = JSON.parse(execFileSync('python3', [tiersPy, '--inventory'], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: INVENTORY_TIMEOUT_MS, maxBuffer: 16 << 20 }));
+    return isInventory(inv) ? { inventory: inv } : { inventoryError: 'inventory: not the shape pr-test-tiers.py --inventory prints' };
+  } catch (e) { return { inventoryError: `inventory: ${String(e.message).split('\n')[0]}` }; }
+}
+
 /** The only function that does I/O: everything the checks need, so they stay pure. `requirements` is the input's list, looked up by id. */
-export function loadContext({ run, repo, head, requirements = [], tmp }) {
+export function loadContext({ run, repo, head, requirements = [], tmp, tiersPy }) {
   // resolveRun trusts only a run under the per-user base (or the marker's); a fallback to some other run is refused
   const dir = zt && zt.resolveRun({ run, tmp }) === zt.checkRunDir(run, { tmp }) ? zt.resolveRun({ run, tmp }) : '';
   const read = name => (dir ? readTrusted(dir, name) : { untrusted: true });
@@ -57,7 +76,7 @@ export function loadContext({ run, repo, head, requirements = [], tmp }) {
   for (const l of led.text?.split('\n') ?? []) { try { const e = JSON.parse(l); if (e?.id) ledger.set(e.id, [...(ledger.get(e.id) ?? []), e]); } catch { /* skip a bad line */ } }
   const files = new Map();
   const show = path => { if (!files.has(path)) files.set(path, gitShow(repo, head, path)); return files.get(path); };
-  return { run, repo, head, requirements, ledger, ledgerUntrusted: !!led.untrusted, answers: ans.text, ticket: tkt.text, show };
+  return { run, repo, head, requirements, ledger, ledgerUntrusted: !!led.untrusted, answers: ans.text, ticket: tkt.text, show, ...runInventory(tiersPy, repo) };
 }
 
 function checkCode({ ref, quote }, ctx) {
@@ -105,17 +124,32 @@ export function checkSource({ source }, ctx) {
 const proven = (proofs, ctx, mode, want = () => true) => (proofs ?? []).some(p => p?.mode === mode && want(p) && checkProof(p, ctx).ok);
 const mutant = p => MUTANT.exec(norm(p.quote));
 const survivor = p => mutant(p)?.[2] === '0';
-const killed = p => { const m = mutant(p); return !!m && m[2] !== '0'; };
+const killed = p => { const m = mutant(p); return !!m && KILL_EXITS.includes(Number(m[2])); };
 const mutantId = p => mutant(p)?.[1];
 const failing = p => typeof p.exit === 'number' && p.exit !== 0;
 const passing = p => p.exit === 0;
 
+// A tier is missing only when the inventory has no test of it anywhere, and no untiered test that might be one.
+function missingTierReasons({ tier }, ctx) {
+  const inv = ctx.inventory;
+  if (!inv) return [ctx.inventoryError ?? NO_INVENTORY];
+  if (!TIERS.includes(tier)) return [`unknown tier ${tier}`];
+  const n = Object.values(inv.modules).reduce((sum, c) => sum + c[tier], inv.unmapped_tiers[tier]);
+  return [
+    ...(n ? [`the inventory has ${n} ${tier} test file${n === 1 ? '' : 's'}`] : []),
+    ...(inv.untiered.length ? ['untiered tests exist: ask the user which tier they are'] : []),
+  ];
+}
+
 export function checkFinding(finding, ctx) {
-  const req = ctx.requirements?.find(r => r.id === finding?.requirement);
-  const reasons = [];
-  if (!req) reasons.push(`requirement ${finding?.requirement} not found`);
-  else { const s = checkSource(req, ctx); if (!s.ok) reasons.push(`source of ${req.id}: ${s.reason}`); }
   const { proofs, kind, tier } = finding ?? {};
+  const reasons = [];
+  if (kind === 'missing-tier') reasons.push(...missingTierReasons(finding, ctx));
+  else {
+    const req = ctx.requirements?.find(r => r.id === finding?.requirement);
+    if (!req) reasons.push(`requirement ${finding?.requirement} not found`);
+    else { const s = checkSource(req, ctx); if (!s.ok) reasons.push(`source of ${req.id}: ${s.reason}`); }
+  }
   // a coverage run counts only when its output names a file a verified code proof points at
   const files = (proofs ?? []).filter(p => p?.mode === 'code' && checkProof(p, ctx).ok).map(p => REF_RE.exec(p.ref)[1]);
   const covers = p => p.coverage === true && files.some(f => norm(p.quote).includes(f));
@@ -128,21 +162,27 @@ export function checkFinding(finding, ctx) {
     if (!proven(proofs, ctx, 'code')) reasons.push('no code proof');
     if (!proven(proofs, ctx, 'executed', survivor)) reasons.push('no surviving mutant proof');
   } else if (kind === 'defect') { if (!proven(proofs, ctx, 'executed', failing)) reasons.push('no failing run proof'); }
-  else reasons.push(`unknown finding kind ${kind}`);
+  else if (kind !== 'missing-tier') reasons.push(`unknown finding kind ${kind}`);
   for (const p of proofs ?? []) { const v = checkProof(p, ctx); if (!v.ok && !reasons.includes(v.reason)) reasons.push(v.reason); }
   return { ok: reasons.length === 0, reasons };
 }
 
-// The kill must be of a mutant the written test's own finding proved survived, in a ledger run whose command runs that test file.
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// path-boundary match: `a.py` is not in `data.py` or `test_a.py`, nor `tests` in `tests/x.py`
+const namesPath = (cmd, path) => new RegExp(`(?:^|[^\\w.-])${escapeRe(path)}(?![\\w./-])`).test(String(cmd ?? ''));
+
+// The passing run and the kill must both be ledger runs whose command runs that test file, and the kill of a mutant its own finding proved survived.
 export function checkWritten(entry, ctx) {
   const { proofs, finding: fid, path } = entry ?? {}, reasons = [];
-  if (!proven(proofs, ctx, 'executed', passing)) reasons.push('no passing run proof');
   const valid = (list, want) => (list ?? []).filter(p => p?.mode === 'executed' && want(p) && checkProof(p, ctx).ok);
+  const runs = p => typeof path === 'string' && path !== '' && namesPath(ctx.ledger.get(p.ref)[0].cmd, path);
+  const passes = valid(proofs, passing);
+  if (!passes.length) reasons.push('no passing run proof');
+  else if (!passes.some(runs)) reasons.push(`pass run does not run ${path}`);
   const kills = valid(proofs, killed);
   if (!kills.length) return { ok: false, reasons: [...reasons, 'no killed mutant proof'] };
   const survivors = new Set(valid(ctx.findings?.find(f => f?.id === fid)?.proofs, survivor).map(mutantId));
   const own = kills.filter(p => survivors.has(mutantId(p)));
-  const runs = p => typeof path === 'string' && path !== '' && String(ctx.ledger.get(p.ref)[0].cmd ?? '').includes(path);
   if (!own.length) reasons.push("killed mutant is not the finding's survivor");
   else if (!own.some(runs)) reasons.push(`kill run does not run ${path}`);
   return { ok: reasons.length === 0, reasons };
@@ -159,23 +199,35 @@ export function verifyAll(data, ctx) {
   };
 }
 
-const SECTION_OF_KIND = { defect: 'Defects', 'weak-test': 'Weak tests', 'test-gap': 'Test gaps' };
+const SECTION_OF_KIND = { defect: 'Defects', 'weak-test': 'Weak tests', 'test-gap': 'Test gaps', 'missing-tier': 'Test gaps' };
+const UNTIERED_SHOWN = 10;
 // Agent text is data: collapse whitespace (no new lines, so no new headings or list items) and escape markdown metacharacters.
 const esc = s => norm(s).replace(/([\\`*_{}[\]<>()#+!|~-])/g, '\\$1');
 const proofLine = p => `  - proof: ${esc(p.mode)} ${esc(p.ref)}${p.exit === undefined ? '' : ` exit=${esc(p.exit)}`}${p.coverage ? ' coverage' : ''} "${esc(p.quote)}"`;
 const sourceLine = s => `  - source: ${esc(s?.kind)} ${esc(s?.ref)} "${esc(s?.quote)}"`;
 const item = (id, text, sub, reasons = []) => [`- **${esc(id)}** ${esc(text)}`, ...sub, ...reasons.map(r => `  - unverified: ${esc(r)}`)].join('\n');
 
+// a table of pr-test-tiers.py --inventory output; the counts were checked to be integers, every name is escaped
+function inventoryTable(inv) {
+  const row = (name, c) => `| ${name} | ${TIERS.map(t => c[t]).join(' | ')} |`;
+  const lines = [`| module | ${TIERS.join(' | ')} |`, `|${TIERS.map(() => '---|').join('')}---|`, ...Object.entries(inv.modules).map(([m, c]) => row(esc(m), c)), row('_unmapped_', inv.unmapped_tiers)];
+  const more = inv.untiered.length > UNTIERED_SHOWN ? ', ...' : '';
+  if (inv.untiered.length) lines.push('', `Untiered test files (${inv.untiered.length}): ${inv.untiered.slice(0, UNTIERED_SHOWN).map(esc).join(', ')}${more}`);
+  return lines.join('\n');
+}
+
 export function renderReport(data, verdicts, inventory) {
   const sections = new Map(['Inventory', 'Requirements', 'Defects', 'Weak tests', 'Test gaps', 'Tests written', 'Unverified', 'Unconfirmed'].map(n => [n, []]));
   const put = (name, line) => sections.get(name).push(line);
   const route = (v, name) => (v.ok ? name : 'Unverified');
-  if (inventory) put('Inventory', inventory.trim());
+  if (inventory) put('Inventory', inventoryTable(inventory));
   (data.requirements ?? []).forEach((r, i) => { const v = verdicts.requirements[i]; put(route(v, 'Requirements'), item(r.id, `${r.text ?? ''} (${r.source?.kind}: ${r.source?.ref})`, [sourceLine(r.source)], v.reasons)); });
-  (data.findings ?? []).forEach((f, i) => {
-    const v = verdicts.findings[i];
-    put(route(v, SECTION_OF_KIND[f.kind]), item(f.id, `${f.title ?? ''} [${f.kind}, ${f.tier}, ${f.requirement}]`, (f.proofs ?? []).map(proofLine), v.reasons));
-  });
+  const findings = (data.findings ?? []).map((f, i) => [f, verdicts.findings[i]]);
+  const missingFirst = [...findings.filter(([f]) => f?.kind === 'missing-tier'), ...findings.filter(([f]) => f?.kind !== 'missing-tier')]; // the top test gap
+  for (const [f, v] of missingFirst) {
+    const tags = [f.kind, f.tier, f.requirement].filter(x => x !== undefined).join(', ');
+    put(route(v, SECTION_OF_KIND[f.kind]), item(f.id, `${f.title ?? ''} [${tags}]`, (f.proofs ?? []).map(proofLine), v.reasons));
+  }
   (data.tests_written ?? []).forEach((w, i) => { const v = verdicts.written[i]; put(route(v, 'Tests written'), item(w.path, `for ${w.finding}`, (w.proofs ?? []).map(proofLine), v.reasons)); });
   (data.unconfirmed ?? []).forEach((u, i) => put('Unconfirmed', `- **U${i + 1}** ${esc(u.question)}: ${esc(u.behavior)}`));
   return '# QA sweep report\n\n' + [...sections].filter(([, l]) => l.length).map(([n, l]) => `## ${n}\n\n${l.join('\n')}\n`).join('\n');
@@ -184,16 +236,17 @@ export function renderReport(data, verdicts, inventory) {
 function main(argv) {
   const fail = (code, msg) => { process.stderr.write(`qa-findings: ${msg}\n`); process.exit(code); };
   let v;
-  try { v = parseArgs({ args: argv, options: { run: { type: 'string' }, repo: { type: 'string' }, head: { type: 'string' }, findings: { type: 'string' }, inventory: { type: 'string' }, out: { type: 'string' } } }).values; } catch (e) { fail(2, e.message); }
-  if (!v.run || !v.repo || !v.head || !v.findings) fail(2, 'usage: findings.mjs --run DIR --repo DIR --head REV --findings FILE [--inventory FILE] [--out FILE]');
-  let data, inventory;
+  try { v = parseArgs({ args: argv, options: { run: { type: 'string' }, repo: { type: 'string' }, head: { type: 'string' }, findings: { type: 'string' }, 'tiers-py': { type: 'string' }, out: { type: 'string' } } }).values; } catch (e) { fail(2, e.message); }
+  if (!v.run || !v.repo || !v.head || !v.findings) fail(2, 'usage: findings.mjs --run DIR --repo DIR --head REV --findings FILE [--tiers-py PATH] [--out FILE]');
+  let data;
   try { data = JSON.parse(readFileSync(v.findings, 'utf8')); if (!data || typeof data !== 'object') throw new Error('not an object'); } catch (e) { fail(2, `cannot read findings: ${e.message}`); }
-  try { inventory = v.inventory ? readFileSync(v.inventory, 'utf8') : undefined; } catch (e) { fail(2, `cannot read inventory: ${e.message}`); }
   try {
-    const verdicts = verifyAll(data, loadContext({ run: v.run, repo: v.repo, head: v.head, requirements: data.requirements }));
+    const ctx = loadContext({ run: v.run, repo: v.repo, head: v.head, requirements: data.requirements, tiersPy: v['tiers-py'] });
+    if (v['tiers-py'] && ctx.inventoryError) process.stderr.write(`qa-findings: ${ctx.inventoryError}\n`);
+    const verdicts = verifyAll(data, ctx);
     const report = v.out ? resolve(v.out) : join(v.run, 'report.md');
     if (!zt) throw new Error(`the zero-trust-review skill is not at ${ZT} (set ZT_DIR)`);
-    zt.writeSafe(v.run, report, renderReport(data, verdicts, inventory));
+    zt.writeSafe(v.run, report, renderReport(data, verdicts, ctx.inventory));
     const all = [...verdicts.requirements, ...verdicts.findings, ...verdicts.written];
     process.stdout.write(JSON.stringify({ report, verified: all.filter(x => x.ok).length, unverified: all.filter(x => !x.ok).length, unconfirmed: (data.unconfirmed ?? []).length }) + '\n');
   } catch (e) { fail(1, e.message); }
