@@ -92,7 +92,7 @@ The agent reads `SKILL.md`, then only the mode files the run needs.
   - no test maps, and mutants survive the module's whole tier: a **test gap**;
   - an equivalent mutant (one that cannot change behavior) also survives, so the agent judges each survivor before filing it, as `zero-trust-review` already does.
 - **Writing tests.** For each test gap and weak test, the agent adds a new test, either as a new case in an existing test file or as a new file in the project's existing test folder for the case's tier, following the project's naming rule and patterns. It only adds lines: it never changes or removes a line of an existing test (`qa-guard` enforces this). A new test must pass on HEAD and must kill the mutant that proved the gap; `findings.mjs` checks both from the run ledger. A new test that fails on HEAD is not a gap test: it is a candidate defect and goes through the defect check.
-- **Defects.** A test that encodes a requirement and fails on HEAD with an assertion failure (not an import, collection or setup error) proves a defect. It is kept in the suite with the framework's strict expected-failure marker (`pytest.mark.xfail(strict=True)`, `test.fails` in Vitest, `test.fail` in Playwright) and a reason naming the defect, so CI stays green and the test flips to failing the day the defect is fixed. Frameworks with no strict expected-failure marker: the test is left in the run folder, not the suite, and the report gives its path.
+- **Defects.** A test that encodes a requirement and fails on HEAD with an assertion failure (not an import, collection or setup error) proves a defect. It is kept in the suite with the framework's strict expected-failure marker (`pytest.mark.xfail(strict=True)`, `test.fails` in Vitest, `test.fail` in Playwright) and a `skip-reason: defect <finding id>: <title>` comment on the line before it, which the removed-test check requires for any expected-failure marker. CI stays green and the test flips to failing the day the defect is fixed. Frameworks with no strict expected-failure marker: the test is left in the run folder, not the suite, and the report gives its path.
 - **Tier choice.** The lowest tier that can observe the behavior: unit for logic, integration when the behavior depends on a real dependency, e2e when it is only visible through the public interface. Integration and e2e tests follow the container-first rule that `pr-test-tiers` already checks.
 
 ### Mode A: running app (`running-app.md`)
@@ -130,11 +130,12 @@ A change request that removes protection from an existing test is denied at `gh 
 
 - a deleted test file (`is_test`), where renames are detected and not counted;
 - a test function whose name is removed and not re-added anywhere in the diff: Python (`def test_…`, `async def test_…`) and TS/JS (`it(…)`, `test(…)`), the languages `test-name-guard` covers;
-- an added skip: `.skip(`, `xit(`, `xdescribe(`, `xtest(`, `@pytest.mark.skip`, `pytest.skip(`, `@unittest.skip`, `t.Skip(`, `@Disabled`, `@Ignore`.
+- an added skip: `.skip(`, `xit(`, `xdescribe(`, `xtest(`, `@pytest.mark.skip`, `pytest.skip(`, `@unittest.skip`, `t.Skip(`, `@Disabled`, `@Ignore`;
+- an added expected-failure marker: `@pytest.mark.xfail`, `pytest.xfail(`, `@unittest.expectedFailure`, `test.fails(` / `it.fails(` (Vitest), `test.failing(` (Jest), `test.fail(` (Playwright). A failing test under one of these no longer turns CI red, so it silences a test as surely as a skip.
 
 A reason clears it:
 
-- for a skip, a `skip-reason: <reason>` comment on the same or the previous line, in any comment syntax, like the existing `no-container: <reason>` marker;
+- for a skip or an expected-failure marker, a `skip-reason: <reason>` comment on the same or the previous line, in any comment syntax, like the existing `no-container: <reason>` marker;
 - for a deleted file or function, a commit trailer on the branch: `Test-Removed: <path>: <reason>`.
 
 The escape hatch `PR_TEST_TIERS=off` still works. `self_test()` and the hook's README gain cases for all three, including a rename that must pass.
