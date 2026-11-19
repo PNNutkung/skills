@@ -351,14 +351,16 @@ def removed_tests(root, base, cfg, extra=None):
         for lines in added.values():
             added_names |= _test_names(l for _, l in lines)
         found += [(p, "deleted test file") for p in sorted(deleted) if is_test(p, cfg)]
-        for path, lines in parse_removed(diff).items():
+        removed = parse_removed(diff)
+        for path, lines in removed.items():
             if path not in deleted and is_test(path, cfg):
                 found += [(path, f"removed test {n}") for n in sorted(_test_names(lines))]
         for path, lines in added.items():
             if not is_test(path, cfg):
                 continue
+            was = {l.strip() for l in removed.get(path, [])}  # a touched, not new, skip
             for num, text in lines:
-                if any(r.search(text) for r in SKIP_PATTERNS) and not _has_skip_reason(root, path, num):
+                if text.strip() not in was and any(r.search(text) for r in SKIP_PATTERNS) and not _has_skip_reason(root, path, num):
                     found.append((path, f"added skip or expected-failure marker: {text.strip()[:80]}"))
     kept = {}
     for path, what in found:
@@ -648,6 +650,8 @@ def removed_self_test(cfg):
         put("src/app.py")
         put("tests/unit/test_keep.py", "def test_one(): ...\ndef test_two(): ...\n")
         put("tests/unit/my test \u00fc.py", "def test_x(): ...\n")
+        put("tests/unit/test_skipped.py", "import pytest\n@pytest.mark.skip(reason='flaky')\ndef test_s(): ...\n")
+        put("tests/unit/total.test.ts", "test('should total the cart when items exist', () => {})\n")
         land("base")
 
         # deleted test file -> deny; trailer clears it
@@ -688,6 +692,24 @@ def removed_self_test(cfg):
         assert not denied(pr())
         put("tests/unit/cart.test.ts", "test.fails('should refuse an empty cart when checking out', () => {})\n"); land("fails")
         assert denied(pr())
+
+        # a skip that already existed and is only re-indented is not new
+        branch("reindent")
+        put("tests/unit/test_skipped.py", "import pytest\n    @pytest.mark.skip(reason='flaky')\ndef test_s(): ...\n"); land("reindent")
+        assert not denied(pr())
+
+        # TS/JS: a removed test title -> deny; moved to another file -> allowed
+        branch("ts")
+        put("tests/unit/total.test.ts", "// gone\n"); land("rm ts")
+        assert "should total the cart when items exist" in pr()["permissionDecisionReason"]
+        put("tests/unit/moved.test.ts", "test('should total the cart when items exist', () => {})\n"); land("moved ts")
+        assert not denied(pr())
+
+        # TS/JS: an added it.skip( and an added xit( -> deny
+        for name, line in (("itskip", "it.skip('should x when y', () => {})"), ("xit", "xit('should x when y', () => {})")):
+            branch(name)
+            put("tests/unit/new.test.ts", line + "\n"); land(name)
+            assert "added skip" in pr()["permissionDecisionReason"], name
 
         # git commit only warns
         branch("warn")
