@@ -4,12 +4,12 @@ Read [`SKILL.md`](./SKILL.md) first. This mode starts the app, explores it only 
 
 ## 1. Start the app
 
-Start it the way the project documents: the README, a Makefile, docker compose, or a script in the package manifest. If nothing documents it, ask the user for the command; never guess one. Note the base URL it serves. Stop what you started before `run.mjs end`.
+Start it the way the project documents: the README, a Makefile, docker compose, or a script in the package manifest. If nothing documents it, ask the user for the command; never guess one. Note the base URL it serves. Stop what you started before `run.mjs end`; when the user asks to stop, run `end` first and then stop the app (`SKILL.md`, section 1).
 
 ## 2. Every e2e command goes through target.mjs
 
 ```bash
-ZT_RUN_DIR="$RUN" node "$SK/target.mjs" run --url http://localhost:3000 [--services web,api] [--env-name BASE_URL] -- \
+ZT_RUN_DIR=<run> node "$SK/target.mjs" run --url http://localhost:3000 [--services web,api] [--env-name BASE_URL] -- \
   node "$PTDD_DIR/direct-run.mjs" --timeout 900 -- npx playwright test <spec>
 ```
 
@@ -24,7 +24,7 @@ Explore only this way. Never use a browser-automation tool, and never send reque
 
 ## 3. Exploratory specs
 
-A spec you write only to explore, not as a regression test, lives in `$RUN/explore/`. If the runner cannot load a spec from outside the repo (it cannot find its own packages there), put it in the project's e2e folder under a name that marks it, such as `qa-explore-checkout.spec.ts`, and delete it before `run.mjs end`. Only regression tests stay in the repo.
+A spec you write only to explore, not as a regression test, lives in `<run>/explore/`. If the runner cannot load a spec from outside the repo (it cannot find its own packages there), put it in the project's e2e folder under a name that marks it, such as `qa-explore-checkout.spec.ts`, and delete it before `run.mjs end` (on a user stop, right after it). Only regression tests stay in the repo.
 
 ## 4. E2E test gaps: one coverage run
 

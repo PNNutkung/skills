@@ -7,10 +7,11 @@
       "Runs node run.mjs start --repo . before any other step and node run.mjs end as the last step",
       "Reads SKILL.md, then requirements.md and code.md, and does not read running-app.md",
       "Records the requirement with source kind spec, ref docs/refunds.md:<line> and a word-for-word quote of the committed text",
-      "Runs mutate.mjs with --files on the implementing lines, --tests on the module's unit test files, --runner pointing at paired-agent-tdd's direct-run.mjs, and ZT_RUN_DIR set to the run folder",
+      "With no mapped test, runs mutate.mjs with --files on the implementing lines, --tests on the whole unit tier from pr-test-tiers.py --list-tier unit, a fresh mktemp -d --scratch outside the run folder, --runner pointing at paired-agent-tdd's direct-run.mjs, and ZT_RUN_DIR set to the absolute run folder",
+      "Writes into the run folder only with the Write tool or a redirect to the literal absolute run path, never to $RUN or another variable",
       "Judges each surviving mutant as equivalent, unstated or real before filing it, and files the test gap only for a real survivor, with an executed proof whose ref and quote are the mutant's run and ZT-MUTANT ... exit=0 stamp",
       "Adds the regression test as a new case or a new file in the existing unit test folder, never changes or removes an existing test line or product code, and never runs git commit or git push",
-      "Proves the new test with a passing direct-run.mjs ledger entry (exit 0) and a killed entry for the same mutant id, from a mutate.mjs run on a snapshot that holds the new test",
+      "Proves the new test with a passing direct-run.mjs ledger entry (exit 0) and a killed entry for the survivor's mutant id, from a mutate.mjs run with --head set to the sha that node run.mjs snap --files <new test> printed and --tests on that test file",
       "Runs findings.mjs and gives the user the report.md path and the counts it printed, stating no finding that the report does not list as verified"
     ]
   },

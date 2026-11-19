@@ -10,6 +10,7 @@ const DOCS = ['SKILL.md', 'requirements.md', 'code.md', 'running-app.md'];
 const MODE_FILE_MAX = 300; // the spec's split rule: a mode past this moves into its own skill
 const SKILL_MAX = 100;
 const SCRIPT_NAME = /\w[\w-]*\.(?:mjs|py)\b/g;
+const VAR_REDIRECT = />>?\s*["']?\$/;
 const read = f => readFileSync(join(HERE, f), 'utf8');
 const lineCount = f => read(f).split('\n').length;
 
@@ -33,6 +34,12 @@ test('every script the docs name exists', () => {
   assert.ok(named.has('run.mjs') && named.has('findings.mjs'), 'the docs name the scripts they rely on');
   const missing = [...named].filter(n => !homes.some(d => existsSync(join(d, n))) && !hookFiles.has(n));
   assert.deepEqual(missing, []);
+});
+
+// qa-guard reads a redirect target as plain text, so `> "$RUN/x"` lands inside the repo and is denied
+test('no redirect in the docs targets a shell variable', () => {
+  const bad = DOCS.flatMap(f => read(f).split('\n').filter(l => VAR_REDIRECT.test(l)).map(l => `${f}: ${l.trim()}`));
+  assert.deepEqual(bad, []);
 });
 
 test('evals.json parses and has at least three cases', () => {

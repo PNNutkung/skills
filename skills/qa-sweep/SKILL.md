@@ -14,18 +14,18 @@ Finds **defects**, **weak tests** and **test gaps** in a whole repo or one featu
 ## Paths
 
 ```bash
-SK=${SK:-$HOME/.claude/skills/qa-sweep}                      # this skill's folder, absolute (the skill loader prints it)
-ZT_DIR=${ZT_DIR:-$SK/../zero-trust-review}                   # mutate.mjs, sandbox-run.mjs
-PTDD_DIR=${PTDD_DIR:-$SK/../paired-agent-tdd}                # direct-run.mjs
-TIERS_PY=${TIERS_PY:-$HOME/.claude/hooks/pr-test-tiers.py}   # plugin install: $SK/../../hooks/pr-test-tiers/pr-test-tiers.py
+export SK=${SK:-$HOME/.claude/skills/qa-sweep}                      # this skill's folder, absolute (the skill loader prints it)
+export ZT_DIR=${ZT_DIR:-$SK/../zero-trust-review}                   # mutate.mjs, sandbox-run.mjs
+export PTDD_DIR=${PTDD_DIR:-$SK/../paired-agent-tdd}                # direct-run.mjs
+export TIERS_PY=${TIERS_PY:-$HOME/.claude/hooks/pr-test-tiers.py}   # plugin install: $SK/../../hooks/pr-test-tiers/pr-test-tiers.py
 ```
 
-Shell variables do not survive between Bash calls: set them again in each call, or write the paths out. Run every command from the repo root.
+Shell variables do not survive between Bash calls: put these lines at the top of each call. Run every command from the repo root. In this skill, `<run>` is the absolute run folder that `run.mjs start` printed: write it out in full in every command. Never put `$RUN` or any other variable in a redirect target (`> <run>/x`): `qa-guard` reads that target as plain text and denies it.
 
 ## Progress checklist
 
 ```
-- [ ] 1 run.mjs start; RUN noted
+- [ ] 1 run.mjs start; <run> noted
 - [ ] 2 scope picked: repo inventory, or a feature deep-dive (modes C, B, A)
 - [ ] 3 deep-dive only: findings.mjs wrote the report; its path and counts given to the user
 - [ ] 4 run.mjs end
@@ -34,11 +34,13 @@ Shell variables do not survive between Bash calls: set them again in each call, 
 ## 1. Open the run first, close it last
 
 ```bash
-node "$SK/run.mjs" start --repo .   # prints {"run": "<dir>", "marker": "<file>"}; RUN is that dir, in the OS temp dir
+node "$SK/run.mjs" start --repo .   # prints {"run": "<dir>", "marker": "<file>"}; <run> is that dir, in the OS temp dir
 node "$SK/run.mjs" end              # the last step, always
 ```
 
-The session id comes from `CLAUDE_CODE_SESSION_ID`. Never invent a `--session`: the hook matches the harness's own id. If `start` exits 2 with `a run is active: <dir>`, this session already has a run: continue in it, or end it and start again. When the user asks to stop, run `end` at once, then stop. Everything you write outside the repo goes in `$RUN`.
+The session id comes from `CLAUDE_CODE_SESSION_ID`. If `start` exits 2 with `no session id`, tell the user and ask how to go on; never invent a `--session`, because the hook matches only the harness's own id. If it exits 2 with `a run is active: <dir>`, continue in that run, or end it and start again. Everything you write outside the repo goes in `<run>`.
+
+**When the user asks to stop:** run `end` at once. Then stop any app you started and delete any `qa-explore-*` spec you wrote, or tell the user what is still there.
 
 The sweep judges the code as committed at HEAD. If `git status` shows uncommitted changes outside test files, tell the user before you go on: mutants and quotes see HEAD, direct test runs see the working tree.
 
@@ -46,7 +48,7 @@ The sweep judges the code as committed at HEAD. If `git status` shows uncommitte
 
 | The user asks for | Scope | Do |
 |---|---|---|
-| which modules lack a tier, a repo-wide test overview | Repo inventory | `python3 "$TIERS_PY" --inventory > "$RUN/inventory.json"` (`--depth 2` in a monorepo). Report each module missing a tier, and the `unmapped` and `untiered` lists, from that JSON. Nothing else. |
+| which modules lack a tier, a repo-wide test overview | Repo inventory | `python3 "$TIERS_PY" --inventory > <run>/inventory.json` (`--depth 2` in a monorepo). Report each module missing a tier, and the `unmapped` and `untiered` lists, from that JSON. Nothing else. |
 | a feature, a path or a ticket | Feature deep-dive | Modes C, B and A, in that order, each only when needed. |
 
 If you cannot tell which, ask.
@@ -61,31 +63,31 @@ Read only the files the run needs.
 
 ## 3. No proof, no finding
 
-Every requirement, finding and written test goes into `$RUN/findings.json` with its proof. Each mode file gives its part of the shape. `findings.mjs` re-checks every proof in plain code, and it decides: what fails lands under Unverified, never in your reply as a fact.
+Every requirement, finding and written test goes into `<run>/findings.json` with its proof. Each mode file gives its part of the shape. `findings.mjs` re-checks every proof in plain code, and it decides: what fails lands under Unverified, never in your reply as a fact.
 
 ```bash
-node "$SK/findings.mjs" --run "$RUN" --repo . --head HEAD --findings "$RUN/findings.json" [--inventory "$RUN/inventory.json"]
+node "$SK/findings.mjs" --run <run> --repo . --head HEAD --findings <run>/findings.json [--inventory <run>/inventory.json]
 ```
 
-It writes `$RUN/report.md` and prints the counts. Give the user that path and the counts, and report only what the file says.
+It writes `<run>/report.md` and prints the counts. Give the user that path and the counts, and report only what the file says.
 
 ## 4. Never assume, ask
 
-A behavior with no written source, or unclear wording in a spec or a ticket, becomes a question. Ask all of them as one numbered batch (the format is in `requirements.md`), then wait. Save each answer word for word to `$RUN/answers.md` as an `A<n>: <answer>` block. No answer means no test: the question is listed under Unconfirmed.
+A behavior with no written source, or unclear wording in a spec or a ticket, becomes a question. Ask all of them as one numbered batch (the format is in `requirements.md`), then wait. Save each answer word for word to `<run>/answers.md` as an `A<n>: <answer>` block. No answer means no test: the question is listed under Unconfirmed.
 
 ## 5. Add tests only
 
-Never edit product code, never change or remove a line of an existing test, and never commit or push: the user reviews and commits. You may add a test case to an existing test file, add a new test file, and write anything in `$RUN`. While the run is open, `qa-guard` denies everything else, and its message prints the end command. Do not work around a deny: tell the user what was denied.
+Never edit product code, never change or remove a line of an existing test, and never commit or push: the user reviews and commits. You may add a test case to an existing test file, add a new test file, and write anything in `<run>`. While the run is open, `qa-guard` denies everything else, and its message prints the end command. Do not work around a deny: tell the user what was denied.
 
 ## 6. Run tests through the ledger
 
-Every test, mutation and coverage command runs through `direct-run.mjs` with `ZT_RUN_DIR="$RUN"` set. Without it no ledger entry is written, and the proof cannot be checked.
+Every test, mutation and coverage command runs through `direct-run.mjs` with `ZT_RUN_DIR=<run>` set. Without it no ledger entry is written, and the proof cannot be checked.
 
 ```bash
-ZT_RUN_DIR="$RUN" node "$PTDD_DIR/direct-run.mjs" [--timeout SEC] -- <test command>   # default timeout 120 s
+ZT_RUN_DIR=<run> node "$PTDD_DIR/direct-run.mjs" [--timeout SEC] -- <test command>   # default timeout 120 s
 ```
 
-Its last stderr line is `ZT-RUN <id> exit=<n>`: that `<id>` is the proof's `ref`. It runs with your rights and your network. The sandbox is opt-in: only when the user asks, use `$ZT_DIR/sandbox-run.mjs` in its place, with the same flags.
+Its last stderr line is `ZT-RUN <id> exit=<n>`: that `<id>` is the proof's `ref`. No `ZT-RUN` line means no ledger entry: stop and find out why before you go on. It runs with your rights and your network. The sandbox is opt-in, only when the user asks: for mutation, leave out `--runner` (the sandbox is `mutate.mjs`'s default); for a direct run, use `$ZT_DIR/sandbox-run.mjs`, and read its header first for the mounts and grants it needs.
 
 ## 7. Tiering
 
