@@ -18,7 +18,7 @@ const zt = existsSync(join(ZT, 'runctx.mjs')) ? await import(pathToFileURL(join(
 
 const TOLERANCE = 2; // lines of slack around a quoted ref, as in zero-trust-review/proofcheck.mjs
 const REAL_BACKENDS = new Set(['direct', 'seatbelt', 'bwrap', 'docker']); // passthrough is not a real run
-const MUTANT = /^ZT-MUTANT \S+ \S+:\d+ \S+ exit=(\d+)$/;
+const MUTANT = /^ZT-MUTANT (\S+) \S+:\d+ \S+ exit=(\d+)$/;
 const REF_RE = /^(.+):(\d+)$/;
 const HEAD_RE = /^[A-Za-z0-9][\w./@^~{}-]*$/;
 const NOT_TRUSTED = 'ledger not trusted';
@@ -104,8 +104,9 @@ export function checkSource({ source }, ctx) {
 // a proof of the given mode that checks out, and satisfies `want`
 const proven = (proofs, ctx, mode, want = () => true) => (proofs ?? []).some(p => p?.mode === mode && want(p) && checkProof(p, ctx).ok);
 const mutant = p => MUTANT.exec(norm(p.quote));
-const survivor = p => mutant(p)?.[1] === '0';
-const killed = p => { const m = mutant(p); return !!m && m[1] !== '0'; };
+const survivor = p => mutant(p)?.[2] === '0';
+const killed = p => { const m = mutant(p); return !!m && m[2] !== '0'; };
+const mutantId = p => mutant(p)?.[1];
 const failing = p => typeof p.exit === 'number' && p.exit !== 0;
 const passing = p => p.exit === 0;
 
@@ -132,16 +133,24 @@ export function checkFinding(finding, ctx) {
   return { ok: reasons.length === 0, reasons };
 }
 
+// The kill must be of a mutant the written test's own finding proved survived, in a ledger run whose command runs that test file.
 export function checkWritten(entry, ctx) {
-  const { proofs } = entry ?? {}, reasons = [];
+  const { proofs, finding: fid, path } = entry ?? {}, reasons = [];
   if (!proven(proofs, ctx, 'executed', passing)) reasons.push('no passing run proof');
-  if (!proven(proofs, ctx, 'executed', killed)) reasons.push('no killed mutant proof');
+  const valid = (list, want) => (list ?? []).filter(p => p?.mode === 'executed' && want(p) && checkProof(p, ctx).ok);
+  const kills = valid(proofs, killed);
+  if (!kills.length) return { ok: false, reasons: [...reasons, 'no killed mutant proof'] };
+  const survivors = new Set(valid(ctx.findings?.find(f => f?.id === fid)?.proofs, survivor).map(mutantId));
+  const own = kills.filter(p => survivors.has(mutantId(p)));
+  const runs = p => typeof path === 'string' && path !== '' && String(ctx.ledger.get(p.ref)[0].cmd ?? '').includes(path);
+  if (!own.length) reasons.push("killed mutant is not the finding's survivor");
+  else if (!own.some(runs)) reasons.push(`kill run does not run ${path}`);
   return { ok: reasons.length === 0, reasons };
 }
 
 /** Verdicts aligned by index with the input's requirements, findings and tests_written. */
 export function verifyAll(data, ctx) {
-  const c = { ...ctx, requirements: data.requirements ?? ctx.requirements };
+  const c = { ...ctx, requirements: data.requirements ?? ctx.requirements, findings: data.findings ?? ctx.findings };
   const one = f => { const v = f(); return v.reasons ? v : { ok: v.ok, reasons: v.reason ? [v.reason] : [] }; };
   return {
     requirements: (data.requirements ?? []).map(r => one(() => checkSource(r, c))),

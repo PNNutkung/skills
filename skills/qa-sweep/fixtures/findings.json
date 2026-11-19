@@ -13,7 +13,7 @@
   ],
   "tests_written": [
     { "path": "tests/unit/test_a.py", "finding": "F1",
-      "proofs": [{ "mode": "executed", "ref": "r6", "exit": 0, "quote": "1 passed" }, { "mode": "executed", "ref": "r5", "quote": "ZT-MUTANT m2 src/a.py:2 flip exit=1" }] }
+      "proofs": [{ "mode": "executed", "ref": "r6", "exit": 0, "quote": "1 passed" }, { "mode": "executed", "ref": "r5", "quote": "ZT-MUTANT m1 src/a.py:3 flip exit=1" }] }
   ],
   "unconfirmed": [{ "question": "Is a 30 day refund allowed?", "behavior": "refund(30) returns True" }]
 }

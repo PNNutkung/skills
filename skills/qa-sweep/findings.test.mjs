@@ -138,7 +138,8 @@ test('a finding with an unverifiable source is unverified', () => {
 });
 
 test('a written test needs a passing run and a killed mutant', () => {
-  const { ctx } = fixture();
+  const { ctx: base } = fixture();
+  const ctx = { ...base, findings: data.findings };
   const [entry] = data.tests_written, [pass, kill] = entry.proofs;
   assert.equal(checkWritten(entry, ctx).ok, true);
   const missingKill = checkWritten({ ...entry, proofs: [pass] }, ctx);
@@ -149,6 +150,18 @@ test('a written test needs a passing run and a killed mutant', () => {
   assert.match(missingPass.reasons.join(), /passing run/);
   const survivor = checkWritten({ ...entry, proofs: [pass, gapF.proofs[0]] }, ctx);
   assert.match(survivor.reasons.join(), /killed mutant/);
+});
+
+test("a written test's kill counts only for its finding's survivor, in a run of that test", () => {
+  const { ctx: base } = fixture();
+  const ctx = { ...base, findings: data.findings };
+  const [entry] = data.tests_written, [pass] = entry.proofs;
+  assert.deepEqual(checkWritten(entry, ctx), { ok: true, reasons: [] });
+  const otherMutant = checkWritten({ ...entry, proofs: [pass, { mode: 'executed', ref: 'r7', quote: 'ZT-MUTANT m2 src/a.py:2 flip exit=1' }] }, ctx);
+  assert.deepEqual(otherMutant.reasons, ["killed mutant is not the finding's survivor"]);
+  assert.deepEqual(checkWritten({ ...entry, finding: 'F9' }, ctx).reasons, ["killed mutant is not the finding's survivor"]);
+  const otherTest = checkWritten({ ...entry, path: 'tests/unit/test_b.py' }, ctx);
+  assert.deepEqual(otherTest.reasons, ['kill run does not run tests/unit/test_b.py']);
 });
 
 test('every item lands in exactly one report section, and unverified is listed', () => {
