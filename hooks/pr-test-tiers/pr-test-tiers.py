@@ -28,6 +28,11 @@ Per-repo override: <repo>/.claude/test-tiers.json
   `mockPatterns` adds to the built-in mocking-library patterns.
 Branch check (for scripts and agents; exit 1 when the gate would deny):
                python3 pr-test-tiers.py --check [--base BRANCH]
+Inventory:     python3 pr-test-tiers.py --inventory [--depth N]
+               JSON of per-module unit/integration/e2e counts, plus `unmapped` (tiered tests no
+               module owns) and `untiered` (test files with no tier); exit 2 outside a git repo
+Test file?     python3 pr-test-tiers.py --is-test PATH
+               exit 0 when PATH (repo-relative or absolute) is a test file, 1 when not, 2 outside a repo
 Self-test:     python3 pr-test-tiers.py --self-test
 """
 
@@ -378,6 +383,109 @@ def check_cli(argv):
     return 1 if verdict and verdict[0] == "deny" else 0
 
 
+def _owner_module(test_dirs, modules):
+    """The module a tiered test belongs to: longest path prefix first, else a last-segment match."""
+    rest = [d for d in test_dirs if not TEST_DIR.match(d)
+            and not any(re.fullmatch(TIER_DIR[t], d.lower()) for t in TIERS)]
+    for m in sorted(modules, key=lambda m: -m.count("/")):
+        parts = m.split("/")
+        if rest[: len(parts)] == parts:
+            return m
+    for m in sorted(modules):
+        if rest[:1] == [m.rsplit("/", 1)[-1]]:
+            return m
+    return None
+
+
+def inventory(root, cfg, depth=1):
+    """Tests per tier for each module (first `depth` directories of tracked source files)."""
+    tracked = [n for n in _git(["ls-files", "-z"], root).split("\0") if n]
+    modules = {
+        "/".join(n.split("/")[:-1][:depth]): {t: 0 for t in TIERS}
+        for n in tracked if "/" in n and is_source(n, cfg)
+    }
+    unmapped, untiered = [], []
+    for n in sorted(tracked):
+        if not is_test(n, cfg):
+            continue
+        tier = tier_of(n, cfg)
+        if tier is None:
+            untiered.append(n)
+            continue
+        owner = _owner_module(n.split("/")[:-1], modules)
+        if owner is None:
+            unmapped.append(n)
+        else:
+            modules[owner][tier] += 1
+    return {"modules": dict(sorted(modules.items())), "unmapped": unmapped, "untiered": untiered}
+
+
+def inventory_cli(argv):
+    root = _git(["rev-parse", "--show-toplevel"], os.getcwd()).strip()
+    if not root:
+        print("not inside a git repository", file=sys.stderr)
+        return 2
+    try:
+        depth = max(1, int(argv[argv.index("--depth") + 1])) if "--depth" in argv else 1
+    except (ValueError, IndexError):
+        print("--depth needs a number", file=sys.stderr)
+        return 2
+    print(json.dumps(inventory(root, load_cfg(root), depth), indent=2))
+    return 0
+
+
+def is_test_cli(argv):
+    """Exit 0 when PATH is a test file under the repo's config, 1 when not, 2 outside a repo."""
+    i = argv.index("--is-test") + 1
+    if i >= len(argv):
+        print("--is-test needs a PATH", file=sys.stderr)
+        return 2
+    path = argv[i]
+    probe = os.path.dirname(os.path.abspath(path))
+    while not os.path.isdir(probe) and probe != os.path.dirname(probe):
+        probe = os.path.dirname(probe)
+    root = _git(["rev-parse", "--show-toplevel"], probe if os.path.isabs(path) else os.getcwd()).strip()
+    if not root:
+        print("not inside a git repository", file=sys.stderr)
+        return 2
+    rel = os.path.relpath(os.path.realpath(os.path.join(os.getcwd(), path)), os.path.realpath(root)).replace(os.sep, "/")
+    return 0 if not rel.startswith("..") and is_test(rel, load_cfg(root)) else 1
+
+
+def inventory_self_test(cfg):
+    """Own repo: the main fixture's earlier cases need `main` free of tiered tests."""
+    with tempfile.TemporaryDirectory() as tmp_inv:
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=tmp_inv, check=True, capture_output=True)
+
+        def put(rel):
+            os.makedirs(os.path.dirname(os.path.join(tmp_inv, rel)), exist_ok=True)
+            with open(os.path.join(tmp_inv, rel), "w") as fh:
+                fh.write("x\n")
+
+        def is_test_cli(path, cwd=tmp_inv):
+            return subprocess.run([sys.executable, os.path.abspath(__file__), "--is-test", path],
+                                  cwd=cwd, capture_output=True, check=False).returncode
+
+        git("init", "-q", "-b", "main")
+        put("pkg/a.py"); put("pkg/tests/unit/test_a.py")  # sibling layout
+        put("app/charts/b.py"); put("tests/unit/charts/test_b.py"); put("tests/integration/charts/test_b_db.py")  # mirror layout
+        put("tests/unit/test_misc.py")  # no module matches
+        put("tests/test_plain.py")  # a test with no tier
+        git("add", "-A"); git("commit", "-qm", "inv")
+        inv1 = inventory(tmp_inv, cfg, depth=1)
+        assert inv1["modules"]["pkg"] == {"unit": 1, "integration": 0, "e2e": 0}, inv1
+        inv2 = inventory(tmp_inv, cfg, depth=2)
+        assert inv2["modules"]["app/charts"] == {"unit": 1, "integration": 1, "e2e": 0}, inv2
+        assert inv2["modules"]["pkg"] == {"unit": 1, "integration": 0, "e2e": 0}, inv2
+        assert "tests/unit/test_misc.py" in inv2["unmapped"], inv2
+        assert inv2["untiered"] == ["tests/test_plain.py"], inv2
+        assert is_test_cli("pkg/tests/unit/test_a.py") == 0
+        assert is_test_cli(os.path.join(os.path.realpath(tmp_inv), "tests/test_plain.py"), cwd="/") == 0
+        assert is_test_cli("pkg/a.py") == 1
+        assert is_test_cli("/etc/hosts", cwd="/") == 2, "outside a git repo"
+
+
 def self_test():
     cfg = load_cfg("/nonexistent")
     tiers = {
@@ -515,6 +623,7 @@ def self_test():
         assert run("Write", file_path="README.md") is None
         assert run("Write", file_path="src/helper.py") is None
         assert run("Write", file_path="tests/unit/test_a_dir/test_x.py") is not None, "new directory"
+    inventory_self_test(cfg)
     print("pr-test-tiers self-test ok")
 
 
@@ -523,5 +632,9 @@ if __name__ == "__main__":
         self_test()
     elif "--check" in sys.argv:
         sys.exit(check_cli(sys.argv))
+    elif "--inventory" in sys.argv:
+        sys.exit(inventory_cli(sys.argv))
+    elif "--is-test" in sys.argv:
+        sys.exit(is_test_cli(sys.argv))
     else:
         main()
