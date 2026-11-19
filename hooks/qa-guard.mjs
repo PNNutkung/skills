@@ -14,7 +14,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN_MJS = join(HERE, '..', 'skills', 'qa-sweep', 'run.mjs');
 const TIERS_PY = join(HERE, 'pr-test-tiers', 'pr-test-tiers.py');
 const SPAWN_TIMEOUT_MS = 3000;
-const END_COMMAND_RE = /qa-sweep\/run\.mjs\s+end\b/;
+const END_COMMAND_RE = /qa-sweep\/run\.mjs["']?\s+end\b/;
 const SEGMENT_SPLIT_RE = /&&|\|\||[;|&\n]/;
 const WRAPPERS = new Set(['env', 'command', 'sudo', 'time', 'nohup', 'exec']);
 const FORBIDDEN_GIT = new Set(['commit', 'push']);
@@ -29,7 +29,6 @@ function isSubsequence(oldLines, newLines) {
   for (const line of newLines) if (i < oldLines.length && line === oldLines[i]) i++;
   return i === oldLines.length;
 }
-export const isAdditiveEdit = (oldString, newString) => isSubsequence(linesOf(oldString), linesOf(newString));
 export const isAdditiveWrite = (oldText, newText) => isSubsequence(linesOf(oldText), linesOf(newText));
 
 // ---------- paths ----------
@@ -83,13 +82,20 @@ function gitSubcommand(tokens) {
   }
   return null;
 }
-const nonFlags = (tokens) => tokens.filter((t) => !t.startsWith('-'));
+const nonFlags = (tokens) => tokens.filter((t) => t && !t.startsWith('-'));
 
-/** File targets this segment writes: output redirects, `tee FILE`, `sed -i ... FILE`. */
+/** Files this segment writes, each { path, append }: output redirects, `tee [-a] FILE...`, `sed -i ... FILE...`. */
 function writeTargets(seg, tokens) {
-  const targets = [...seg.matchAll(/(?:^|[\s\d])>>?\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g)].map((m) => unquote(m[1]));
-  if (tokens[0] === 'tee') targets.push(...nonFlags(tokens.slice(1)));
-  if (tokens[0] === 'sed' && tokens.some((t) => /^-[A-Za-z]*i|^--in-place/.test(t))) targets.push(...nonFlags(tokens.slice(1)).slice(-1));
+  const targets = [...seg.matchAll(/(?:^|[\s\d])(>>?)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g)].map((m) => ({ path: unquote(m[2]), append: m[1] === '>>' }));
+  if (tokens[0] === 'tee') {
+    const append = tokens.some((t) => t === '-a' || t === '--append');
+    targets.push(...nonFlags(tokens.slice(1)).map((path) => ({ path, append })));
+  }
+  if (tokens[0] === 'sed' && tokens.some((t) => /^-[A-Za-z]*i|^--in-place/.test(t))) {
+    const files = nonFlags(tokens.slice(1));
+    const scriptViaFlag = tokens.some((t) => /^-[A-Za-z]*[ef]$|^--(expression|file)/.test(t));
+    targets.push(...(scriptViaFlag ? files : files.slice(1)).map((path) => ({ path, append: false })));
+  }
   return targets;
 }
 
@@ -101,17 +107,26 @@ export function bashVerdict(command, ctx) {
     const tokens = stripPrefix(tokenize(seg));
     const sub = gitSubcommand(tokens);
     if (FORBIDDEN_GIT.has(sub)) return `git ${sub} is not allowed`;
-    for (const target of writeTargets(seg, tokens)) {
-      if (target.startsWith('/dev/')) continue;
-      const abs = realPathLoose(isAbsolute(target) ? target : join(ctx.cwd, target));
-      if (isInside(abs, ctx.run)) continue;
-      if (ctx.isTest(abs) === false) return `writing to ${target} would change a file that is not a test file`;
+    for (const { path, append } of writeTargets(seg, tokens)) {
+      if (path.startsWith('/dev/')) continue;
+      const abs = realPathLoose(isAbsolute(path) ? path : join(ctx.cwd, path));
+      if (isInside(abs, ctx.run) || !isInside(abs, ctx.repo)) continue; // the run folder and anything outside the repo are not guarded
+      const test = ctx.isTest(abs);
+      if (test === false) return `writing to ${path} would change a file that is not a test file`;
+      if (test && !append && existsSync(abs)) return `writing to ${path} would truncate or rewrite an existing test file (appending is allowed)`;
     }
   }
   return null;
 }
 
 // ---------- Edit / Write ----------
+/** The file text after the Edit, or null when old_string is not in the file (the tool will fail by itself). */
+function applyEdit(text, { old_string: oldString = '', new_string: newString = '', replace_all: all }) {
+  if (!oldString || !text.includes(oldString)) return null;
+  if (all) return text.split(oldString).join(newString);
+  const i = text.indexOf(oldString);
+  return text.slice(0, i) + newString + text.slice(i + oldString.length);
+}
 function fileVerdict(tool, input, ctx) {
   const abs = realPathLoose(input.file_path);
   if (isInside(abs, ctx.run)) return null;
@@ -119,15 +134,15 @@ function fileVerdict(tool, input, ctx) {
   if (test === null) return null;
   if (!test) return `${input.file_path} is not a test file`;
   if (!existsSync(abs)) return null;
-  const additive = tool === 'Edit'
-    ? isAdditiveEdit(input.old_string ?? '', input.new_string ?? '')
-    : isAdditiveWrite(readFileSync(abs, 'utf8'), input.content ?? '');
+  const current = readFileSync(abs, 'utf8');
+  const next = tool === 'Edit' ? applyEdit(current, input) : input.content ?? '';
+  const additive = next === null || isAdditiveWrite(current, next);
   return additive ? null : `this change to ${input.file_path} removes or rewrites existing test lines`;
 }
 
 // ---------- main ----------
-const denyText = (run, why) =>
-  `qa-sweep run ${run} is active in this session: ${why}. During a run only test files (additions only) and the run folder may change, and nothing is committed. To end the run: node ${RUN_MJS} end`;
+const denyText = (run, session, why) =>
+  `qa-sweep run ${run} is active in this session: ${why}. During a run only test files (additions only) and the run folder may change, and nothing is committed. To end the run: node "${RUN_MJS}" end --session ${session}`;
 
 async function decide(input) {
   const { session_id: session, tool_name: tool, tool_input: ti, cwd } = input ?? {};
@@ -141,7 +156,7 @@ async function decide(input) {
     if (!where || repoOf(where) !== repo) return null;
     const ctx = { run, cwd: cwd ?? repo, repo, isTest: (p) => isTestFile(p, repo) };
     const why = tool === 'Bash' ? bashVerdict(String(ti.command ?? ''), ctx) : fileVerdict(tool, ti, ctx);
-    return why ? denyText(active.run, why) : null;
+    return why ? denyText(active.run, session, why) : null;
   } catch (err) {
     try { appendFileSync(join(active.run, 'hook-errors.log'), `${new Date().toISOString()} qa-guard: ${String(err?.message ?? err).split('\n')[0]}\n`); } catch { /* the log is best-effort */ }
     return null;

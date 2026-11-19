@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isAdditiveEdit, isAdditiveWrite } from './qa-guard.mjs';
+import { isAdditiveWrite } from './qa-guard.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, 'qa-guard.mjs');
@@ -48,7 +48,7 @@ test('a matching run denies a product-code edit and names the end command', () =
   assert.equal(out.hookEventName, 'PreToolUse');
   assert.equal(out.permissionDecision, 'deny');
   assert.match(out.permissionDecisionReason, new RegExp(`qa-sweep run ${run.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is active`));
-  assert.match(out.permissionDecisionReason, /run\.mjs end/);
+  assert.match(out.permissionDecisionReason, /run\.mjs" end --session s1/);
 });
 
 test('an additive test edit is allowed; a changed line is denied', () => {
@@ -61,8 +61,6 @@ test('an additive test edit is allowed; a changed line is denied', () => {
 test('a Write that keeps every old line in order is allowed, also with CRLF', () => {
   assert.equal(isAdditiveWrite('a\r\nb\r\n', 'a\nb\nc\n'), true);
   assert.equal(isAdditiveWrite('a\nb\n', 'b\na\n'), false);
-  assert.equal(isAdditiveEdit('x', 'x\ny'), true);
-  assert.equal(isAdditiveEdit('x', 'z'), false);
   const file_path = join(repo, 'tests/unit/test_app.py');
   assert.equal(call('Write', { file_path, content: 'def test_a():\n    pass\n\ndef test_b():\n    pass\n' }), null);
   assert.equal(call('Write', { file_path, content: 'def test_other():\n    pass\n' }).permissionDecision, 'deny');
@@ -83,7 +81,31 @@ test('git commit, git -C x push and a redirect into src are denied; run.mjs end 
     assert.equal(hookBash(c)?.permissionDecision, 'deny', c);
   }
   assert.equal(hookBash(`node ${RUN_MJS} end`), null);
-  assert.match(hookBash('git commit -m x').permissionDecisionReason, /run\.mjs end/);
+  assert.match(hookBash('git commit -m x').permissionDecisionReason, /--session s1/);
+});
+
+test('an Edit is judged on the file after the edit: a partial-line change is denied, an addition and a replace_all addition are allowed', () => {
+  const file_path = join(repo, 'tests/unit/test_eq.py');
+  writeFileSync(file_path, 'def test_a():\n    assert a() == 1\n\ndef test_b():\n    assert a() == 1\n');
+  assert.equal(call('Edit', { file_path, old_string: '1', new_string: '2\n1' }).permissionDecision, 'deny');
+  assert.equal(call('Edit', { file_path, old_string: 'assert a() == 1\n\ndef test_b', new_string: 'assert a() == 1\n\ndef test_new():\n    pass\n\ndef test_b' }), null);
+  assert.equal(call('Edit', { file_path, old_string: 'assert a() == 1', new_string: 'assert a() == 1\n    assert True', replace_all: true }), null);
+  assert.equal(call('Edit', { file_path, old_string: 'assert a() == 1', new_string: 'assert a() == 3', replace_all: true }).permissionDecision, 'deny');
+});
+
+test('a redirect or tee outside the repo is allowed', () => {
+  for (const c of ['pytest -q > /tmp/x.log 2>&1', 'echo x | tee /tmp/out.log', 'make 2> /tmp/err', 'sed -i s/a/b/ /tmp/f.txt']) assert.equal(hookBash(c), null, c);
+});
+
+test('truncating or rewriting an existing test file from Bash is denied; appending and a new test file are allowed', () => {
+  for (const c of ['echo x > tests/unit/test_app.py', 'sed -i s/1/2/ tests/unit/test_app.py', 'echo x | tee tests/unit/test_app.py', 'sed -i s/1/2/ src/app.py tests/unit/test_app.py', 'sed -i s/1/2/ tests/unit/test_app.py src/app.py']) {
+    assert.equal(hookBash(c)?.permissionDecision, 'deny', c);
+  }
+  for (const c of ['echo x >> tests/unit/test_app.py', 'echo x | tee -a tests/unit/test_app.py', 'echo x > tests/unit/test_brand_new.py']) assert.equal(hookBash(c), null, c);
+});
+
+test('the quoted end command is allowed, also followed by a pipe', () => {
+  assert.equal(hookBash(`node "${RUN_MJS}" end --session s1 2>&1 | tee end.log`), null);
 });
 
 test('harmless commands, test and run-folder redirects and stderr merges are allowed', () => {
