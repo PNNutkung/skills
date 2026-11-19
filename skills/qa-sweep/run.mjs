@@ -94,7 +94,8 @@ export function snap(o = {}) {
   if (!active) throw new Error('no active run: run.mjs start first');
   if (!o.files?.length) throw new Error('snap needs --files');
   const { repo, run } = active, index = join(run, `snap-${process.pid}-${Date.now()}.index`);
-  const g = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', env: { ...process.env, ...COMMIT_ENV, GIT_INDEX_FILE: index }, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  // commit.gpgSign=false: a signing setup must not fail the snapshot (git before 2.9.1 applied it to commit-tree too)
+  const g = (...a) => execFileSync('git', ['-C', repo, '-c', 'commit.gpgSign=false', ...a], { encoding: 'utf8', env: { ...process.env, ...COMMIT_ENV, GIT_INDEX_FILE: index }, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   try {
     const parent = g('rev-parse', '--verify', 'HEAD^{commit}');
     g('read-tree', parent);
@@ -124,7 +125,7 @@ function main(argv) {
   const { positionals: [cmd], values } = parsed;
   const session = values.session ?? process.env.CLAUDE_CODE_SESSION_ID;
   if (!['start', 'end', 'touch', 'snap'].includes(cmd)) fail(2, 'usage: run.mjs start --repo DIR | end | touch | snap --files a,b [--session ID]');
-  if (!session) fail(2, 'no session id: pass --session');
+  if (!session) fail(2, 'no session id: ask the user for the session id, then pass --session');
   if (cmd === 'start' && !values.repo) fail(2, 'start needs --repo DIR');
   if (cmd === 'snap' && !values.files) fail(2, 'snap needs --files a,b');
   if (!zt && cmd === 'start') fail(2, ZT_MISSING);

@@ -74,7 +74,7 @@ test('the CLI with no session id exits 2', () => {
   const e = { ...process.env, ...env }; delete e.CLAUDE_CODE_SESSION_ID;
   const r = spawnSync('node', [join(HERE, 'run.mjs'), 'end'], { env: e, encoding: 'utf8' });
   assert.equal(r.status, 2);
-  assert.match(r.stderr, /no session id/);
+  assert.match(r.stderr, /no session id: ask the user for the session id, then pass --session/);
 });
 
 test('the CLI start and end print one JSON line each', () => {
@@ -125,6 +125,13 @@ test('snap commits HEAD plus only the named files, and leaves the index and the 
   assert.deepEqual(g('ls-tree', '-r', '--name-only', sha).trim().split('\n'), ['src/a.ts', 'src/b.ts', 'tests/new.test.ts']);
   assert.equal(g('show', `${sha}:src/a.ts`), 'export const a = 1;\n', 'a staged edit stays out');
   assert.equal(g('show', `${sha}:tests/new.test.ts`), 'test("new", () => {});\n');
+});
+
+test('snap ignores commit.gpgSign: a repo that signs commits, with no usable key, still snaps', () => {
+  const { repo, env, tmp, g } = dirtyRepo();
+  g('config', 'commit.gpgSign', 'true'); g('config', 'gpg.program', 'false'); // any signing attempt fails
+  start({ repo, session: 's1', env, tmp });
+  assert.match(snap({ session: 's1', env, tmp, files: ['tests/new.test.ts'] }).snap, /^[0-9a-f]{40}$/);
 });
 
 test('snap refuses with no active run, no files, or a path outside the repo', () => {
