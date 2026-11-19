@@ -1,0 +1,19 @@
+{
+  "requirements": [
+    { "id": "R1", "text": "Refunds over 30 days are refused", "source": { "kind": "spec", "ref": "docs/spec.md:3", "quote": "Refunds over 30 days are refused." } },
+    { "id": "R2", "text": "Confirmed by the user", "source": { "kind": "user", "ref": "A1", "quote": "refunds over 30 days are refused" } }
+  ],
+  "findings": [
+    { "id": "F1", "kind": "test-gap", "requirement": "R1", "tier": "unit", "title": "No test pins the 30 day limit",
+      "proofs": [{ "mode": "executed", "ref": "r1", "exit": 0, "quote": "ZT-MUTANT m1 src/a.py:3 flip exit=0" }] },
+    { "id": "F2", "kind": "defect", "requirement": "R2", "tier": "unit", "title": "Refund total is wrong",
+      "proofs": [{ "mode": "executed", "ref": "r2", "exit": 1, "quote": "AssertionError: expected 3" }] },
+    { "id": "F3", "kind": "defect", "requirement": "R1", "tier": "unit", "title": "Claimed but never run",
+      "proofs": [{ "mode": "executed", "ref": "r3", "exit": 0, "quote": "ZT-MUTANT" }] }
+  ],
+  "tests_written": [
+    { "path": "tests/unit/test_a.py", "finding": "F1",
+      "proofs": [{ "mode": "executed", "ref": "r6", "exit": 0, "quote": "1 passed" }, { "mode": "executed", "ref": "r5", "quote": "ZT-MUTANT m2 src/a.py:2 flip exit=1" }] }
+  ],
+  "unconfirmed": [{ "question": "Is a 30 day refund allowed?", "behavior": "refund(30) returns True" }]
+}
