@@ -228,6 +228,8 @@ def _matches(path, globs):
 def is_test(path, cfg):
     if any(_matches(path, g) for g in cfg["tiers"].values()):
         return True
+    if is_exempt(path):  # a doc under specs/ or a fixture under tests/ is not a test
+        return False
     *dirs, base = path.split("/")
     return bool(TEST_NAME.search(base.lower()) or JAVA_TEST.search(base) or any(TEST_DIR.match(d) for d in dirs))
 
@@ -872,6 +874,9 @@ def self_test():
     for path, want in tiers.items():
         assert tier_of(path, cfg) == want, (path, tier_of(path, cfg))
     assert is_test("FooTest.java", cfg) and not is_test("src/Latest.py", cfg)
+    # docs, lockfiles and config never count as tests, even in a test-like directory such as specs/
+    for doc in ("docs/superpowers/specs/2026-11-19-x-design.md", "tests/unit/README.md", "tests/fixtures/data.json"):
+        assert not is_test(doc, cfg), doc
     custom = {"enabled": True, "tiers": {"integration": ["it/*"]}, "mock": cfg["mock"]}
     assert tier_of("it/db/x.py", custom) == "integration"
     assert tier_of("tests/integration/test_db.py", custom) is None  # a named tier replaces its default rule
