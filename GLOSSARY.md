@@ -33,3 +33,28 @@ The rule that integration and e2e tests use a real dependency in a container, an
 
 **Mock justification**:
 The stated reason a dependency is mocked instead of containerised, for example a third-party vendor that offers no UAT server.
+
+**Requirement**:
+A behavior the application must have, quoted from a spec, a ticket or the user's own answer. A behavior nobody stated is not a requirement.
+_Avoid_: assumption, expected behavior
+
+**Defect**:
+The application behaving differently from what its requirements say.
+_Avoid_: bug, issue, flaw (as the generic term)
+
+**Weak test**:
+A test whose result does not track the behavior it checks: it passes when that behavior is broken, or fails when nothing changed.
+_Avoid_: bad test, useless test
+
+**Test gap**:
+A required behavior that no test checks.
+_Avoid_: missing test case, coverage gap (coverage is a line count, a different thing)
+
+### Guardrails
+
+**Rule**:
+Written guidance an agent reads and should follow. Nothing enforces it.
+_Avoid_: policy
+
+**Hook**:
+A script the agent harness runs on an event, which can deny the action. The only enforcement this repo ships.
