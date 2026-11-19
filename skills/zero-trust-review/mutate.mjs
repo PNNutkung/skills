@@ -7,22 +7,25 @@
 // the tree and write the change request's own bytes anywhere the user can. So a mutant is applied AND undone by the sandboxed command itself (where such a write is
 // refused); a tree whose run did not end cleanly (timeout, kill, no stamp) is deleted and re-extracted instead of repaired.
 //   node mutate.mjs --repo DIR --base REV --head REV --scratch DIR --cmd 'pytest -q {file}' [--tests a,b] [--max 30] [--jobs 4] [--timeout 120] [--budget 600]
-//     [--kill-exits 1] [--link NAME]... [--ro DIR]... [--env K=V]... [--runner PATH]
+//     [--kill-exits 1] [--link NAME]... [--ro DIR]... [--env K=V]... [--runner PATH] [--files a.py:10-40,b.py]
+//   --files: mutate these files (or line ranges; a bare path = every line) at --head instead of the lines a diff touched; --base is then optional and --tests required
 //   --kill-exits: only these non-zero exits count as a kill (pytest: 1 = a test failed; 2 = collection error from a mutant that does not even import = inconclusive)
 // Prints one JSON object and exits 0 (results are data); usage errors exit 2.
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { changedLines, generateMutants, sample } from './mutants.mjs';
+import { changedLines, fileRanges, generateMutants, sample } from './mutants.mjs';
 import { DOC, NO_SANDBOX, TEST, TIMEOUT, backendOf, changes, clear, editableRoots, extract, gitOut, intOption, isSource, parseProbeArgs, pool, runIn, shq } from './probelib.mjs';
 
 const MAX_SURVIVORS_SHOWN = 3, LINE_CUT = 40; // the lead pastes this summary into FACTS, which reviewers see clipped to ~800 chars
 const PATCH_FAILED = 125;
 
 function parse() {
-  const { values, ...common } = parseProbeArgs({ max: { type: 'string', default: '30' }, budget: { type: 'string', default: '600' }, 'kill-exits': { type: 'string' } });
+  const { values, ...common } = parseProbeArgs({ max: { type: 'string', default: '30' }, budget: { type: 'string', default: '600' }, 'kill-exits': { type: 'string' }, files: { type: 'string' } },
+    { optional: process.argv.includes('--files') ? ['base'] : [] });
+  if (values.files && !common.tests?.length) throw new Error('--tests is required with --files');
   const killExits = values['kill-exits']?.split(',').map(Number);
   if (killExits?.some(n => !Number.isInteger(n) || n < 1 || n > 255)) throw new Error('--kill-exits wants integers 1-255, comma separated');
-  return { ...common, max: intOption(values, 'max', 1), budget: intOption(values, 'budget', 0), killExits };
+  return { ...common, max: intOption(values, 'max', 1), budget: intOption(values, 'budget', 0), killExits, files: values.files && fileRanges(values.files) };
 }
 
 // A pristine tree: HEAD extracted by git (symlink-safe), plus the linked dirs (venv ...) as symlinks to the real ones.
@@ -82,6 +85,17 @@ const tally = mutants => {
   return score;
 };
 
+// --files -> Map(path -> line numbers) like changedLines, each range clamped to the file's length at --head; null = every line
+function wholeFiles(o) {
+  const touched = new Map();
+  for (const [path, ranges] of o.files) {
+    const count = gitOut(o.repo, ['show', `${o.head}:${path}`]).toString('utf8').split('\n').length;
+    const lines = new Set((ranges ?? [[1, count]]).flatMap(([a, b]) => Array.from({ length: Math.max(0, Math.min(b, count) - a + 1) }, (_, i) => a + i)));
+    touched.set(path, [...lines].sort((x, y) => x - y));
+  }
+  return touched;
+}
+
 async function main() {
   const o = parse();
   if (!o.env.some(e => e.startsWith('PYTHONDONTWRITEBYTECODE='))) o.env.push('PYTHONDONTWRITEBYTECODE=1'); // a same-size edit in the same second would run stale .pyc
@@ -91,14 +105,16 @@ async function main() {
     out.score = tally(out.mutants);
     process.stdout.write(`${JSON.stringify({ ...out, summary: summarize(out) })}\n`);
   };
-  const changed = changes(o.repo, o.base, o.head);
-  const sources = changed.filter(c => isSource(c.path) && (c.status === 'A' || c.status === 'M') && c.mode !== '120000' && c.mode !== '160000').map(c => c.path);
-  const tests = o.tests ?? changed.filter(c => c.status !== 'D' && TEST.test(c.path) && !DOC.test(c.path)).map(c => c.path);
-  if (!tests.length) return done({ reason: 'no changed test files' });
-  if (!sources.length) return done({ reason: 'no changed source files' });
-
-  const patch = gitOut(o.repo, ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', `${o.base}...${o.head}`, '--', ...sources]).toString('utf8');
-  const touched = changedLines(patch);
+  let tests = o.tests, touched;
+  if (o.files) touched = wholeFiles(o); // no diff: the named files at --head
+  else {
+    const changed = changes(o.repo, o.base, o.head);
+    const sources = changed.filter(c => isSource(c.path) && (c.status === 'A' || c.status === 'M') && c.mode !== '120000' && c.mode !== '160000').map(c => c.path);
+    tests ??= changed.filter(c => c.status !== 'D' && TEST.test(c.path) && !DOC.test(c.path)).map(c => c.path);
+    if (!tests.length) return done({ reason: 'no changed test files' });
+    if (!sources.length) return done({ reason: 'no changed source files' });
+    touched = changedLines(gitOut(o.repo, ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', `${o.base}...${o.head}`, '--', ...sources]).toString('utf8'));
+  }
   const all = [...touched.keys()].sort().flatMap(p => generateMutants(p, gitOut(o.repo, ['show', `${o.head}:${p}`]).toString('utf8'), touched.get(p)));
   if (!all.length) return done({ reason: 'no mutable changed lines (only python, javascript/typescript and c-like sources are mutated)' });
   const picked = sample(all, o.max);

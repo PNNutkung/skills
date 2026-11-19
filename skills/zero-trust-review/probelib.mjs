@@ -19,14 +19,16 @@ export const intOption = (values, name, min) => {
   return n;
 };
 
-// The options every probe takes, validated. `extra` adds the probe's own parseArgs definitions; their raw values come back in `values`.
-export function parseProbeArgs(extra = {}) {
+// A repo-relative path, normalized; throws on anything that could leave the repo.
+export const rel = p => { const n = normalize(p).replace(/\/+$/, ''); if (n === '.' || isAbsolute(n) || n.split('/').includes('..')) throw new Error(`path must stay inside the repo: ${p}`); return n; };
+
+// The options every probe takes, validated. `extra` adds the probe's own parseArgs definitions; their raw values come back in `values`. `optional` names common options this probe may omit (e.g. base).
+export function parseProbeArgs(extra = {}, { optional = [] } = {}) {
   const str = { type: 'string' }, many = { type: 'string', multiple: true, default: [] };
   const { values: v } = parseArgs({ options: { repo: str, base: str, head: str, scratch: str, cmd: str, tests: str, runner: str, link: many, ro: many, env: many,
     jobs: { ...str, default: '4' }, timeout: { ...str, default: '120' }, ...extra } });
-  for (const k of ['repo', 'base', 'head', 'scratch', 'cmd']) if (!v[k]) throw new Error(`--${k} is required`);
+  for (const k of ['repo', 'base', 'head', 'scratch', 'cmd']) if (!v[k] && !optional.includes(k)) throw new Error(`--${k} is required`);
   if (!v.cmd.includes('{file}')) throw new Error('--cmd must contain {file}');
-  const rel = p => { const n = normalize(p).replace(/\/+$/, ''); if (n === '.' || isAbsolute(n) || n.split('/').includes('..')) throw new Error(`path must stay inside the repo: ${p}`); return n; };
   for (const e of v.env) if (!/^[A-Za-z_]\w*=/.test(e)) throw new Error(`--env wants K=V, got ${e}`);
   const runner = resolve(v.runner ?? join(dirname(fileURLToPath(import.meta.url)), 'sandbox-run.mjs'));
   if (!existsSync(runner)) throw new Error(`runner not found: ${runner}`);

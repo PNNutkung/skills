@@ -244,3 +244,53 @@ test('usage errors exit 2', () => {
   const bad = spawnSync(process.execPath, [MUTATE, '--repo', '.', '--base', 'a', '--head', 'b', '--scratch', '/x', '--cmd', 'x {file}', '--kill-exits', '0'], { encoding: 'utf8' });
   assert.equal(bad.status, 2);
 });
+
+// --files: one commit, no base branch; src/calc.py has exactly 3 mutable lines
+const FILES_CALC = `same = a == b
+total = a + b
+both = same and total
+`;
+function filesFixture(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'mut-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const repo = join(dir, 'repo');
+  mkdirSync(repo);
+  git(repo, 'init', '-q');
+  put(repo, { 'src/calc.py': FILES_CALC, 'tests/test_calc.py': 'print("ok")\n' });
+  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'only');
+  const sd = join(dir, 'stub');
+  mkdirSync(sd);
+  writeFileSync(join(sd, 'stub-runner.mjs'), STUB);
+  writeFileSync(join(sd, 'config.json'), '{}');
+  return { repo, scratch: join(dir, 'scratch'), runner: join(sd, 'stub-runner.mjs') };
+}
+const runMutateRaw = (fx, args) => spawnSync(process.execPath, [MUTATE, '--repo', fx.repo, '--scratch', fx.scratch, '--cmd', 'python3 {file}', '--runner', fx.runner, '--jobs', '2', ...args], { encoding: 'utf8' });
+const runMutate = (fx, args) => JSON.parse(runMutateRaw(fx, args).stdout);
+
+test('--files mutates only the named lines and needs no --base', { skip }, t => {
+  const out = runMutate(filesFixture(t), ['--files', 'src/calc.py:2-2', '--tests', 'tests/test_calc.py', '--head', 'HEAD']);
+  assert.ok(out.mutants.length > 0);
+  assert.ok(out.mutants.every(m => m.file === 'src/calc.py' && m.line === 2));
+});
+
+test('--files clamps a range past the end of the file', { skip }, t => {
+  const out = runMutate(filesFixture(t), ['--files', 'src/calc.py:2-999', '--tests', 'tests/test_calc.py', '--head', 'HEAD']);
+  assert.ok(out.mutants.length > 0);
+  assert.ok(out.mutants.every(m => m.line >= 2 && m.line <= 3));
+});
+
+test('--files with a bare path mutates every line of the file', { skip }, t => {
+  const out = runMutate(filesFixture(t), ['--files', 'src/calc.py', '--tests', 'tests/test_calc.py', '--head', 'HEAD']);
+  assert.deepEqual([...new Set(out.mutants.map(m => m.line))].sort(), [1, 2, 3]);
+});
+
+test('--files without --tests is a usage error', () => {
+  const r = runMutateRaw({ repo: '.', scratch: '/x', runner: process.execPath }, ['--files', 'src/calc.py', '--head', 'HEAD']);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--tests is required with --files/);
+});
+
+test('without --files, --base is still required', () => {
+  const r = runMutateRaw({ repo: '.', scratch: '/x', runner: process.execPath }, ['--head', 'HEAD', '--tests', 'tests/test_calc.py']);
+  assert.match(r.stderr, /--base is required/);
+});

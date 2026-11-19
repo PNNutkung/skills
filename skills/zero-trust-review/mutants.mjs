@@ -2,6 +2,7 @@
 // different return value ...). If the changed tests still pass with it, those tests do not pin that behavior: a test gap with a reproducible proof.
 // Lines are masked first (string contents and trailing comments blanked), so an operator inside a string or comment is never touched.
 import { createHash } from 'node:crypto';
+import { rel } from './probelib.mjs';
 
 const LANG = { py: 'p', js: 'j', jsx: 'j', mjs: 'j', cjs: 'j', ts: 'j', tsx: 'j', go: 'c', java: 'c', c: 'c', h: 'c', cc: 'c', cpp: 'c', cs: 'c', rs: 'c', kt: 'c', swift: 'c', php: 'c', scala: 'c' };
 const PER_LINE = 6;
@@ -137,6 +138,24 @@ export function changedLines(patch) {
     if (!h) continue;
     const start = Number(h[1]), count = h[2] === undefined ? 1 : Number(h[2]);
     if (count) out.set(file, [...(out.get(file) ?? []), ...Array.from({ length: count }, (_, i) => start + i)]);
+  }
+  return out;
+}
+
+/** `a.py:10-40,b.py` -> Map(path -> [[start, end], ...] | null); null = every line. A path given twice merges its ranges (a bare path wins). */
+export function fileRanges(spec) {
+  const out = new Map();
+  for (const item of spec.split(',').filter(Boolean)) {
+    const m = /^(.+?):(.*)$/.exec(item);
+    let path = item, range = null;
+    if (m) {
+      const r = /^(\d+)-(\d+)$/.exec(m[2]);
+      if (!r || Number(r[1]) < 1 || Number(r[1]) > Number(r[2])) throw new Error(`bad range in --files: ${item} (want START-END with START <= END)`);
+      path = m[1]; range = [Number(r[1]), Number(r[2])];
+    }
+    path = rel(path);
+    const have = out.get(path);
+    out.set(path, range === null || have === null ? null : [...(have ?? []), range]);
   }
   return out;
 }
