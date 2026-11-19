@@ -316,26 +316,52 @@ def _test_names(lines):
     return names
 
 
-def _deleted_files(status_z):
-    """Paths with status D from `git diff --name-status -z`; a rename or copy carries two paths."""
-    parts, deleted, i = status_z.split("\0"), [], 0
+def _name_status(status_z):
+    """(deleted paths, {new path: old path} of renames) from `git diff --name-status -z`."""
+    parts, deleted, renamed, i = status_z.split("\0"), [], {}, 0
     while i < len(parts) and parts[i]:
         if parts[i][0] in "RC":
+            renamed[parts[i + 2]] = parts[i + 1]
             i += 3
         else:
             if parts[i][0] == "D":
                 deleted.append(parts[i + 1])
             i += 2
-    return deleted
+    return deleted, renamed
+
+
+def _read(root, rel):
+    try:
+        with open(os.path.join(root, rel), errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _markers(text):
+    """{owner: [line numbers]} of skip and expected-failure markers outside comments. The owner is the
+    Python test whose decorators or body hold the marker, else the marker's stripped text (count-based)."""
+    lines = text.splitlines()
+    owner = [None] * len(lines)
+    for i, line in enumerate(lines):
+        m = PY_TEST_DEF.match(line)
+        if not m:
+            continue
+        indent, owner[i], j, k = len(line) - len(line.lstrip()), m.group(1), i - 1, i + 1
+        while j >= 0 and lines[j].lstrip().startswith(("@", "#")):
+            owner[j], j = m.group(1), j - 1
+        while k < len(lines) and (not lines[k].strip() or len(lines[k]) - len(lines[k].lstrip()) > indent):
+            owner[k], k = m.group(1), k + 1
+    out = {}
+    for num, line in enumerate(lines, 1):
+        if not line.strip().startswith(("#", "//")) and any(r.search(line) for r in SKIP_PATTERNS):
+            out.setdefault(owner[num - 1] or line.strip(), []).append(num)
+    return out
 
 
 def _has_skip_reason(root, rel, lineno):
     """True when `skip-reason: <reason>` is on line `lineno` of the file or the line before it."""
-    try:
-        with open(os.path.join(root, rel), errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        return False
+    lines = _read(root, rel).splitlines()
     return any(SKIP_MARKER.search(l) for l in lines[max(lineno - 2, 0) : lineno])
 
 
@@ -345,7 +371,8 @@ def removed_tests(root, base, cfg, extra=None):
     cleared = {m.group(1) for m in TRAILER.finditer(log)}
     found, added_names = [], set()
     for rng in filter(None, ([f"{base}...HEAD"], extra)):
-        deleted = set(_deleted_files(_git(["diff", "--name-status", "-z", "--find-renames", *rng], root)))
+        deleted, renamed = _name_status(_git(["diff", "--name-status", "-z", "--find-renames", *rng], root))
+        deleted = set(deleted)
         diff = _git(["diff", "--unified=0", "--no-color", "--find-renames", *rng], root)
         added = _parse_added_numbered(diff)
         for lines in added.values():
@@ -355,13 +382,13 @@ def removed_tests(root, base, cfg, extra=None):
         for path, lines in removed.items():
             if path not in deleted and is_test(path, cfg):
                 found += [(path, f"removed test {n}") for n in sorted(_test_names(lines))]
-        for path, lines in added.items():
-            if not is_test(path, cfg):
-                continue
-            was = {l.strip() for l in removed.get(path, [])}  # a touched, not new, skip
-            for num, text in lines:
-                if text.strip() not in was and any(r.search(text) for r in SKIP_PATTERNS) and not _has_skip_reason(root, path, num):
-                    found.append((path, f"added skip or expected-failure marker: {text.strip()[:80]}"))
+        for path in filter(lambda p: is_test(p, cfg), added):
+            now = _read(root, path)
+            was = _markers(_git(["show", f"{base}:{renamed.get(path, path)}"], root))  # more markers than at base
+            for key, nums in _markers(now).items():
+                for num in nums[len(was.get(key, [])):]:
+                    if not _has_skip_reason(root, path, num):
+                        found.append((path, f"added skip or expected-failure marker: {now.splitlines()[num - 1].strip()[:80]}"))
     kept = {}
     for path, what in found:
         if what.startswith("removed test ") and what[len("removed test "):] in added_names:
@@ -651,6 +678,8 @@ def removed_self_test(cfg):
         put("tests/unit/test_keep.py", "def test_one(): ...\ndef test_two(): ...\n")
         put("tests/unit/my test \u00fc.py", "def test_x(): ...\n")
         put("tests/unit/test_skipped.py", "import pytest\n@pytest.mark.skip(reason='flaky')\ndef test_s(): ...\n")
+        put("tests/unit/test_pair.py", "import pytest\n@pytest.mark.skip(reason='x')\ndef test_a(): ...\ndef test_b(): ...\n")
+        put("tests/unit/test_doc.py", "# pytest.skip( is how we skip\ndef test_d(): ...\n")
         put("tests/unit/total.test.ts", "test('should total the cart when items exist', () => {})\n")
         land("base")
 
@@ -697,6 +726,25 @@ def removed_self_test(cfg):
         branch("reindent")
         put("tests/unit/test_skipped.py", "import pytest\n    @pytest.mark.skip(reason='flaky')\ndef test_s(): ...\n"); land("reindent")
         assert not denied(pr())
+
+        # per-test attribution: a moved or duplicated skip is new; an edited reason or comment is not
+        pair = "import pytest\n{}def test_a(): ...\n{}def test_b(): ...\n"
+        skip = "@pytest.mark.skip(reason='{}')\n"
+        for name, body, want in (
+            ("mvskip", pair.format("", skip.format("x")), True),
+            ("dup", pair.format(skip.format("x") * 2, ""), True),
+            ("dup2", pair.format(skip.format("x"), "") + skip.format("x") + "def test_c(): ...\n", True),
+            ("reason", pair.format(skip.format("y"), ""), False),
+        ):
+            branch(name)
+            put("tests/unit/test_pair.py", body); land(name)
+            assert denied(pr()) == want, name
+        branch("comment")
+        put("tests/unit/test_doc.py", "# pytest.skip( was how we skipped\ndef test_d(): ...\n"); land("comment")
+        assert not denied(pr())
+        branch("newxfail")
+        put("tests/unit/test_new.py", "import pytest\n@pytest.mark.xfail(strict=True)\ndef test_n(): ...\n"); land("newxfail")
+        assert "added skip" in pr()["permissionDecisionReason"]
 
         # TS/JS: a removed test title -> deny; moved to another file -> allowed
         branch("ts")
