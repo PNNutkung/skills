@@ -18,6 +18,7 @@ export SK=${SK:-$HOME/.claude/skills/qa-sweep}                      # this skill
 export ZT_DIR=${ZT_DIR:-$SK/../zero-trust-review}                   # mutate.mjs, sandbox-run.mjs
 export PTDD_DIR=${PTDD_DIR:-$SK/../paired-agent-tdd}                # direct-run.mjs
 export TIERS_PY=${TIERS_PY:-$HOME/.claude/hooks/pr-test-tiers.py}   # plugin install: $SK/../../hooks/pr-test-tiers/pr-test-tiers.py
+test -f "$TIERS_PY" || echo "no pr-test-tiers.py at $TIERS_PY"     # then ask the user where it is (the README installs it); never guess
 ```
 
 Shell variables do not survive between Bash calls: put these lines at the top of each call. Run every command from the repo root. In this skill, `<run>` is the absolute run folder that `run.mjs start` printed: write it out in full in every command. Never put `$RUN` or any other variable in a redirect target (`> <run>/x`): `qa-guard` reads that target as plain text and denies it.
@@ -48,7 +49,7 @@ The sweep judges the code as committed at HEAD. If `git status` shows uncommitte
 
 | The user asks for | Scope | Do |
 |---|---|---|
-| which modules lack a tier, a repo-wide test overview | Repo inventory | `python3 "$TIERS_PY" --inventory > <run>/inventory.json` (`--depth 2` in a monorepo). Report each module missing a tier, and the `unmapped` and `untiered` lists, from that JSON. Nothing else. |
+| which modules lack a tier, a repo-wide test overview | Repo inventory | `python3 "$TIERS_PY" --inventory > <run>/inventory.json` (`--depth 2` in a monorepo). Report each module missing a tier, and the `unmapped` and `untiered` lists, from that JSON. While `untiered` is not empty, no tier is proven missing: ask the user which tier those files are, or to map them in `.claude/test-tiers.json`. Nothing else. |
 | a feature, a path or a ticket | Feature deep-dive | Modes C, B and A, in that order, each only when needed. |
 
 If you cannot tell which, ask.
@@ -66,10 +67,10 @@ Read only the files the run needs.
 Every requirement, finding and written test goes into `<run>/findings.json` with its proof. Each mode file gives its part of the shape. `findings.mjs` re-checks every proof in plain code, and it decides: what fails lands under Unverified, never in your reply as a fact.
 
 ```bash
-node "$SK/findings.mjs" --run <run> --repo . --head HEAD --findings <run>/findings.json [--inventory <run>/inventory.json]
+node "$SK/findings.mjs" --run <run> --repo . --head HEAD --findings <run>/findings.json --tiers-py "$TIERS_PY"
 ```
 
-It writes `<run>/report.md` and prints the counts. Give the user that path and the counts, and report only what the file says.
+It runs the tier inventory itself for the report, writes `<run>/report.md` and prints the counts. Give the user that path and the counts, and report only what the file says.
 
 ## 4. Never assume, ask
 

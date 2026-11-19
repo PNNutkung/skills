@@ -57,4 +57,4 @@ Written guidance an agent reads and should follow. Nothing enforces it.
 _Avoid_: policy
 
 **Hook**:
-A script the agent harness runs on an event, which can deny the action. The only enforcement this repo ships.
+A script the agent harness runs on an event, which can deny the action. The only enforcement that applies to every tool call.

@@ -17,6 +17,7 @@ ZT_RUN_DIR=<run> node "$SK/target.mjs" run --url http://localhost:3000 [--servic
 - `--env-name`: the variable the e2e config reads its base URL from (default `BASE_URL`). `target.mjs` sets it to `--url`.
 - `--services`: docker compose service names that count as local hosts.
 - `direct-run.mjs` inside it writes the run to the ledger, so the run can be a proof.
+- Run it in the background and read its output when it finishes: in the foreground the Bash tool stops a command after 10 minutes, before a 900 s e2e run is done.
 
 If the host is not local (`localhost`, `*.localhost`, `127.x.x.x`, `::1` or a listed service), `target.mjs` exits 3 and runs nothing. Then ask the user: "May I run e2e tests against <url>? They may write data there." Only after a yes in this run, add `--confirm-target <url>` with the same URL. A yes from an earlier run does not count, and you never confirm a production URL on your own. Without a yes, start the app locally (section 1), or stop and say why.
 

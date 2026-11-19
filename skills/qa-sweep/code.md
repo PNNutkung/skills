@@ -17,20 +17,22 @@ Add both to the case in `<run>/cases.json` (`code`, `tests`).
 ZT_RUN_DIR=<run> node "$ZT_DIR/mutate.mjs" --repo . --head HEAD \
   --files 'src/refunds/policy.ts:10-40' --tests tests/unit/policy.test.ts \
   --scratch "$(mktemp -d)" --cmd 'npx vitest run {file}' \
-  --runner "$PTDD_DIR/direct-run.mjs" --link node_modules
+  --runner "$PTDD_DIR/direct-run.mjs" --link node_modules --kill-exits 1 --budget 420
 ```
 
 - `--files`: the case's implementing lines. Several are comma separated; a bare path mutates every line.
-- `--tests`: the mapped test files, comma separated. When none map, pass the case's whole tier, because a test gap needs mutants that survive every test of that tier: `--tests "$(python3 "$TIERS_PY" --list-tier unit | paste -sd, -)"`. A whole tier is slow, so bound it with `--max N` (mutants, default 30) and `--budget SEC` (default 600). If `--list-tier` prints nothing, see "A missing tier" below.
+- `--tests`: the mapped test files, comma separated. When none map, pass the module's whole tier, because a test gap needs mutants that survive every test of that tier: `--tests "$(python3 "$TIERS_PY" --list-tier unit --module src/refunds | paste -sd, -)"`, where `--module` is the case's module as `--inventory` names it (`src/refunds` is a module at `--depth 2`). If that prints nothing, leave out `--module` to use the repo's whole tier. If that prints nothing too, see "A missing tier" below. A whole tier is slow, so bound it with `--max N` (mutants, default 30).
 - `--scratch`: a fresh `mktemp -d` folder, never inside `<run>`: the sandbox refuses to run in the run folder.
-- `--cmd`: the project's command for one test file, with `{file}`. For pytest add `--kill-exits 1`: exit 2 is a collection error, not a kill.
+- `--cmd`: the project's command for one test file, with `{file}`. Add `--kill-exits 1`: `findings.mjs` counts only exit 1 as a kill (pytest's exit 2 is a collection error, not a kill).
 - `--link`: the repo's dependency folder (`node_modules`, `.venv`), so the scratch copy can run.
 - `--runner`: leave it out only when the user asked for the sandbox (`SKILL.md`, section 6).
+
+Run it in the background and read its output when it finishes: in the foreground the Bash tool stops a command after 10 minutes, and a stopped run prints no JSON. Keep `--budget` (seconds in which new mutants may start, default 600) under that limit as well: `--budget 420`.
 
 It mutates the files as committed at `--head`, in scratch copies; the repo is only read. It prints one JSON object: read `summary` first.
 
 - A `reason`, such as `unverifiable: no changed test file passes on HEAD`, means no mutant ran. Fix `--cmd` or `--link` and run it again. File nothing from it.
-- `tests.notUsable` lists test files that fail on HEAD. They prove nothing about mutants; tell the user.
+- `tests.notUsable` lists test files that fail on HEAD. They were dropped and prove nothing about mutants; tell the user. When you passed a whole tier and this list is not empty, a survivor is not a proven test gap, because a dropped file might kill it: file no finding for it, and put it in the `unconfirmed` list (`requirements.md`, section 3) as a question that names the dropped files.
 - Only Python, JavaScript/TypeScript and C-like sources are mutated. In another language a unit or integration test gap has no proof, and it stays unverified.
 
 ## 3. Judge each survivor
@@ -60,7 +62,7 @@ The survivor proof copies the mutant's `run` and `quote` fields exactly. Each fi
 
 A test gap has the same shape with `"kind": "test-gap"` and only the survivor proof. The weak test itself stays as it is: you add a test that kills its survivor.
 
-**A missing tier.** When the repo has no test file of the case's tier at all (`--list-tier` prints nothing), that is the top test gap. List it first, as a test-gap finding titled `no <tier> tests: proposed setup <tool>, <one line on how>`. It has no mutant proof, so `findings.mjs` puts it under Unverified; pass the inventory (`SKILL.md`, section 2) with `--inventory` so the report shows the empty tier. Install nothing: the user decides.
+**A missing tier.** A tier is missing only when the repo has no test of it, tiered or untiered. When `--list-tier` prints nothing for the whole repo, read the `untiered` list of `python3 "$TIERS_PY" --inventory`: files there may be that tier, in a layout the script does not know (a flat `tests/` folder, or `src/pay/a.test.ts` beside the code). Then ask the user one numbered question: which tier are these files, or will they map them in `.claude/test-tiers.json` (you may not write that file: `qa-guard` denies it). File nothing until they answer; if they name a tier, pass those files as `--tests`. Only with no untiered tests is it the top test gap: `{"id": "G1", "kind": "missing-tier", "tier": "e2e", "title": "no e2e tests: proposed setup <tool>, <one line on how>"}`, with no requirement and no proofs. `findings.mjs` runs the inventory itself (`--tiers-py`), verifies the finding only when no test of that tier exists, tiered or untiered, and lists it first under Test gaps. Install nothing: the user decides.
 
 ## 5. Write the test
 
@@ -70,6 +72,7 @@ For each test gap and weak test, add one test:
 - **Tier:** the case's tier, the lowest one that can observe the behavior. Unit for logic. Integration when the behavior depends on a real dependency, such as a database, a queue or another service. E2E only when the behavior is visible only through the public interface (`running-app.md`).
 - **Container-first:** integration and e2e tests use the real dependency in a container (Testcontainers, docker compose). Mock it only when no container is possible, with a `no-container: <reason>` comment in the file.
 - **Style:** follow the project's naming rule and patterns. Copy a sibling test's imports, fixtures and layout.
+- **Support files:** a new test that needs a file outside the test folders, such as a pytest `conftest` file beside product code or a helper module, is denied by `qa-guard`. Do not work around it: ask the user to add the file, or write the test without it.
 - **What it asserts:** the requirement's expected result, never an output nobody stated.
 
 Then prove it, in this order:
@@ -81,7 +84,7 @@ Then prove it, in this order:
    node "$SK/run.mjs" snap --files <each new or extended test file, comma separated>   # prints {"snap": "<sha>"}
    ```
 
-   Run `mutate.mjs` again as in section 2, with `--head <sha>`, `--files <file>:<line>-<line>` (the survivor's line) and `--tests <the new test file>`. The mutant with the survivor's `id` must now be `killed`. Proof: its `run`, `exit` and `quote`. `findings.mjs` accepts the kill only when its mutant id matches a survivor in the proofs of the finding the test is for, and when the kill run's command runs the test's `path`.
+   Run `mutate.mjs` again as in section 2, with `--head <sha>`, `--files <file>:<line>-<line>` (the survivor's line) and `--tests <the new test file>`. The mutant with the survivor's `id` must now be `killed`. Proof: its `run`, `exit` and `quote`. `findings.mjs` accepts the kill only when its mutant id matches a survivor in the proofs of the finding the test is for, and the test only when both the passing run's and the kill run's commands name its `path`.
 
 Record the test in the `tests_written` list of `<run>/findings.json`:
 

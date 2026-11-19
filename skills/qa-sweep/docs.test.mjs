@@ -42,6 +42,24 @@ test('no redirect in the docs targets a shell variable', () => {
   assert.deepEqual(bad, []);
 });
 
+test('the docs use the scripts as they now work', () => {
+  const [skill, code, app] = ['SKILL.md', 'code.md', 'running-app.md'].map(read);
+  const all = DOCS.map(read).join('\n');
+  assert.match(skill, /test -f "\$TIERS_PY"/, 'SKILL.md checks that pr-test-tiers.py is there');
+  assert.match(readFileSync(join(ROOT, 'README.md'), 'utf8'), /qa-sweep[^\n]*\n[^\n]*pr-test-tiers\.py/, 'the README installs it with qa-sweep');
+  assert.match(skill, /findings\.mjs" [^\n]*--tiers-py "\$TIERS_PY"/, 'findings.mjs runs the inventory itself');
+  assert.doesNotMatch(all, /findings\.mjs[^\n]*--inventory/);
+  assert.match(code, /--list-tier unit --module /, 'a test gap needs the module\'s whole tier');
+  assert.match(code, /untiered/, 'untiered tests are not a missing tier');
+  assert.match(code, /--budget 420/);
+  assert.match(code, /background/);
+  assert.match(app, /background/);
+  assert.match(code, /conftest/, 'a support file outside the test folders is denied: ask');
+  assert.match(code, /notUsable[\s\S]*unconfirmed/, 'a survivor with dropped tier files is not a proven gap');
+  assert.doesNotMatch(readFileSync(join(ROOT, 'GLOSSARY.md'), 'utf8'), /The only enforcement this repo ships/);
+  assert.ok(JSON.parse(read('evals.json')).some(e => e.expected_behavior.some(b => /untiered/.test(b))), 'an eval for a tier-less layout');
+});
+
 test('evals.json parses and has at least three cases', () => {
   const evals = JSON.parse(read('evals.json'));
   assert.ok(Array.isArray(evals) && evals.length >= 3, 'at least three cases');

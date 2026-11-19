@@ -15,6 +15,7 @@ npx skills add PNNutkung/skills --skill '*' -a claude-code -g
 npx skills add PNNutkung/skills --skill zero-trust-review
 npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review   # paired-agent-tdd borrows the probes (and optionally the sandbox runner) of zero-trust-review
 npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --skill paired-agent-tdd   # qa-sweep borrows the mutation probe of one and the direct runner of the other
+mkdir -p ~/.claude/hooks && curl -fsSL -o ~/.claude/hooks/pr-test-tiers.py https://raw.githubusercontent.com/PNNutkung/skills/main/hooks/pr-test-tiers/pr-test-tiers.py   # qa-sweep reads test tiers through it ($TIERS_PY); registering it as a hook is optional
 ```
 
 Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook and the telemetry-capture hook (skills alone do not include hooks). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
