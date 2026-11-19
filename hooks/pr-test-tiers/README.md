@@ -82,9 +82,9 @@ Register it in `~/.claude/settings.json`, once for Bash and once for Write:
   `enabled: false` turns the repo off. A tier named in `tiers` is matched by these globs (`*` also matches `/`) and its built-in path rule is dropped; tiers you leave out keep theirs. `mockPatterns` regexes add to the built-in ones.
 - **Untiered repos.** If neither the branch nor the repo has a single tiered test, `gh pr create` gets a note instead of a denial, so a repo with no tier layout yet is not locked out when it adopts the hook. Mapping any tier in `tiers` switches the rule on.
 - **Check from a script or an agent.** `python3 pr-test-tiers.py --check [--base BRANCH]` prints what the change-request gate says about the branch plus the index, and exits 1 when it would deny.
-- **Inventory.** `python3 pr-test-tiers.py --inventory [--depth N]` prints JSON: per-module unit/integration/e2e counts (a module is the first N directories of tracked source files, default 1), `unmapped` (tiered tests no module owns) and `untiered` (test files with no tier). Exits 2 outside a git repo.
-- **Is this a test file?** `python3 pr-test-tiers.py --is-test PATH` (repo-relative or absolute) exits 0 for a test file under the repo's config, 1 otherwise, 2 outside a git repo.
-- **One tier's test files.** `python3 pr-test-tiers.py --list-tier unit|integration|e2e` prints the tracked test files of that tier, one per line (nothing for an empty tier). Exits 2 for any other tier name or outside a git repo.
+- **Inventory.** `python3 pr-test-tiers.py --inventory [--depth N]` prints JSON: per-module unit/integration/e2e counts (a module is the first N directories of tracked source files, default 1), `unmapped` (tiered tests no module owns), `unmapped_tiers` (their counts per tier) and `untiered` (test files with no tier). Exits 2 outside a git repo.
+- **Is this a test file?** `python3 pr-test-tiers.py --is-test PATH` (repo-relative or absolute) exits 0 for a test file under the repo's config, 3 otherwise, 2 outside a git repo. It never answers with 1, the exit of a Python crash, so a caller can tell a crash from an answer.
+- **One tier's test files.** `python3 pr-test-tiers.py --list-tier unit|integration|e2e [--module PATH]` prints the tracked test files of that tier, one per line (nothing for an empty tier). With `--module`, only the files `--inventory` counts for that module (`--module src/pay` maps as `--depth 2`). Exits 2 for any other tier name, a path that is not a module, or outside a git repo.
 
 ## Limits
 

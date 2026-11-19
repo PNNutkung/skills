@@ -36,11 +36,13 @@ Branch check (for scripts and agents; exit 1 when the gate would deny):
                python3 pr-test-tiers.py --check [--base BRANCH]
 Inventory:     python3 pr-test-tiers.py --inventory [--depth N]
                JSON of per-module unit/integration/e2e counts, plus `unmapped` (tiered tests no
-               module owns) and `untiered` (test files with no tier); exit 2 outside a git repo
+               module owns), `unmapped_tiers` (their counts per tier) and `untiered` (test files
+               with no tier); exit 2 outside a git repo
 Test file?     python3 pr-test-tiers.py --is-test PATH
-               exit 0 when PATH (repo-relative or absolute) is a test file, 1 when not, 2 outside a repo
-One tier:      python3 pr-test-tiers.py --list-tier unit|integration|e2e
-               the tracked test files of that tier, one per line; exit 2 for another tier or outside a repo
+               exit 0 when PATH (repo-relative or absolute) is a test file, 3 when not, 2 outside a repo
+One tier:      python3 pr-test-tiers.py --list-tier unit|integration|e2e [--module PATH]
+               the tracked test files of that tier (with --module, only those --inventory counts for
+               that module), one per line; exit 2 for another tier, an unknown module or outside a repo
 Self-test:     python3 pr-test-tiers.py --self-test
 """
 
@@ -556,14 +558,16 @@ def _owner_module(test_dirs, modules):
     return by_name[0] if len(by_name) == 1 else None  # several modules share the name: unmapped
 
 
+def _modules(tracked, cfg, depth):
+    """Module names: the first `depth` directories of tracked source files."""
+    return sorted({"/".join(n.split("/")[:-1][:depth]) for n in tracked if "/" in n and is_source(n, cfg)})
+
+
 def inventory(root, cfg, depth=1):
     """Tests per tier for each module (first `depth` directories of tracked source files)."""
     tracked = [n for n in _git(["ls-files", "-z"], root).split("\0") if n]
-    modules = {
-        "/".join(n.split("/")[:-1][:depth]): {t: 0 for t in TIERS}
-        for n in tracked if "/" in n and is_source(n, cfg)
-    }
-    unmapped, untiered = [], []
+    modules = {m: {t: 0 for t in TIERS} for m in _modules(tracked, cfg, depth)}
+    unmapped, untiered, unmapped_tiers = [], [], {t: 0 for t in TIERS}
     for n in sorted(tracked):
         if not is_test(n, cfg):
             continue
@@ -574,9 +578,10 @@ def inventory(root, cfg, depth=1):
         owner = _owner_module(n.split("/")[:-1], modules)
         if owner is None:
             unmapped.append(n)
+            unmapped_tiers[tier] += 1
         else:
             modules[owner][tier] += 1
-    return {"modules": dict(sorted(modules.items())), "unmapped": unmapped, "untiered": untiered}
+    return {"modules": modules, "unmapped": unmapped, "unmapped_tiers": unmapped_tiers, "untiered": untiered}
 
 
 def inventory_cli(argv):
@@ -593,29 +598,49 @@ def inventory_cli(argv):
     return 0
 
 
-def list_tier(root, cfg, tier):
-    """The tracked test files of one tier, sorted: the whole tier a mutant must survive to prove a test gap."""
+def list_tier(root, cfg, tier, module=None):
+    """The tracked test files of one tier, sorted: the whole tier a mutant must survive to prove a test gap.
+    With `module`, only the files inventory() counts for that module (None when it is not a module)."""
     tracked = [n for n in _git(["ls-files", "-z"], root).split("\0") if n]
-    return [n for n in sorted(tracked) if tier_of(n, cfg) == tier]
+    files = [n for n in sorted(tracked) if tier_of(n, cfg) == tier]
+    if module is None:
+        return files
+    modules = _modules(tracked, cfg, module.count("/") + 1)
+    if module not in modules:
+        return None
+    return [n for n in files if _owner_module(n.split("/")[:-1], modules) == module]
 
 
 def list_tier_cli(argv):
-    """Print the tracked test files of TIER, one per line; exit 2 for a missing or unknown tier, or outside a repo."""
+    """Print the tracked test files of TIER (of one module with --module PATH), one per line;
+    exit 2 for a missing or unknown tier or module, or outside a repo."""
     i = argv.index("--list-tier") + 1
     if i >= len(argv) or argv[i] not in TIERS:
         print(f"--list-tier needs one of {', '.join(TIERS)}", file=sys.stderr)
         return 2
+    module = None
+    if "--module" in argv:
+        j = argv.index("--module") + 1
+        module = argv[j].strip("/") if j < len(argv) else ""
+        if not module:
+            print("--module needs a PATH", file=sys.stderr)
+            return 2
     root = _git(["rev-parse", "--show-toplevel"], os.getcwd()).strip()
     if not root:
         print("not inside a git repository", file=sys.stderr)
         return 2
-    for name in list_tier(root, load_cfg(root), argv[i]):
+    names = list_tier(root, load_cfg(root), argv[i], module)
+    if names is None:
+        print(f"--module {module} is not a module: --inventory --depth {module.count('/') + 1} lists them", file=sys.stderr)
+        return 2
+    for name in names:
         print(name)
     return 0
 
 
 def is_test_cli(argv):
-    """Exit 0 when PATH is a test file under the repo's config, 1 when not, 2 outside a repo."""
+    """Exit 0 when PATH is a test file under the repo's config, 3 when not, 2 outside a repo.
+    Not 1: a Python crash exits 1, and a caller must never read a crash as an answer."""
     i = argv.index("--is-test") + 1
     if i >= len(argv):
         print("--is-test needs a PATH", file=sys.stderr)
@@ -629,7 +654,7 @@ def is_test_cli(argv):
         print("not inside a git repository", file=sys.stderr)
         return 2
     rel = os.path.relpath(os.path.realpath(os.path.join(os.getcwd(), path)), os.path.realpath(root)).replace(os.sep, "/")
-    return 0 if not rel.startswith("..") and is_test(rel, load_cfg(root)) else 1
+    return 0 if not rel.startswith("..") and is_test(rel, load_cfg(root)) else 3
 
 
 def inventory_self_test(cfg):
@@ -659,6 +684,7 @@ def inventory_self_test(cfg):
         assert inv2["modules"]["app/charts"] == {"unit": 1, "integration": 1, "e2e": 0}, inv2
         assert inv2["modules"]["pkg"] == {"unit": 1, "integration": 0, "e2e": 0}, inv2
         assert "tests/unit/test_misc.py" in inv2["unmapped"], inv2
+        assert inv2["unmapped_tiers"] == {"unit": 1, "integration": 0, "e2e": 0}, inv2
         assert inv2["untiered"] == ["tests/test_plain.py"], inv2
         put("a/utils/u.py"); put("b/utils/u.py"); put("tests/unit/utils/test_x.py")  # ambiguous last segment
         git("add", "-A"); git("commit", "-qm", "dup")
@@ -667,7 +693,7 @@ def inventory_self_test(cfg):
         assert inv3["modules"]["a/utils"]["unit"] == inv3["modules"]["b/utils"]["unit"] == 0, inv3
         assert is_test_cli("pkg/tests/unit/test_a.py") == 0
         assert is_test_cli(os.path.join(os.path.realpath(tmp_inv), "tests/test_plain.py"), cwd="/") == 0
-        assert is_test_cli("pkg/a.py") == 1
+        assert is_test_cli("pkg/a.py") == 3, "not a test: 3, so a crash (1) is never read as an answer"
         assert is_test_cli("/etc/hosts", cwd="/") == 2, "outside a git repo"
 
         def list_tier_cli(*args, cwd=tmp_inv):
@@ -682,6 +708,12 @@ def inventory_self_test(cfg):
         assert list_tier_cli("smoke").returncode == 2, "an unknown tier"
         assert list_tier_cli().returncode == 2, "no tier"
         assert list_tier_cli("unit", cwd="/").returncode == 2, "outside a git repo"
+        # --module: only the files inventory() counts for that module, at the module path's own depth
+        assert list_tier_cli("unit", "--module", "pkg").stdout.splitlines() == ["pkg/tests/unit/test_a.py"]
+        assert list_tier_cli("unit", "--module", "app/charts/").stdout.splitlines() == ["tests/unit/charts/test_b.py"]
+        assert list_tier_cli("e2e", "--module", "pkg").stdout == "", "a module with no tests of the tier"
+        assert list_tier_cli("unit", "--module", "nope").returncode == 2, "an unknown module"
+        assert list_tier_cli("unit", "--module").returncode == 2, "no module path"
 
 
 def removed_self_test(cfg):

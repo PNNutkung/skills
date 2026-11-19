@@ -114,6 +114,27 @@ test('harmless commands, test and run-folder redirects and stderr merges are all
   }
 });
 
+test('a > inside quotes is not a redirect, but a quoted target right after > is', () => {
+  for (const c of [`node -e 'x > 2'`, 'python3 -c "print(1 > 0)"', 'echo "a > src/app.py"']) assert.equal(hookBash(c), null, c);
+  for (const c of ['echo x > "src/app.py"', "echo 'a' > 'src/app.py'"]) assert.equal(hookBash(c)?.permissionDecision, 'deny', c);
+});
+
+test('git commands that discard uncommitted work are denied; stash list and show are allowed', () => {
+  for (const c of ['git checkout -- src/app.py', 'git checkout HEAD -- tests/unit/test_app.py', 'git restore src/app.py', 'git restore --staged .',
+    'git reset --hard', 'git -C . reset --hard HEAD~1', 'git stash', 'git stash push -m x', 'git stash pop', 'git stash drop', 'git clean -fd']) {
+    assert.equal(hookBash(c)?.permissionDecision, 'deny', c);
+  }
+  for (const c of ['git stash list', 'git stash show -p', 'git checkout -b qa', 'git reset --soft HEAD~1']) assert.equal(hookBash(c), null, c);
+});
+
+test('a crash of the test-file check (python3 exits 1) is unknown, so the edit is allowed', () => {
+  const bin = mkdtempSync(join(tmp, 'bin-'));
+  writeFileSync(join(bin, 'python3'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const input = { session_id: 's1', cwd: repo, tool_name: 'Edit', tool_input: { file_path: join(repo, 'src/app.py'), old_string: 'a', new_string: 'b' } };
+  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(input), env: { ...env, PATH: `${bin}:${process.env.PATH}` }, encoding: 'utf8' });
+  assert.deepEqual([r.status, r.stdout], [0, '']);
+});
+
 test('another session, another repo, a stale marker and no session_id are all inactive', () => {
   const edit = { file_path: join(repo, 'src/app.py'), old_string: 'a', new_string: 'b' };
   assert.equal(hookOut({ session_id: 's2', cwd: repo, tool_name: 'Edit', tool_input: edit }), null);

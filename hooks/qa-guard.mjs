@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PreToolUse hook (Edit|Write|Bash) for the qa-sweep skill. While a qa-sweep run is active for this session and repo, it keeps the
-// session to additive test changes and no commits. Everything else is allowed, and the end command is always allowed and named in every deny.
+// session to additive test changes, no commits and no git command that discards uncommitted work. Everything else is allowed, and the end command is always allowed and named in every deny.
 // It catches agent mistakes, not a determined attacker: the Bash checks are best-effort pattern matching on the command text (no shell
 // parsing, no `cd` tracking, no subshells or aliases), exactly like zt-guard.mjs. Test-file status comes from hooks/pr-test-tiers.
 // Fail open: it ALWAYS exits 0 (exit 2 would block the tool call). It denies only through the JSON permissionDecision; any internal
@@ -18,7 +18,11 @@ const END_COMMAND_RE = /qa-sweep\/run\.mjs["']?\s+end\b/;
 const SEGMENT_SPLIT_RE = /&&|\|\||[;|&\n]/;
 const WRAPPERS = new Set(['env', 'command', 'sudo', 'time', 'nohup', 'exec']);
 const FORBIDDEN_GIT = new Set(['commit', 'push']);
+const DISCARDING_GIT = new Set(['restore', 'clean']); // any form destroys uncommitted work
+const STASH_READS = new Set(['list', 'show']);
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+const IS_TEST_EXIT = 0, NOT_TEST_EXIT = 3; // pr-test-tiers.py --is-test; 2 is outside a repo, 1 a crash
+const REDIRECT_RE = /(?:^|[\s\d])(>>?)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g;
 
 // ---------- additive-change checks ----------
 const linesOf = (text) => String(text).split('\n').map((l) => l.replace(/\r$/, ''));
@@ -56,10 +60,10 @@ function repoOf(path) {
 }
 const isInside = (child, parent) => child === parent || child.startsWith(parent + sep);
 
-/** true = test file, false = not a test file, null = unknown (fail open). */
+/** true = test file, false = not a test file, null = unknown (fail open): any other exit, such as 1 from a Python crash. */
 function isTestFile(path, repo) {
   const r = spawnSync('python3', [TIERS_PY, '--is-test', relative(repo, realPathLoose(path))], { cwd: repo, encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS });
-  return r.status === 0 ? true : r.status === 1 ? false : null;
+  return r.status === IS_TEST_EXIT ? true : r.status === NOT_TEST_EXIT ? false : null;
 }
 
 // ---------- Bash ----------
@@ -72,21 +76,34 @@ function stripPrefix(tokens) {
   while (i < tokens.length && (/^[A-Za-z_]\w*=/.test(tokens[i]) || WRAPPERS.has(tokens[i]))) i++;
   return tokens.slice(i);
 }
-/** The git subcommand of a token list that starts with git, skipping global flags (-C X, -c K=V, --git-dir=...). */
-function gitSubcommand(tokens) {
-  if (basename(tokens[0] ?? '') !== 'git') return null;
+/** The git subcommand and its arguments of a token list that starts with git, skipping global flags (-C X, -c K=V, --git-dir=...). */
+function gitArgs(tokens) {
+  if (basename(tokens[0] ?? '') !== 'git') return [];
   for (let i = 1; i < tokens.length; i++) {
     const t = tokens[i];
-    if (!t.startsWith('-')) return t;
+    if (!t.startsWith('-')) return tokens.slice(i);
     if (GIT_VALUE_FLAGS.has(t)) i++;
   }
-  return null;
+  return [];
+}
+/** A deny reason for a git command that commits, pushes or discards uncommitted work, or null. */
+function gitVerdict(tokens) {
+  const [sub, ...rest] = gitArgs(tokens);
+  if (FORBIDDEN_GIT.has(sub)) return `git ${sub} is not allowed`;
+  const discards = DISCARDING_GIT.has(sub) || (sub === 'checkout' && rest.includes('--')) || (sub === 'reset' && rest.includes('--hard'))
+    || (sub === 'stash' && !STASH_READS.has(rest[0]));
+  return discards ? `git ${[sub, ...rest].join(' ')} would discard uncommitted work` : null;
 }
 const nonFlags = (tokens) => tokens.filter((t) => t && !t.startsWith('-'));
 
-/** Files this segment writes, each { path, append }: output redirects, `tee [-a] FILE...`, `sed -i ... FILE...`. */
-function writeTargets(seg, tokens) {
-  const targets = [...seg.matchAll(/(?:^|[\s\d])(>>?)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g)].map((m) => ({ path: unquote(m[2]), append: m[1] === '>>' }));
+// A quoted span is data (`node -e 'x > 2'`), except a quoted target right after > (`> "src/app.py"`): blank the rest, same length.
+const blankQuotes = (s) => s.replace(/(>>?\s*)?("[^"]*"|'[^']*')/g, (m, redirect) => (redirect ? m : ' '.repeat(m.length)));
+/** Output redirect targets of a whole command, each { path, append }. */
+const redirectTargets = (command) => [...blankQuotes(command).matchAll(REDIRECT_RE)].map((m) => ({ path: unquote(m[2]), append: m[1] === '>>' }));
+
+/** Files this segment writes through a command, each { path, append }: `tee [-a] FILE...`, `sed -i ... FILE...`. */
+function writeTargets(tokens) {
+  const targets = [];
   if (tokens[0] === 'tee') {
     const append = tokens.some((t) => t === '-a' || t === '--append');
     targets.push(...nonFlags(tokens.slice(1)).map((path) => ({ path, append })));
@@ -103,18 +120,20 @@ function writeTargets(seg, tokens) {
 export function bashVerdict(command, ctx) {
   if (END_COMMAND_RE.test(command)) return null;
   const cleaned = command.replace(/\d*>&\d*-?/g, ' ').replace(/&>>?/g, '>');
+  const targets = redirectTargets(cleaned);
   for (const seg of cleaned.split(SEGMENT_SPLIT_RE)) {
     const tokens = stripPrefix(tokenize(seg));
-    const sub = gitSubcommand(tokens);
-    if (FORBIDDEN_GIT.has(sub)) return `git ${sub} is not allowed`;
-    for (const { path, append } of writeTargets(seg, tokens)) {
-      if (path.startsWith('/dev/')) continue;
-      const abs = realPathLoose(isAbsolute(path) ? path : join(ctx.cwd, path));
-      if (isInside(abs, ctx.run) || !isInside(abs, ctx.repo)) continue; // the run folder and anything outside the repo are not guarded
-      const test = ctx.isTest(abs);
-      if (test === false) return `writing to ${path} would change a file that is not a test file`;
-      if (test && !append && existsSync(abs)) return `writing to ${path} would truncate or rewrite an existing test file (appending is allowed)`;
-    }
+    const why = gitVerdict(tokens);
+    if (why) return why;
+    targets.push(...writeTargets(tokens));
+  }
+  for (const { path, append } of targets) {
+    if (path.startsWith('/dev/')) continue;
+    const abs = realPathLoose(isAbsolute(path) ? path : join(ctx.cwd, path));
+    if (isInside(abs, ctx.run) || !isInside(abs, ctx.repo)) continue; // the run folder and anything outside the repo are not guarded
+    const test = ctx.isTest(abs);
+    if (test === false) return `writing to ${path} would change a file that is not a test file`;
+    if (test && !append && existsSync(abs)) return `writing to ${path} would truncate or rewrite an existing test file (appending is allowed)`;
   }
   return null;
 }
