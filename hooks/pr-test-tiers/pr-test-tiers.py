@@ -93,6 +93,9 @@ SKIP_MARKER = re.compile(r"skip-reason:\s*\S+")
 TRAILER = re.compile(r"^Test-Removed:\s*(.+?):\s*\S", re.M)
 PY_TEST_DEF = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w*)\s*\(")
 JS_TEST_CASE = re.compile(r"\b(?:it|test)(?:\.only)?\s*\(\s*(['\"`])(.+?)\1")
+# a TS/JS case line, skipped or not (`it.skip('t'`, `xit('t'`), and a Go test function
+JS_CASE_ANY = re.compile(r"\b(?:x?it|x?test|describe)(?:\.\w+)?\s*\(\s*(['\"`])(.+?)\1")
+GO_TEST_FUNC = re.compile(r"^func\s+(Test\w*)\s*\(")
 HUNK_NEW_START = re.compile(r"\+(\d+)")
 REMOVED_HINT = (
     "Give a reason with `skip-reason: <reason>` next to a skip, or a "
@@ -339,8 +342,9 @@ def _read(root, rel):
 
 
 def _markers(text):
-    """{owner: [line numbers]} of skip and expected-failure markers outside comments. The owner is the
-    Python test whose decorators or body hold the marker, else the marker's stripped text (count-based)."""
+    """{owner: [line numbers]} of skip and expected-failure markers outside comments. The owner is the Python
+    test holding the marker, else the nearest preceding TS/JS case title or Go test function (a marker on
+    a case line belongs to that case), else the marker's stripped text (count-based)."""
     lines = text.splitlines()
     owner = [None] * len(lines)
     for i, line in enumerate(lines):
@@ -352,10 +356,14 @@ def _markers(text):
             owner[j], j = m.group(1), j - 1
         while k < len(lines) and (not lines[k].strip() or len(lines[k]) - len(lines[k].lstrip()) > indent):
             owner[k], k = m.group(1), k + 1
-    out = {}
+    out, case = {}, None
     for num, line in enumerate(lines, 1):
-        if not line.strip().startswith(("#", "//")) and any(r.search(line) for r in SKIP_PATTERNS):
-            out.setdefault(owner[num - 1] or line.strip(), []).append(num)
+        if line.strip().startswith(("#", "//")):
+            continue
+        m = JS_CASE_ANY.search(line) or GO_TEST_FUNC.match(line)
+        case = m.groups()[-1] if m else case
+        if any(r.search(line) for r in SKIP_PATTERNS):
+            out.setdefault(owner[num - 1] or case or line.strip(), []).append(num)
     return out
 
 
@@ -680,6 +688,8 @@ def removed_self_test(cfg):
         put("tests/unit/test_skipped.py", "import pytest\n@pytest.mark.skip(reason='flaky')\ndef test_s(): ...\n")
         put("tests/unit/test_pair.py", "import pytest\n@pytest.mark.skip(reason='x')\ndef test_a(): ...\ndef test_b(): ...\n")
         put("tests/unit/test_doc.py", "# pytest.skip( is how we skip\ndef test_d(): ...\n")
+        put("tests/unit/sample_test.go", 'package x\nfunc TestA(t *testing.T) {\n\tt.Skip("x")\n}\nfunc TestB(t *testing.T) {\n}\n')
+        put("tests/e2e/flow.spec.ts", "test('a', async () => {\n  test.fail()\n})\ntest('b', async () => {\n})\n")
         put("tests/unit/total.test.ts", "test('should total the cart when items exist', () => {})\n")
         land("base")
 
@@ -745,6 +755,17 @@ def removed_self_test(cfg):
         branch("newxfail")
         put("tests/unit/test_new.py", "import pytest\n@pytest.mark.xfail(strict=True)\ndef test_n(): ...\n"); land("newxfail")
         assert "added skip" in pr()["permissionDecisionReason"]
+
+        # body markers outside Python: owned by the preceding Go func or TS/JS case
+        branch("gomv")
+        put("tests/unit/sample_test.go", 'package x\nfunc TestA(t *testing.T) {\n}\nfunc TestB(t *testing.T) {\n\tt.Skip("x")\n}\n'); land("gomv")
+        assert "added skip" in pr()["permissionDecisionReason"]
+        branch("pwmv")
+        put("tests/e2e/flow.spec.ts", "test('a', async () => {\n})\ntest('b', async () => {\n  test.fail()\n})\n"); land("pwmv")
+        assert "added skip" in pr()["permissionDecisionReason"]
+        branch("pwsame")
+        put("tests/e2e/flow.spec.ts", "test('a', async () => {\n  await go()\n  test.fail()\n})\ntest('b', async () => {\n})\n"); land("pwsame")
+        assert not denied(pr())
 
         # TS/JS: a removed test title -> deny; moved to another file -> allowed
         branch("ts")
