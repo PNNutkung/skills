@@ -35,13 +35,14 @@ const isMine = (st, o) => uidOf(o) === undefined || st.uid === uidOf(o);
 // Same checks as readMarker in ../zero-trust-review/runctx.mjs: a regular file, not a link, ours, closed to group and others, and fresh.
 const trusted = (st, o) => st.isFile() && !st.isSymbolicLink() && isMine(st, o) && (st.mode & 0o022) === 0 && (o.now ?? Date.now()) - st.mtimeMs <= IDLE_MS;
 
+const safeMarkerDir = (dir, o) => { const st = lstatSync(dir); return st.isDirectory() && !st.isSymbolicLink() && isMine(st, o) && (st.mode & 0o022) === 0; };
+
 /** The marker of this session when it is trusted and names a trusted run folder, else null. Never throws: the hook calls it on every tool use. */
 export function readActive(o = {}) {
   try {
     const f = markerPath(o.session, o.env), st = lstatSync(f);
     if (!trusted(st, o)) return null;
-    const dir = lstatSync(dirname(f));
-    if (!dir.isDirectory() || dir.isSymbolicLink() || !isMine(dir, o) || (dir.mode & 0o022) !== 0) return null;
+    if (!safeMarkerDir(dirname(f), o)) return null;
     const m = JSON.parse(readFileSync(f, 'utf8'));
     if (!zt || !zt.checkRunDir(m.run, o)) return null;
     return { run: m.run, session: m.session, repo: m.repo, started: m.started };
@@ -56,9 +57,12 @@ export function start(o = {}) {
   if (active) throw new Error(`a run is active: ${active.run}`);
   const repo = realpathSync(execFileSync('git', ['-C', o.repo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim());
   const run = createRunDir(`qa-${now.toISOString().replaceAll(':', '-')}`, o);
-  mkdirSync(markerDir(o.env), { recursive: true, mode: 0o700 });
+  const md = markerDir(o.env);
+  mkdirSync(md, { recursive: true, mode: 0o700 });
+  if (!safeMarkerDir(md, o)) throw new Error(`unsafe marker dir ${md}`); // readActive would refuse every marker in it: the guard would be silently off
   rmSync(f, { force: true }); // a stale or planted marker (a symlink goes, never its target)
   writeFileSync(f, JSON.stringify({ run, session: o.session, repo, started: now.toISOString() }) + '\n', { mode: 0o600, flag: 'wx' });
+  if (!readActive({ ...o, now: undefined })) { rmSync(f, { force: true }); throw new Error('the new marker did not verify: the run would not be guarded'); }
   return { run, marker: f };
 }
 
@@ -77,7 +81,9 @@ export function end(o = {}) {
 
 function main(argv) {
   const fail = (code, msg) => { process.stderr.write(`qa-run: ${msg}\n`); process.exit(code); };
-  const { positionals: [cmd], values } = parseArgs({ args: argv, allowPositionals: true, options: { repo: { type: 'string' }, session: { type: 'string' } } });
+  let parsed;
+  try { parsed = parseArgs({ args: argv, allowPositionals: true, options: { repo: { type: 'string' }, session: { type: 'string' } } }); } catch (e) { fail(2, e.message); }
+  const { positionals: [cmd], values } = parsed;
   const session = values.session ?? process.env.CLAUDE_CODE_SESSION_ID;
   if (!['start', 'end', 'touch'].includes(cmd)) fail(2, 'usage: run.mjs start --repo DIR | end | touch [--session ID]');
   if (!session) fail(2, 'no session id: pass --session');

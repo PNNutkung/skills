@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,3 +95,15 @@ test('importing the module with zero-trust-review missing does not exit or throw
 });
 
 test('a bad session id is refused', () => assert.throws(() => markerPath('../x'), /bad session id/));
+
+test('start throws unsafe marker dir and leaves no marker when the dir is group-writable', () => {
+  const { repo, env, tmp, markers } = fixture();
+  chmodSync(markers, 0o770);
+  assert.throws(() => start({ repo, session: 's1', env, tmp }), /unsafe marker dir/);
+  assert.equal(existsSync(markerPath('s1', env)), false);
+});
+
+test('the CLI with an unknown flag exits 2', () => {
+  const r = spawnSync('node', [join(HERE, 'run.mjs'), 'start', '--bogus'], { env: { ...process.env, CLAUDE_CODE_SESSION_ID: 's1' }, encoding: 'utf8' });
+  assert.equal(r.status, 2);
+});
