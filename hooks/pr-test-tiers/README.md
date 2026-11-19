@@ -84,6 +84,7 @@ Register it in `~/.claude/settings.json`, once for Bash and once for Write:
 - **Check from a script or an agent.** `python3 pr-test-tiers.py --check [--base BRANCH]` prints what the change-request gate says about the branch plus the index, and exits 1 when it would deny.
 - **Inventory.** `python3 pr-test-tiers.py --inventory [--depth N]` prints JSON: per-module unit/integration/e2e counts (a module is the first N directories of tracked source files, default 1), `unmapped` (tiered tests no module owns) and `untiered` (test files with no tier). Exits 2 outside a git repo.
 - **Is this a test file?** `python3 pr-test-tiers.py --is-test PATH` (repo-relative or absolute) exits 0 for a test file under the repo's config, 1 otherwise, 2 outside a git repo.
+- **One tier's test files.** `python3 pr-test-tiers.py --list-tier unit|integration|e2e` prints the tracked test files of that tier, one per line (nothing for an empty tier). Exits 2 for any other tier name or outside a git repo.
 
 ## Limits
 

@@ -3,6 +3,7 @@
 //   node run.mjs start --repo DIR [--session ID]   create the run folder and the marker, print {run, marker}
 //   node run.mjs touch [--session ID]               refresh the marker's idle clock
 //   node run.mjs end   [--session ID]               remove the marker, print {ended}
+//   node run.mjs snap  --files a,b [--session ID]   commit HEAD plus those working-tree files (temporary index: no ref, index or file changes), print {snap}
 // The marker is what hooks/qa-guard.mjs reads (readActive) to restrict the session; the session defaults to $CLAUDE_CODE_SESSION_ID.
 // Importing this file never exits or throws: the hook imports it, and a PreToolUse hook that exits 2 blocks the user's tool call.
 // zero-trust-review (ZT_DIR overrides where it lives) is needed only to create a run folder and to vet one; a missing one is an Error, and only the CLI turns it into exit 2.
@@ -10,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -72,6 +73,43 @@ export function touch(o = {}) {
   const t = new Date(); utimesSync(markerPath(o.session, o.env), t, t);
 }
 
+const COMMIT_ENV = { GIT_AUTHOR_NAME: 'qa-sweep', GIT_AUTHOR_EMAIL: 'qa-sweep@localhost', GIT_COMMITTER_NAME: 'qa-sweep', GIT_COMMITTER_EMAIL: 'qa-sweep@localhost' };
+
+/** repo-relative path of f when it names a regular file inside the repo (no link, no escape), else null */
+function insideFile(repo, f) {
+  try {
+    const p = join(repo, f), st = lstatSync(p);
+    const rel = relative(repo, join(realpathSync(dirname(p)), basename(p)));
+    return st.isFile() && rel !== '' && !rel.startsWith('..') && !isAbsolute(rel) ? rel : null;
+  } catch { return null; }
+}
+
+/**
+ * A commit of HEAD plus the given working-tree files of the active run's repo, built with a temporary index in the run folder,
+ * like snapshot() in ../paired-agent-tdd/tdd.mjs: no ref, no index and no file of the repo changes (only loose objects are added).
+ * mutate.mjs reads committed code, so this is how a new, uncommitted test reaches it.
+ */
+export function snap(o = {}) {
+  const active = readActive(o);
+  if (!active) throw new Error('no active run: run.mjs start first');
+  if (!o.files?.length) throw new Error('snap needs --files');
+  const { repo, run } = active, index = join(run, `snap-${process.pid}-${Date.now()}.index`);
+  const g = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8', env: { ...process.env, ...COMMIT_ENV, GIT_INDEX_FILE: index }, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    const parent = g('rev-parse', '--verify', 'HEAD^{commit}');
+    g('read-tree', parent);
+    for (const f of new Set(o.files)) {
+      const rel = insideFile(repo, f);
+      if (!rel) throw new Error(`refusing to snapshot ${f}: not a regular file inside the repo`);
+      const mode = lstatSync(join(repo, rel)).mode & 0o111 ? '100755' : '100644';
+      g('update-index', '--add', '--cacheinfo', `${mode},${g('hash-object', '-w', '--no-filters', '--', rel)},${rel}`);
+    }
+    const sha = g('commit-tree', g('write-tree'), '-p', parent, '-m', 'qa-sweep snapshot');
+    touch(o);
+    return { snap: sha };
+  } finally { rmSync(index, { force: true }); }
+}
+
 /** Remove this session's marker; idempotent. */
 export function end(o = {}) {
   const f = markerPath(o.session, o.env), ended = readActive(o)?.run ?? null;
@@ -82,17 +120,19 @@ export function end(o = {}) {
 function main(argv) {
   const fail = (code, msg) => { process.stderr.write(`qa-run: ${msg}\n`); process.exit(code); };
   let parsed;
-  try { parsed = parseArgs({ args: argv, allowPositionals: true, options: { repo: { type: 'string' }, session: { type: 'string' } } }); } catch (e) { fail(2, e.message); }
+  try { parsed = parseArgs({ args: argv, allowPositionals: true, options: { repo: { type: 'string' }, session: { type: 'string' }, files: { type: 'string' } } }); } catch (e) { fail(2, e.message); }
   const { positionals: [cmd], values } = parsed;
   const session = values.session ?? process.env.CLAUDE_CODE_SESSION_ID;
-  if (!['start', 'end', 'touch'].includes(cmd)) fail(2, 'usage: run.mjs start --repo DIR | end | touch [--session ID]');
+  if (!['start', 'end', 'touch', 'snap'].includes(cmd)) fail(2, 'usage: run.mjs start --repo DIR | end | touch | snap --files a,b [--session ID]');
   if (!session) fail(2, 'no session id: pass --session');
   if (cmd === 'start' && !values.repo) fail(2, 'start needs --repo DIR');
+  if (cmd === 'snap' && !values.files) fail(2, 'snap needs --files a,b');
   if (!zt && cmd === 'start') fail(2, ZT_MISSING);
   try {
-    const out = cmd === 'start' ? start({ repo: values.repo, session }) : cmd === 'end' ? end({ session }) : (touch({ session }), { touched: true });
-    process.stdout.write(JSON.stringify(out) + '\n');
-  } catch (e) { fail(/a run is active|bad session id/.test(e.message) ? 2 : 1, e.message); }
+    const run = { start: () => start({ repo: values.repo, session }), end: () => end({ session }), touch: () => (touch({ session }), { touched: true }),
+      snap: () => snap({ session, files: values.files.split(',').filter(Boolean) }) };
+    process.stdout.write(JSON.stringify(run[cmd]()) + '\n');
+  } catch (e) { fail(/a run is active|bad session id|no active run|snap needs/.test(e.message) ? 2 : 1, e.message); }
 }
 
 const direct = (() => { try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();

@@ -39,6 +39,8 @@ Inventory:     python3 pr-test-tiers.py --inventory [--depth N]
                module owns) and `untiered` (test files with no tier); exit 2 outside a git repo
 Test file?     python3 pr-test-tiers.py --is-test PATH
                exit 0 when PATH (repo-relative or absolute) is a test file, 1 when not, 2 outside a repo
+One tier:      python3 pr-test-tiers.py --list-tier unit|integration|e2e
+               the tracked test files of that tier, one per line; exit 2 for another tier or outside a repo
 Self-test:     python3 pr-test-tiers.py --self-test
 """
 
@@ -591,6 +593,27 @@ def inventory_cli(argv):
     return 0
 
 
+def list_tier(root, cfg, tier):
+    """The tracked test files of one tier, sorted: the whole tier a mutant must survive to prove a test gap."""
+    tracked = [n for n in _git(["ls-files", "-z"], root).split("\0") if n]
+    return [n for n in sorted(tracked) if tier_of(n, cfg) == tier]
+
+
+def list_tier_cli(argv):
+    """Print the tracked test files of TIER, one per line; exit 2 for a missing or unknown tier, or outside a repo."""
+    i = argv.index("--list-tier") + 1
+    if i >= len(argv) or argv[i] not in TIERS:
+        print(f"--list-tier needs one of {', '.join(TIERS)}", file=sys.stderr)
+        return 2
+    root = _git(["rev-parse", "--show-toplevel"], os.getcwd()).strip()
+    if not root:
+        print("not inside a git repository", file=sys.stderr)
+        return 2
+    for name in list_tier(root, load_cfg(root), argv[i]):
+        print(name)
+    return 0
+
+
 def is_test_cli(argv):
     """Exit 0 when PATH is a test file under the repo's config, 1 when not, 2 outside a repo."""
     i = argv.index("--is-test") + 1
@@ -646,6 +669,19 @@ def inventory_self_test(cfg):
         assert is_test_cli(os.path.join(os.path.realpath(tmp_inv), "tests/test_plain.py"), cwd="/") == 0
         assert is_test_cli("pkg/a.py") == 1
         assert is_test_cli("/etc/hosts", cwd="/") == 2, "outside a git repo"
+
+        def list_tier_cli(*args, cwd=tmp_inv):
+            return subprocess.run([sys.executable, os.path.abspath(__file__), "--list-tier", *args], cwd=cwd,
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+        unit = list_tier_cli("unit")
+        assert unit.returncode == 0, unit.stderr
+        assert unit.stdout.splitlines() == ["pkg/tests/unit/test_a.py", "tests/unit/charts/test_b.py",
+                                            "tests/unit/test_misc.py", "tests/unit/utils/test_x.py"], unit.stdout
+        assert list_tier_cli("integration").stdout.splitlines() == ["tests/integration/charts/test_b_db.py"]
+        assert list_tier_cli("e2e").stdout == "", "a tier with no test files prints nothing"
+        assert list_tier_cli("smoke").returncode == 2, "an unknown tier"
+        assert list_tier_cli().returncode == 2, "no tier"
+        assert list_tier_cli("unit", cwd="/").returncode == 2, "outside a git repo"
 
 
 def removed_self_test(cfg):
@@ -938,5 +974,7 @@ if __name__ == "__main__":
         sys.exit(inventory_cli(sys.argv))
     elif "--is-test" in sys.argv:
         sys.exit(is_test_cli(sys.argv))
+    elif "--list-tier" in sys.argv:
+        sys.exit(list_tier_cli(sys.argv))
     else:
         main()
