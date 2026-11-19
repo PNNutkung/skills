@@ -391,10 +391,8 @@ def _owner_module(test_dirs, modules):
         parts = m.split("/")
         if rest[: len(parts)] == parts:
             return m
-    for m in sorted(modules):
-        if rest[:1] == [m.rsplit("/", 1)[-1]]:
-            return m
-    return None
+    by_name = [m for m in modules if rest[:1] == [m.rsplit("/", 1)[-1]]]
+    return by_name[0] if len(by_name) == 1 else None  # several modules share the name: unmapped
 
 
 def inventory(root, cfg, depth=1):
@@ -480,6 +478,11 @@ def inventory_self_test(cfg):
         assert inv2["modules"]["pkg"] == {"unit": 1, "integration": 0, "e2e": 0}, inv2
         assert "tests/unit/test_misc.py" in inv2["unmapped"], inv2
         assert inv2["untiered"] == ["tests/test_plain.py"], inv2
+        put("a/utils/u.py"); put("b/utils/u.py"); put("tests/unit/utils/test_x.py")  # ambiguous last segment
+        git("add", "-A"); git("commit", "-qm", "dup")
+        inv3 = inventory(tmp_inv, cfg, depth=2)
+        assert "tests/unit/utils/test_x.py" in inv3["unmapped"], inv3
+        assert inv3["modules"]["a/utils"]["unit"] == inv3["modules"]["b/utils"]["unit"] == 0, inv3
         assert is_test_cli("pkg/tests/unit/test_a.py") == 0
         assert is_test_cli(os.path.join(os.path.realpath(tmp_inv), "tests/test_plain.py"), cwd="/") == 0
         assert is_test_cli("pkg/a.py") == 1
