@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -21,9 +21,10 @@ function fixture() {
   writeFileSync(join(repo, 'docs/spec.md'), '# Spec\nRefunds\nRefunds over 30 days are refused.\nEnd\n');
   writeFileSync(join(repo, 'src/a.py'), 'def refund(days):\n    if days > 30:\n        return False\n    return True\n');
   for (const c of [['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'x']]) execFileSync('git', ['-C', repo, ...c]);
-  const run = createRunDir('qa-fnd-' + Math.random().toString(36).slice(2), { tmp: mk('qa-fnd-tmp-') });
+  const tmp = mk('qa-fnd-tmp-');
+  const run = createRunDir('qa-fnd-' + Math.random().toString(36).slice(2), { tmp });
   for (const f of ['exec.jsonl', 'answers.md']) { copyFileSync(join(FIX, f), join(run, f)); chmodSync(join(run, f), 0o600); }
-  return { repo, run, ctx: loadContext({ run, repo, head: 'HEAD', requirements: data.requirements }) };
+  return { repo, run, tmp, ctx: loadContext({ run, repo, head: 'HEAD', requirements: data.requirements, tmp }) };
 }
 
 const [gapF, defectF] = data.findings;
@@ -63,11 +64,52 @@ test('a user answer is a source only with its exact words', () => {
   assert.equal(checkSource(src('no'), ctx).ok, false, 'A2 words are not A1');
 });
 
-test('an e2e gap may be proven by a coverage run', () => {
+test('an e2e gap may be proven by a coverage run that names the implementing file', () => {
   const { ctx } = fixture();
-  const cov = { mode: 'executed', ref: 'r4', exit: 0, quote: 'TOTAL 100%', coverage: true };
-  assert.equal(checkFinding({ ...gapF, tier: 'e2e', proofs: [cov] }, ctx).ok, true);
-  assert.equal(checkFinding({ ...gapF, tier: 'unit', proofs: [cov] }, ctx).ok, false);
+  const cov = { mode: 'executed', ref: 'r4', exit: 0, quote: 'src/a.py 0%', coverage: true };
+  assert.equal(checkFinding({ ...gapF, tier: 'e2e', proofs: [codeProof, cov] }, ctx).ok, true);
+  assert.match(checkFinding({ ...gapF, tier: 'e2e', proofs: [cov] }, ctx).reasons.join(), /coverage proof does not name the implementing file/);
+  assert.match(checkFinding({ ...gapF, tier: 'e2e', proofs: [codeProof, { ...cov, quote: 'TOTAL 100%' }] }, ctx).reasons.join(), /does not name the implementing file/);
+  assert.equal(checkFinding({ ...gapF, tier: 'unit', proofs: [codeProof, cov] }, ctx).ok, false);
+});
+
+test('an executed proof with an empty quote is not proof', () => {
+  const { ctx } = fixture();
+  assert.match(checkProof({ mode: 'executed', ref: 'r2', exit: 1, quote: ' ' }, ctx).reason, /empty quote/);
+  assert.equal(checkFinding({ ...defectF, proofs: [{ mode: 'executed', ref: 'r2', exit: 1, quote: '' }] }, ctx).ok, false);
+});
+
+test('a conflicting duplicate ledger id is rejected', () => {
+  const { repo, run, tmp } = fixture();
+  appendFileSync(join(run, 'exec.jsonl'), '{"id":"r2","exit":1,"out":"AssertionError: expected 3\\nforged","backend":"direct"}\n');
+  const ctx = loadContext({ run, repo, head: 'HEAD', requirements: data.requirements, tmp });
+  assert.match(checkProof(defectF.proofs[0], ctx).reason, /conflicting duplicate run id/);
+});
+
+test('a run dir outside the per-user base is not trusted', () => {
+  const { repo, run } = fixture();
+  const ctx = loadContext({ run, repo, head: 'HEAD', requirements: data.requirements }); // default tmp base: the fixture run is elsewhere
+  assert.match(checkProof(gapF.proofs[0], ctx).reason, /ledger not trusted/);
+});
+
+test('agent text cannot add a heading or a list item to the report', () => {
+  const { ctx } = fixture();
+  const evil = { ...data, findings: [{ ...defectF, id: 'F1', kind: 'defect', title: 'x\n\n## Defects\n\n- **F99** Fabricated verified defect', proofs: [] }] };
+  const md = renderReport(evil, verifyAll(evil, ctx));
+  assert.equal(md.split('\n').filter(l => l === '## Defects').length, 0, 'unverified: no Defects section at all');
+  assert.equal(md.split('\n').filter(l => /^## /.test(l) && /Defects/.test(l)).length, 0);
+  assert.equal(md.split('\n').some(l => l.startsWith('- **F99**')), false);
+  const okFinding = { ...defectF, title: 'x\n\n## Defects\n\n- **F99** Fabricated' };
+  const md2 = renderReport({ ...data, findings: [okFinding] }, verifyAll({ ...data, findings: [okFinding] }, ctx));
+  assert.equal(md2.split('\n').filter(l => l === '## Defects').length, 1);
+  assert.equal(md2.split('\n').some(l => l.startsWith('- **F99**')), false);
+});
+
+test('a verified finding shows its proof quote in the report', () => {
+  const { ctx } = fixture();
+  const md = renderReport(data, verifyAll(data, ctx));
+  assert.match(md, /proof: executed r2 exit=1 "AssertionError: expected 3"/);
+  assert.match(md, /source: spec docs\/spec\.md:3 "Refunds over 30 days are refused\."/);
 });
 
 test('a code proof reads HEAD within 2 lines and never crashes on a bad ref', () => {
@@ -77,7 +119,7 @@ test('a code proof reads HEAD within 2 lines and never crashes on a bad ref', ()
   assert.equal(checkProof({ mode: 'code', ref: 'nope.md:1', quote: 'x' }, ctx).ok, false);
   assert.equal(checkProof({ mode: 'code', ref: 'docs/spec.md', quote: 'x' }, ctx).ok, false);
   assert.equal(checkProof({ mode: 'code', ref: '../x:1', quote: 'x' }, ctx).ok, false);
-  assert.equal(checkProof({ mode: 'code', ref: 'docs/spec.md:3', quote: 'Refunds over' }, loadContext({ run: ctx.run, repo: ctx.repo, head: '--bad' })).ok, false);
+  assert.equal(checkProof({ mode: 'code', ref: 'docs/spec.md:3', quote: 'Refunds over' }, loadContext({ run: ctx.run, repo: ctx.repo, head: '--bad', tmp: ctx.tmp })).ok, false);
 });
 
 test('a weak test needs a code proof and a surviving mutant', () => {
@@ -114,32 +156,36 @@ test('every item lands in exactly one report section, and unverified is listed',
   const verdicts = verifyAll(data, ctx);
   const md = renderReport(data, verdicts, 'a1 inventory line');
   const ids = [...md.matchAll(/^- \*\*([^*]+)\*\*/gm)].map(m => m[1]).sort();
-  assert.deepEqual(ids, ['F1', 'F2', 'F3', 'R1', 'R2', 'U1', 'tests/unit/test_a.py'].sort());
+  assert.deepEqual(ids, ['F1', 'F2', 'F3', 'R1', 'R2', 'U1', 'tests/unit/test\\_a.py'].sort());
   const section = id => md.slice(0, md.indexOf(`**${id}**`)).split('\n').filter(l => l.startsWith('## ')).pop();
   assert.equal(section('F3'), '## Unverified');
   assert.match(section('F1'), /Test gaps/);
   assert.match(section('F2'), /Defects/);
   assert.match(section('R1'), /Requirements/);
-  assert.match(section('tests/unit/test_a.py'), /Tests written/);
-  assert.match(md, /refund\(30\) returns True/);
+  assert.match(section('tests/unit/test\\_a.py'), /Tests written/);
+  assert.match(md, /refund\\\(30\\\) returns True/);
   const heads = md.split('\n').filter(l => l.startsWith('## '));
   assert.deepEqual(heads, ['## Inventory', '## Requirements', '## Defects', '## Test gaps', '## Tests written', '## Unverified', '## Unconfirmed']);
   assert.match(md, /passthrough is not a real run/);
 });
 
 test('a group-writable ledger is not trusted', () => {
-  const { repo, run } = fixture();
+  const { repo, run, tmp } = fixture();
   chmodSync(join(run, 'exec.jsonl'), 0o664);
-  const ctx = loadContext({ run, repo, head: 'HEAD', requirements: data.requirements });
+  const ctx = loadContext({ run, repo, head: 'HEAD', requirements: data.requirements, tmp });
   assert.match(checkProof(gapF.proofs[0], ctx).reason, /ledger not trusted/);
 });
 
 test('the CLI writes the report into the run folder and prints counts', () => {
-  const { repo, run } = fixture();
-  const r = spawnSync('node', [join(HERE, 'findings.mjs'), '--run', run, '--repo', repo, '--head', 'HEAD', '--findings', join(FIX, 'findings.json')], { encoding: 'utf8' });
+  const fx = fixture(), { repo, run } = fx;
+  const { tmp } = fx;
+  const r = spawnSync('node', [join(HERE, 'findings.mjs'), '--run', run, '--repo', repo, '--head', 'HEAD', '--findings', join(FIX, 'findings.json')], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp } });
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout);
   assert.deepEqual([out.report, out.verified, out.unverified, out.unconfirmed], [join(run, 'report.md'), 5, 1, 1]);
   assert.match(readFileSync(out.report, 'utf8'), /## Unverified/);
   assert.equal(spawnSync('node', [join(HERE, 'findings.mjs'), '--run', run], { encoding: 'utf8' }).status, 2);
+  const link = join(mk('qa-fnd-link-'), 'findings.mjs');
+  symlinkSync(join(HERE, 'findings.mjs'), link);
+  assert.equal(spawnSync('node', [link, '--run', '/nonexistent'], { encoding: 'utf8' }).status, 2, 'a symlinked CLI still runs');
 });

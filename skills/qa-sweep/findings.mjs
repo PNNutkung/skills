@@ -5,7 +5,7 @@
 // A finding whose proof fails is listed under Unverified with its reasons, never dropped.
 // Prints {report, verified, unverified, unconfirmed} (counts). Exit: 0 ok; 2 usage error; 1 other error.
 import { execFileSync } from 'node:child_process';
-import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -48,11 +48,13 @@ function gitShow(repo, head, path) {
 }
 
 /** The only function that does I/O: everything the checks need, so they stay pure. `requirements` is the input's list, looked up by id. */
-export function loadContext({ run, repo, head, requirements = [] }) {
-  const dir = zt?.checkRunDir(run) || '';
+export function loadContext({ run, repo, head, requirements = [], tmp }) {
+  // resolveRun trusts only a run under the per-user base (or the marker's); a fallback to some other run is refused
+  const dir = zt && zt.resolveRun({ run, tmp }) === zt.checkRunDir(run, { tmp }) ? zt.resolveRun({ run, tmp }) : '';
   const read = name => (dir ? readTrusted(dir, name) : { untrusted: true });
   const led = read('exec.jsonl'), ans = read('answers.md'), tkt = read('ticket.md');
-  const ledger = led.text == null ? null : new Map(led.text.split('\n').flatMap(l => { try { const e = JSON.parse(l); return e?.id ? [[e.id, e]] : []; } catch { return []; } }));
+  const ledger = led.text == null ? null : new Map();
+  for (const l of led.text?.split('\n') ?? []) { try { const e = JSON.parse(l); if (e?.id) ledger.set(e.id, [...(ledger.get(e.id) ?? []), e]); } catch { /* skip a bad line */ } }
   const files = new Map();
   const show = path => { if (!files.has(path)) files.set(path, gitShow(repo, head, path)); return files.get(path); };
   return { run, repo, head, requirements, ledger, ledgerUntrusted: !!led.untrusted, answers: ans.text, ticket: tkt.text, show };
@@ -71,11 +73,14 @@ function checkCode({ ref, quote }, ctx) {
 
 function checkRun({ ref, exit, quote }, ctx) {
   if (ctx.ledgerUntrusted || ctx.ledger == null) return bad(NOT_TRUSTED);
-  const e = ctx.ledger.get(ref);
-  if (!e) return bad(`run ${ref} not in ledger`);
+  const same = ctx.ledger.get(ref) ?? [];
+  if (!same.length) return bad(`run ${ref} not in ledger`);
+  if (new Set(same.map(x => JSON.stringify(x))).size > 1) return bad('conflicting duplicate run id'); // a forged line cannot shadow a real one
+  const [e] = same;
   if (!REAL_BACKENDS.has(e.backend)) return bad(`backend ${e.backend} is not a real run`);
   if (exit !== undefined && e.exit !== exit) return bad(`run ${ref} exit is ${e.exit}, not ${exit}`);
-  return norm(quote) === '' || has(e.out, quote) ? ok() : bad(`quote not found in output of run ${ref}`);
+  if (norm(quote) === '') return bad('empty quote');
+  return has(e.out, quote) ? ok() : bad(`quote not found in output of run ${ref}`);
 }
 
 export function checkProof(proof, ctx) {
@@ -110,8 +115,14 @@ export function checkFinding(finding, ctx) {
   if (!req) reasons.push(`requirement ${finding?.requirement} not found`);
   else { const s = checkSource(req, ctx); if (!s.ok) reasons.push(`source of ${req.id}: ${s.reason}`); }
   const { proofs, kind, tier } = finding ?? {};
-  const survives = () => proven(proofs, ctx, 'executed', survivor) || (tier === 'e2e' && proven(proofs, ctx, 'executed', p => p.coverage === true));
-  if (kind === 'test-gap') { if (!survives()) reasons.push('no surviving mutant proof'); }
+  // a coverage run counts only when its output names a file a verified code proof points at
+  const files = (proofs ?? []).filter(p => p?.mode === 'code' && checkProof(p, ctx).ok).map(p => REF_RE.exec(p.ref)[1]);
+  const covers = p => p.coverage === true && files.some(f => norm(p.quote).includes(f));
+  const hasCoverage = (proofs ?? []).some(p => p?.mode === 'executed' && p.coverage === true);
+  if (kind === 'test-gap') {
+    const survives = proven(proofs, ctx, 'executed', survivor) || (tier === 'e2e' && proven(proofs, ctx, 'executed', covers));
+    if (!survives) reasons.push(tier === 'e2e' && hasCoverage ? 'coverage proof does not name the implementing file' : 'no surviving mutant proof');
+  }
   else if (kind === 'weak-test') {
     if (!proven(proofs, ctx, 'code')) reasons.push('no code proof');
     if (!proven(proofs, ctx, 'executed', survivor)) reasons.push('no surviving mutant proof');
@@ -140,19 +151,24 @@ export function verifyAll(data, ctx) {
 }
 
 const SECTION_OF_KIND = { defect: 'Defects', 'weak-test': 'Weak tests', 'test-gap': 'Test gaps' };
-const item = (id, text, reasons) => `- **${id}** ${text}${reasons?.length ? `\n  - ${reasons.join('\n  - ')}` : ''}`;
+// Agent text is data: collapse whitespace (no new lines, so no new headings or list items) and escape markdown metacharacters.
+const esc = s => norm(s).replace(/([\\`*_{}[\]<>()#+!|~-])/g, '\\$1');
+const proofLine = p => `  - proof: ${esc(p.mode)} ${esc(p.ref)}${p.exit === undefined ? '' : ` exit=${esc(p.exit)}`}${p.coverage ? ' coverage' : ''} "${esc(p.quote)}"`;
+const sourceLine = s => `  - source: ${esc(s?.kind)} ${esc(s?.ref)} "${esc(s?.quote)}"`;
+const item = (id, text, sub, reasons = []) => [`- **${esc(id)}** ${esc(text)}`, ...sub, ...reasons.map(r => `  - unverified: ${esc(r)}`)].join('\n');
 
 export function renderReport(data, verdicts, inventory) {
   const sections = new Map(['Inventory', 'Requirements', 'Defects', 'Weak tests', 'Test gaps', 'Tests written', 'Unverified', 'Unconfirmed'].map(n => [n, []]));
   const put = (name, line) => sections.get(name).push(line);
+  const route = (v, name) => (v.ok ? name : 'Unverified');
   if (inventory) put('Inventory', inventory.trim());
-  (data.requirements ?? []).forEach((r, i) => { const v = verdicts.requirements[i]; put(v.ok ? 'Requirements' : 'Unverified', item(r.id, `${r.text ?? ''} (${r.source?.kind}: ${r.source?.ref})`, v.ok ? [] : v.reasons)); });
+  (data.requirements ?? []).forEach((r, i) => { const v = verdicts.requirements[i]; put(route(v, 'Requirements'), item(r.id, `${r.text ?? ''} (${r.source?.kind}: ${r.source?.ref})`, [sourceLine(r.source)], v.reasons)); });
   (data.findings ?? []).forEach((f, i) => {
-    const v = verdicts.findings[i], text = `${f.title ?? ''} [${f.kind}, ${f.tier}, ${f.requirement}]`;
-    put(v.ok ? SECTION_OF_KIND[f.kind] : 'Unverified', item(f.id, text, v.ok ? [] : v.reasons));
+    const v = verdicts.findings[i];
+    put(route(v, SECTION_OF_KIND[f.kind]), item(f.id, `${f.title ?? ''} [${f.kind}, ${f.tier}, ${f.requirement}]`, (f.proofs ?? []).map(proofLine), v.reasons));
   });
-  (data.tests_written ?? []).forEach((w, i) => { const v = verdicts.written[i]; put(v.ok ? 'Tests written' : 'Unverified', item(w.path, `for ${w.finding}`, v.ok ? [] : v.reasons)); });
-  (data.unconfirmed ?? []).forEach((u, i) => put('Unconfirmed', `- **U${i + 1}** ${u.question}: ${u.behavior}`));
+  (data.tests_written ?? []).forEach((w, i) => { const v = verdicts.written[i]; put(route(v, 'Tests written'), item(w.path, `for ${w.finding}`, (w.proofs ?? []).map(proofLine), v.reasons)); });
+  (data.unconfirmed ?? []).forEach((u, i) => put('Unconfirmed', `- **U${i + 1}** ${esc(u.question)}: ${esc(u.behavior)}`));
   return '# QA sweep report\n\n' + [...sections].filter(([, l]) => l.length).map(([n, l]) => `## ${n}\n\n${l.join('\n')}\n`).join('\n');
 }
 
@@ -175,5 +191,5 @@ function main(argv) {
   try { touch({ session: process.env.CLAUDE_CODE_SESSION_ID }); } catch { /* the run marker is a convenience */ }
 }
 
-const direct = (() => { try { return process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url); } catch { return false; } })();
+const direct = (() => { try { return process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
 if (direct) main(process.argv.slice(2));
