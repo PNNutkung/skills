@@ -1,0 +1,9 @@
+{"id":"r1","ts":"2026-01-01T00:00:00Z","cmd":"mutate","cwd":".","exit":0,"sec":1,"out":"ZT-MUTANT m1 src/a.py:3 flip exit=0\n","backend":"direct"}
+{"id":"r2","ts":"2026-01-01T00:00:01Z","cmd":"pytest","cwd":".","exit":1,"sec":1,"out":"AssertionError: expected 3\n","backend":"seatbelt"}
+{"id":"r3","ts":"2026-01-01T00:00:02Z","cmd":"pytest","cwd":".","exit":0,"sec":1,"out":"ZT-MUTANT m1 src/a.py:3 flip exit=0\n","backend":"passthrough"}
+{"id":"r4","ts":"2026-01-01T00:00:03Z","cmd":"pytest --cov","cwd":".","exit":0,"sec":1,"out":"src/a.py 0%\nTOTAL 100%\n","backend":"docker"}
+{"id":"r5","ts":"2026-01-01T00:00:04Z","cmd":"sh -c ( pytest -q 'tests/unit/test_a.py' ); printf ZT-MUTANT","cwd":".","exit":1,"sec":1,"out":"ZT-MUTANT m1 src/a.py:3 flip exit=1\n","backend":"bwrap"}
+{"id":"r6","ts":"2026-01-01T00:00:05Z","cmd":"pytest -q tests/unit/test_a.py","cwd":".","exit":0,"sec":1,"out":"1 passed\n","backend":"direct"}
+{"id":"r7","ts":"2026-01-01T00:00:06Z","cmd":"sh -c ( pytest -q 'tests/unit/test_a.py' ); printf ZT-MUTANT","cwd":".","exit":1,"sec":1,"out":"ZT-MUTANT m2 src/a.py:2 flip exit=1\n","backend":"direct"}
+{"id":"r8","ts":"2026-01-01T00:00:07Z","cmd":"pytest -q tests/unit/test_other.py","cwd":".","exit":0,"sec":1,"out":"1 passed\n","backend":"direct"}
+{"id":"r11","ts":"2026-01-01T00:00:08Z","cmd":"sh -c ( pytest -q 'tests/unit/test_a.py' ); printf ZT-MUTANT","cwd":".","exit":2,"sec":1,"out":"ZT-MUTANT m1 src/a.py:3 flip exit=2\n","backend":"direct"}

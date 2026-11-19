@@ -1,7 +1,7 @@
 // Offline checks for mutants.mjs (the deterministic mutant generator, no model and no I/O). Run: node --test mutants.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { changedLines, generateMutants, sample } from './mutants.mjs';
+import { changedLines, fileRanges, generateMutants, sample } from './mutants.mjs';
 
 const PY = `def f(a, b):
     if a == b and not b:
@@ -138,4 +138,10 @@ test('changedLines: added and changed lines of a -U0 diff, new-side numbers', ()
     'diff --git a/n.py b/n.py', 'new file mode 100644', '--- /dev/null', '+++ b/n.py', '@@ -0,0 +1,3 @@', '+a', '+b', '+c',
   ].join('\n');
   assert.deepEqual(changedLines(patch), new Map([['src/a.py', [3, 4, 21]], ['n.py', [1, 2, 3]]]));
+});
+
+test('fileRanges parses paths, ranges and whole files', () => {
+  assert.deepEqual([...fileRanges('a.py:10-40,b.py,a.py:50-50')], [['a.py', [[10, 40], [50, 50]]], ['b.py', null]]);
+  assert.throws(() => fileRanges('../x.py'), /inside the repo/);
+  assert.throws(() => fileRanges('a.py:9-3'), /range/);
 });

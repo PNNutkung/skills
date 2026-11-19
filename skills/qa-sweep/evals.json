@@ -1,0 +1,76 @@
+[
+  {
+    "skills": ["qa-sweep"],
+    "query": "QA the refunds feature in src/refunds/. docs/refunds.md says a refund is refused after 30 days. Find missing tests and add regression tests.",
+    "files": [],
+    "expected_behavior": [
+      "Runs node run.mjs start --repo . before any other step and node run.mjs end as the last step",
+      "Reads SKILL.md, then requirements.md and code.md, and does not read running-app.md",
+      "Records the requirement with source kind spec, ref docs/refunds.md:<line> and a word-for-word quote of the committed text",
+      "With no mapped test, runs mutate.mjs with --files on the implementing lines, --tests on the module's whole unit tier from pr-test-tiers.py --list-tier unit --module src/refunds, --budget 420, in the background, a fresh mktemp -d --scratch outside the run folder, --runner pointing at paired-agent-tdd's direct-run.mjs, and ZT_RUN_DIR set to the absolute run folder",
+      "Writes into the run folder only with the Write tool or a redirect to the literal absolute run path, never to $RUN or another variable",
+      "Judges each surviving mutant as equivalent, unstated or real before filing it, and files the test gap only for a real survivor, with an executed proof whose ref and quote are the mutant's run and ZT-MUTANT ... exit=0 stamp",
+      "Adds the regression test as a new case or a new file in the existing unit test folder, never changes or removes an existing test line or product code, and never runs git commit or git push",
+      "Proves the new test with a passing direct-run.mjs ledger entry (exit 0) and a killed entry for the survivor's mutant id, from a mutate.mjs run with --head set to the sha that node run.mjs snap --files <new test> printed and --tests on that test file",
+      "Runs findings.mjs with --tiers-py and gives the user the report.md path and the counts it printed, stating no finding that the report does not list as verified"
+    ]
+  },
+  {
+    "skills": ["qa-sweep"],
+    "query": "Write regression tests for the discount code in src/pricing/discount.ts.",
+    "files": [],
+    "expected_behavior": [
+      "Finds no written requirement for combining two discount codes, and asks one numbered batch of questions, each with its reading of the current behavior and the file:line it saw it at",
+      "Waits for the answers and does not write a test that pins the current behavior of an unstated case",
+      "Saves each answer word for word to <run>/answers.md as an A<n>: block with the time, and cites it as source kind user, ref A<n>",
+      "A question left unanswered gets no test, goes in the unconfirmed list of findings.json and appears under Unconfirmed in the report",
+      "Treats a code comment or an existing test's assertion as a question for the user, never as a requirement"
+    ]
+  },
+  {
+    "skills": ["qa-sweep"],
+    "query": "QA the checkout flow against https://shop.example.com.",
+    "files": [],
+    "expected_behavior": [
+      "Reads running-app.md and launches the project's e2e runner only through node target.mjs run --url https://shop.example.com",
+      "target.mjs exits 3 because the host is not local; the agent then asks the user to confirm that exact URL and warns that the tests may write data there",
+      "Does not pass --confirm-target before the user says yes in this run, and never confirms the URL on its own",
+      "Never uses a browser-automation tool and never sends requests to the URL outside target.mjs",
+      "Without a yes, it starts the app locally the way the project documents, or stops and says why; it ends with node run.mjs end"
+    ]
+  },
+  {
+    "skills": ["qa-sweep"],
+    "query": "Find weak tests in the order totals module. The ticket is https://github.com/acme/shop/issues/42.",
+    "files": [],
+    "expected_behavior": [
+      "Saves the ticket text word for word to <run>/ticket.md with gh issue view 42 --comments before quoting it, and cites it as source kind ticket with the ticket URL as ref",
+      "When a new test that encodes a requirement fails on HEAD with an assertion failure, files a defect with the failing run's ZT-RUN id, its exit code and the assertion message quoted",
+      "Keeps the defect test in the suite under a strict expected-failure marker (pytest.mark.xfail(strict=True), test.fails, test.failing or test.fail) with a skip-reason: defect <finding id>: <title> comment on the line before it",
+      "Does not fix the product code, and hands the defect to the user or to paired-agent-tdd",
+      "A weak test gets a new test that kills its surviving mutant; the weak test itself is left unchanged"
+    ]
+  },
+  {
+    "skills": ["qa-sweep"],
+    "query": "Which modules lack e2e tests?",
+    "files": [],
+    "expected_behavior": [
+      "Picks the repo inventory scope, not a feature deep-dive, and reads no mode file",
+      "Runs python3 pr-test-tiers.py --inventory once and reports each module with no e2e tests, plus the unmapped and untiered lists",
+      "While untiered is not empty, says no tier is proven missing and asks the user which tier those files are",
+      "Runs no tests, mutants or agents beyond reading that JSON, and ends with node run.mjs end"
+    ]
+  },
+  {
+    "skills": ["qa-sweep"],
+    "query": "QA the payments module in src/pay/. docs/payments.md says a refund larger than the captured amount is refused. Its tests are src/pay/refund.test.ts and tests/test_capture.py.",
+    "files": [],
+    "expected_behavior": [
+      "Runs pr-test-tiers.py --list-tier unit --module src/pay, then --list-tier unit for the whole repo, and when both print nothing reads the untiered list of --inventory instead of calling the unit tier missing",
+      "Sees src/pay/refund.test.ts and tests/test_capture.py under untiered and asks the user one numbered question: which tier those tests are, or whether they will map them in .claude/test-tiers.json",
+      "Does not write .claude/test-tiers.json itself, and files no missing-tier finding and no test gap before the user answers",
+      "When the user names a tier, passes those files as --tests to mutate.mjs for that tier"
+    ]
+  }
+]
