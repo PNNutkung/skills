@@ -7,6 +7,8 @@
                                           test file without a stated reason.
   Bash `git commit`                       WARN, never blocks: the same findings for the branch
                                           so far, so the gap shows before the change request.
+  Same two, a removed test          DENY / WARN: the branch deletes a test file, removes a test function, or adds
+                                          a skip or expected-failure marker, without a stated reason.
   Write of a new test file                REMIND, never blocks: the policy and the file's tier.
 
 A test file's tier comes from its path (a unit/integration/e2e directory or filename token).
@@ -16,6 +18,10 @@ error.
 
 A mock in an integration or e2e test file needs `no-container: <reason>` in a comment of
 that file, in any comment syntax.
+
+A removal needs `Test-Removed: <path>: <reason>` as a trailer in a commit message of the branch. A skip
+or expected-failure marker needs `skip-reason: <reason>` on its line or the line before. A test moved to
+another file, or a file renamed, is not a removal.
 
 Escape hatch:  PR_TEST_TIERS=off gh pr create ...
 Scope:         every git repo is guarded by default; PR_TEST_TIERS_SCOPE (colon-separated
@@ -75,6 +81,23 @@ MOCK_PATTERNS = [
     r"['\"]msw(?:/[^'\"]*)?['\"]",
 ]
 MARKER = re.compile(r"no-container:\s*\S+")
+
+# ponytail: regex heuristic; a skip or an expected failure silences a test as well as deleting it does
+SKIP_PATTERNS = [re.compile(p) for p in (
+    r"@pytest\.mark\.skip\b", r"\bpytest\.skip\(", r"@unittest\.skip", r"\b(?:it|test|describe)\.skip\(",
+    r"\bx(?:it|test|describe)\(", r"\bt\.Skip(?:Now|f)?\(", r"@Disabled\b", r"@Ignore\b",
+    r"@pytest\.mark\.xfail\b", r"\bpytest\.xfail\(", r"@unittest\.expectedFailure\b",
+    r"\b(?:it|test)\.(?:fails|failing)\(", r"\btest\.fail\(",
+)]
+SKIP_MARKER = re.compile(r"skip-reason:\s*\S+")
+TRAILER = re.compile(r"^Test-Removed:\s*(.+?):\s*\S", re.M)
+PY_TEST_DEF = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w*)\s*\(")
+JS_TEST_CASE = re.compile(r"\b(?:it|test)(?:\.only)?\s*\(\s*(['\"`])(.+?)\1")
+HUNK_NEW_START = re.compile(r"\+(\d+)")
+REMOVED_HINT = (
+    "Give a reason with `skip-reason: <reason>` next to a skip, or a "
+    "`Test-Removed: <path>: <reason>` commit trailer."
+)
 
 POLICY = (
     "Policy: a change request that touches source ships unit, integration and e2e tests. "
@@ -253,6 +276,100 @@ def has_marker(root, rel):
         return False
 
 
+def parse_removed(diff_text):
+    """{path: [removed lines]} from a unified diff, keyed by the `--- a/` path."""
+    out, cur = {}, None
+    for line in diff_text.splitlines():
+        if line.startswith("--- "):
+            path = line[4:].split("\t")[0]
+            cur = path.removeprefix("a/") if path != "/dev/null" else None
+        elif cur and line.startswith("-"):
+            out.setdefault(cur, []).append(line[1:])
+    return out
+
+
+def _parse_added_numbered(diff_text):
+    """{path: [(line number in the new file, added line)]} from a `--unified=0` diff."""
+    out, cur, num = {}, None, 0
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].split("\t")[0]
+            cur = path.removeprefix("b/") if path != "/dev/null" else None
+        elif line.startswith("@@"):
+            m = HUNK_NEW_START.search(line)
+            num = int(m.group(1)) if m else 0
+        elif cur and line.startswith("+"):
+            out.setdefault(cur, []).append((num, line[1:]))
+            num += 1
+    return out
+
+
+def _test_names(lines):
+    names = set()
+    for line in lines:
+        m = PY_TEST_DEF.match(line)
+        if m:
+            names.add(m.group(1))
+        m = JS_TEST_CASE.search(line)
+        if m:
+            names.add(m.group(2))
+    return names
+
+
+def _deleted_files(status_z):
+    """Paths with status D from `git diff --name-status -z`; a rename or copy carries two paths."""
+    parts, deleted, i = status_z.split("\0"), [], 0
+    while i < len(parts) and parts[i]:
+        if parts[i][0] in "RC":
+            i += 3
+        else:
+            if parts[i][0] == "D":
+                deleted.append(parts[i + 1])
+            i += 2
+    return deleted
+
+
+def _has_skip_reason(root, rel, lineno):
+    """True when `skip-reason: <reason>` is on line `lineno` of the file or the line before it."""
+    try:
+        with open(os.path.join(root, rel), errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return False
+    return any(SKIP_MARKER.search(l) for l in lines[max(lineno - 2, 0) : lineno])
+
+
+def removed_tests(root, base, cfg, extra=None):
+    """(path, what) for each deleted test file, removed test name, or unexplained skip on the branch."""
+    log = _git(["log", f"{base}..HEAD", "--format=%B"], root)
+    cleared = {m.group(1) for m in TRAILER.finditer(log)}
+    found, added_names = [], set()
+    for rng in filter(None, ([f"{base}...HEAD"], extra)):
+        deleted = set(_deleted_files(_git(["diff", "--name-status", "-z", "--find-renames", *rng], root)))
+        diff = _git(["diff", "--unified=0", "--no-color", "--find-renames", *rng], root)
+        added = _parse_added_numbered(diff)
+        for lines in added.values():
+            added_names |= _test_names(l for _, l in lines)
+        found += [(p, "deleted test file") for p in sorted(deleted) if is_test(p, cfg)]
+        for path, lines in parse_removed(diff).items():
+            if path not in deleted and is_test(path, cfg):
+                found += [(path, f"removed test {n}") for n in sorted(_test_names(lines))]
+        for path, lines in added.items():
+            if not is_test(path, cfg):
+                continue
+            for num, text in lines:
+                if any(r.search(text) for r in SKIP_PATTERNS) and not _has_skip_reason(root, path, num):
+                    found.append((path, f"added skip or expected-failure marker: {text.strip()[:80]}"))
+    kept = {}
+    for path, what in found:
+        if what.startswith("removed test ") and what[len("removed test "):] in added_names:
+            continue  # moved to another file
+        if not what.startswith("added skip") and path in cleared:
+            continue
+        kept[(path, what)] = None
+    return list(kept)
+
+
 def evaluate(root, base, cfg, extra=None):
     """Judge the branch diff (plus `extra` diff args, e.g. ["--cached"]) against the policy."""
     names, added = set(), {}
@@ -261,7 +378,8 @@ def evaluate(root, base, cfg, extra=None):
         diff = _git(["diff", "--unified=0", "--no-color", "--diff-filter=ACMR", *rng], root)
         for path, lines in parse_added(diff).items():
             added.setdefault(path, []).extend(lines)
-    res = {"exempt": False, "untiered": False, "present": [], "missing": [], "unjustified": []}
+    res = {"exempt": False, "untiered": False, "present": [], "missing": [], "unjustified": [],
+           "removed": removed_tests(root, base, cfg, extra)}
     if not any(is_source(n, cfg) for n in names):
         res["exempt"] = True
         return res
@@ -282,16 +400,20 @@ def evaluate(root, base, cfg, extra=None):
 
 def judge(kind, res):
     """Map an evaluate() result to ("deny" | "context", text), or None when there is nothing to say."""
-    if res["exempt"]:
-        return None
-    if res["untiered"]:
-        return None if kind == "commit" else ("context", UNTIERED)
+    removed = [f"Removed test protection without a reason: {p}: {w}." for p, w in res["removed"]]
+    if removed:
+        removed.append(REMOVED_HINT)
     findings = []
-    if res["missing"]:
-        found = ", ".join(res["present"]) or "none"
-        findings.append(f"Missing test tiers: {', '.join(res['missing'])} (found: {found}).")
-    for path, line in res["unjustified"]:
-        findings.append(f"Mock without `no-container: <reason>` in {path}: {line}")
+    if not res["exempt"]:
+        if res["untiered"] and not removed:
+            return None if kind == "commit" else ("context", UNTIERED)
+        if not res["untiered"]:
+            if res["missing"]:
+                found = ", ".join(res["present"]) or "none"
+                findings.append(f"Missing test tiers: {', '.join(res['missing'])} (found: {found}).")
+            for path, line in res["unjustified"]:
+                findings.append(f"Mock without `no-container: <reason>` in {path}: {line}")
+    findings += removed
     if not findings:
         return None
     body = "\n".join(findings) + "\n" + POLICY
@@ -489,6 +611,91 @@ def inventory_self_test(cfg):
         assert is_test_cli("/etc/hosts", cwd="/") == 2, "outside a git repo"
 
 
+def removed_self_test(cfg):
+    """Own repo: `main` holds two tests in one file, a spaced non-ASCII test file and a source file."""
+    with tempfile.TemporaryDirectory() as tmp_rm:
+        env = {k: v for k, v in os.environ.items() if k != "PR_TEST_TIERS_SCOPE"}
+
+        def git(*a):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=tmp_rm, check=True, capture_output=True)
+
+        def put(rel, body="x\n"):
+            os.makedirs(os.path.dirname(os.path.join(tmp_rm, rel)) or tmp_rm, exist_ok=True)
+            with open(os.path.join(tmp_rm, rel), "w") as fh:
+                fh.write(body)
+
+        def land(msg):
+            git("add", "-A")
+            git("commit", "-qm", msg)
+
+        def run(tool, **tool_input):
+            payload = {"tool_name": tool, "cwd": tmp_rm, "tool_input": tool_input}
+            p = subprocess.run([sys.executable, os.path.abspath(__file__)], input=json.dumps(payload),
+                               capture_output=True, text=True, env=env, check=False)
+            assert p.returncode == 0, p.stderr
+            return json.loads(p.stdout)["hookSpecificOutput"] if p.stdout.strip() else None
+
+        def pr():
+            return run("Bash", command="gh pr create --title t")
+
+        def denied(out):
+            return bool(out) and out.get("permissionDecision") == "deny"
+
+        def branch(name):
+            git("checkout", "-q", "-B", name, "main")
+
+        git("init", "-q", "-b", "main")
+        put("src/app.py")
+        put("tests/unit/test_keep.py", "def test_one(): ...\ndef test_two(): ...\n")
+        put("tests/unit/my test \u00fc.py", "def test_x(): ...\n")
+        land("base")
+
+        # deleted test file -> deny; trailer clears it
+        branch("del")
+        git("rm", "-q", "tests/unit/test_keep.py"); land("drop")
+        out = pr()
+        assert denied(out) and "deleted test file" in out["permissionDecisionReason"], out
+        git("commit", "-q", "--allow-empty", "-m", "chore: x\n\nTest-Removed: tests/unit/test_keep.py: covered by e2e now")
+        assert not denied(pr())
+        # a space and non-ASCII in the path
+        git("rm", "-q", "tests/unit/my test \u00fc.py"); land("drop2")
+        assert "my test \u00fc.py" in pr()["permissionDecisionReason"]
+
+        # rename -> allowed
+        branch("mv")
+        git("mv", "tests/unit/test_keep.py", "tests/unit/test_kept.py"); land("mv")
+        assert not denied(pr())
+
+        # a removed function -> deny; moved to another file -> allowed
+        branch("fn")
+        put("tests/unit/test_keep.py", "def test_one(): ...\n"); land("rm fn")
+        assert "removed test test_two" in pr()["permissionDecisionReason"]
+        put("tests/unit/test_other.py", "def test_two(): ...\n"); land("moved")
+        assert not denied(pr())
+
+        # an added skip -> deny; skip-reason on the line before -> allowed
+        branch("skip")
+        put("tests/unit/test_keep.py", "import pytest\n@pytest.mark.skip\ndef test_one(): ...\ndef test_two(): ...\n"); land("skip")
+        assert "added skip" in pr()["permissionDecisionReason"]
+        put("tests/unit/test_keep.py", "import pytest\n# skip-reason: upstream outage\n@pytest.mark.skip\ndef test_one(): ...\ndef test_two(): ...\n"); land("why")
+        assert not denied(pr())
+
+        # an added expected-failure marker -> deny (Python and TS/JS); skip-reason naming the defect -> allowed
+        branch("xfail")
+        put("tests/unit/test_keep.py", "import pytest\n@pytest.mark.xfail(strict=True)\ndef test_one(): ...\ndef test_two(): ...\n"); land("xfail")
+        assert "expected-failure" in pr()["permissionDecisionReason"]
+        put("tests/unit/test_keep.py", "import pytest\n# skip-reason: defect F1: refund over 30 days is accepted\n@pytest.mark.xfail(strict=True)\ndef test_one(): ...\ndef test_two(): ...\n"); land("defect")
+        assert not denied(pr())
+        put("tests/unit/cart.test.ts", "test.fails('should refuse an empty cart when checking out', () => {})\n"); land("fails")
+        assert denied(pr())
+
+        # git commit only warns
+        branch("warn")
+        git("rm", "-q", "tests/unit/test_keep.py")
+        got = run("Bash", command="git commit -m x")
+        assert got and "deleted test file" in got["additionalContext"] and not denied(got), got
+
+
 def self_test():
     cfg = load_cfg("/nonexistent")
     tiers = {
@@ -627,6 +834,7 @@ def self_test():
         assert run("Write", file_path="src/helper.py") is None
         assert run("Write", file_path="tests/unit/test_a_dir/test_x.py") is not None, "new directory"
     inventory_self_test(cfg)
+    removed_self_test(cfg)
     print("pr-test-tiers self-test ok")
 
 

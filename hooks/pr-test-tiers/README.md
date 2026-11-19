@@ -5,6 +5,7 @@ A Claude Code `PreToolUse` hook that makes every change request (GitHub pull req
 | Event | What it does |
 | --- | --- |
 | `gh pr create`, `glab mr create` (Bash) | Denies when the branch diff against the base branch touches source but lacks a tier, or mocks a dependency in an integration or e2e test file without a reason. |
+| `gh pr create`, `glab mr create` (Bash), removed tests | Also denies when the branch deletes a test file, removes a test function, or adds a skip or expected-failure marker (`@pytest.mark.skip`, `xfail`, `it.skip`, `test.fails`, `t.Skip`, `@Disabled` and similar) without a reason. A skip needs `skip-reason: <reason>` on its line or the line before. A removal needs a `Test-Removed: <path>: <reason>` trailer in a commit message of the branch. A renamed file or a test moved to another file is fine; renaming a test function counts as a removal. `git commit` warns instead. |
 | `git commit` (Bash) | Warns, never blocks: lists the tiers the branch still lacks, so the gap shows before the change request. Quiet on the base branch. |
 | Write of a new test file | Reminds, never blocks: states the policy and the tier the file falls in. |
 
@@ -90,4 +91,5 @@ Register it in `~/.claude/settings.json`, once for Bash and once for Write:
 - `gh pr create --head OTHER` still diffs the current `HEAD`.
 - It counts files, not coverage: a tier is present when a matching test file is in the diff.
 - Mock detection is regex on added lines, so a mocking library imported under another name is missed.
+- Removed-test and skip detection is regex on the diff (Python, JS/TS and common skip markers), so other test frameworks are missed.
 - It fails open on any internal error.
