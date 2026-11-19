@@ -1,18 +1,3 @@
 {
-  "enabled": true,
-  "tiers": {
-    "e2e": ["*/e2e*.test.mjs"],
-    "integration": [
-      "hooks/qa-guard.test.mjs",
-      "hooks/zt-hooks.test.mjs",
-      "skills/paired-agent-tdd/tdd.test.mjs",
-      "skills/qa-sweep/findings.test.mjs",
-      "skills/qa-sweep/run.test.mjs",
-      "skills/zero-trust-review/mutate.test.mjs",
-      "skills/zero-trust-review/proofcheck.test.mjs",
-      "skills/zero-trust-review/sandbox-run.test.mjs",
-      "skills/zero-trust-review/testprobe.test.mjs"
-    ],
-    "unit": ["*.test.mjs"]
-  }
+  "requireTiers": false
 }
