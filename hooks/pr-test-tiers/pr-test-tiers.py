@@ -28,8 +28,11 @@ Scope:         every git repo is guarded by default; PR_TEST_TIERS_SCOPE (colon-
                path prefixes) narrows it.
 Per-repo override: <repo>/.claude/test-tiers.json
     {"enabled": true,
+     "requireTiers": true,
      "tiers": {"unit": ["glob"], "integration": ["glob"], "e2e": ["glob"]},
      "mockPatterns": ["regex"]}
+  `requireTiers: false` drops the three-tier and mock rules but keeps the removed-test check,
+  for a repo whose tests fit none of the tiers;
   `tiers` replaces the built-in path rule of each tier it names (`*` also matches `/`);
   `mockPatterns` adds to the built-in mocking-library patterns.
 Branch check (for scripts and agents; exit 1 when the gate would deny):
@@ -200,7 +203,7 @@ def in_scope(repo_root):
 
 
 def load_cfg(root):
-    cfg = {"enabled": True, "tiers": {}, "mock": [re.compile(p) for p in MOCK_PATTERNS]}
+    cfg = {"enabled": True, "require_tiers": True, "tiers": {}, "mock": [re.compile(p) for p in MOCK_PATTERNS]}
     try:
         with open(os.path.join(root, ".claude", "test-tiers.json")) as fh:
             raw = json.load(fh)
@@ -209,6 +212,7 @@ def load_cfg(root):
     if not isinstance(raw, dict):
         return cfg
     cfg["enabled"] = raw.get("enabled") is not False
+    cfg["require_tiers"] = raw.get("requireTiers") is not False
     tiers = raw.get("tiers")
     for tier, globs in (tiers.items() if isinstance(tiers, dict) else ()):
         if tier in TIERS and isinstance(globs, list):
@@ -423,7 +427,7 @@ def evaluate(root, base, cfg, extra=None):
             added.setdefault(path, []).extend(lines)
     res = {"exempt": False, "untiered": False, "present": [], "missing": [], "unjustified": [],
            "removed": removed_tests(root, base, cfg, extra)}
-    if not any(is_source(n, cfg) for n in names):
+    if not cfg["require_tiers"] or not any(is_source(n, cfg) for n in names):
         res["exempt"] = True
         return res
     present = {t for n in names if (t := tier_of(n, cfg))}
@@ -478,7 +482,7 @@ def on_write(file_path, cwd):
     cfg = load_cfg(root)
     rel = os.path.relpath(os.path.join(os.path.realpath(probe), os.path.relpath(path, probe)), root)
     rel = rel.replace(os.sep, "/")
-    if not cfg["enabled"] or rel.startswith("..") or not is_test(rel, cfg):
+    if not cfg["enabled"] or not cfg["require_tiers"] or rel.startswith("..") or not is_test(rel, cfg):
         return None
     return "context", f"pr-test-tiers: new test file {rel} (tier: {tier_of(rel, cfg) or 'none'}). {POLICY}"
 
@@ -849,6 +853,16 @@ def removed_self_test(cfg):
             branch(name)
             put("tests/unit/new.test.ts", line + "\n"); land(name)
             assert "added skip" in pr()["permissionDecisionReason"], name
+
+        # requireTiers false: a source-only change passes, a removed test is still denied
+        branch("notiers")
+        put("src/app.py", "y\n"); land("src only")
+        assert "Missing test tiers" in pr()["permissionDecisionReason"]
+        put(".claude/test-tiers.json", '{"requireTiers": false}'); land("no tiers")
+        assert not denied(pr())
+        git("rm", "-q", "tests/unit/test_keep.py"); land("drop")
+        reason = pr()["permissionDecisionReason"]
+        assert "deleted test file" in reason and "Missing test tiers" not in reason, reason
 
         # git commit only warns
         branch("warn")
