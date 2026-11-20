@@ -1,6 +1,6 @@
 {
   "name": "pnnutkung-skills",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Personal agent skills (zero-trust-review, paired-agent-tdd, ai-code-delivery, qa-sweep) plus the zero-trust-review guard, the qa-sweep qa-guard and telemetry-capture hooks.",
   "author": {
     "name": "PNNutkung",
