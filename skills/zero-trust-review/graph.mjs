@@ -32,11 +32,14 @@ export const NODES = [
   { id: 'report', tier: 'T0', role: 'Lead writes the report from the proofchecked return (Step 4)', needs: ['proofcheck'], model: 'code', deliverable: 'Report file + verdict' },
 ];
 // cap = tool-call cap per agent in that mode. skip = nodes that do not run; verify = severities that get verified; merge = one reviewer for the whole diff.
+// Optional, `fast` only: batch = ONE verifier-refute per reviewer unit (all its medium+ clusters in one agent) instead of one per cluster;
+// pool = agents in flight for that mode (default LIM.pool). Both are opt-in: a mode without them runs exactly as before.
 const ALL = ['critical', 'high', 'medium'];  // agents verify these; lows are checked in code (proofcheck)
 export const MODES = {
   quick: { use: '< 150 source lines and <= 5 files', merge: true, cap: 35, verify: ['critical', 'high'], effort: {}, skip: ['test-auditor', 'integration-probe', 'critic', 'gap-reviewer'] },
   standard: { use: 'default', merge: false, cap: 30, verify: ALL, effort: {}, skip: ['test-auditor', 'integration-probe', 'critic', 'gap-reviewer'] },
   deep: { use: '> 1500 source lines or > 40 files, security-critical, or asked', merge: false, cap: 45, verify: ALL, effort: { reviewer: 'high' }, skip: [] },
+  fast: { use: 'time matters, no auth/payments/migrations/security-critical code', merge: false, cap: 30, verify: ALL, effort: {}, skip: ['test-auditor', 'integration-probe', 'critic', 'gap-reviewer'], batch: true, pool: 8 },
 };
 
 const byId = new Map(NODES.map(n => [n.id, n]));
@@ -68,9 +71,10 @@ export function criticalPath() {
 /** Expected agents per node for a mode and a finding mix (adjudicator and integration-probe are upper-bound gated). */
 export function plan(mode, g, c, h, m, l) {
   const M = MODES[mode], on = id => (M.skip.includes(id) ? 0 : 1), v = s => (M.verify.includes(s) ? 1 : 0);
+  const refute = v('critical') * c + v('high') * h + v('medium') * m;  // batch mode: one refuter per reviewer group that can hold a medium+, never more than one per cluster
   const counts = {
     reviewer: M.merge ? Math.min(g, 1) : g, 'test-auditor': on('test-auditor'), 'integration-probe': on('integration-probe'),
-    'verifier-refute': v('critical') * c + v('high') * h + v('medium') * m, 'verifier-reproduce': v('critical') * c + v('high') * h,
+    'verifier-refute': M.batch ? Math.min(g, refute) : refute, 'verifier-reproduce': v('critical') * c + v('high') * h,
     adjudicator: 0, critic: on('critic'), 'gap-reviewer': on('gap-reviewer') * LIM.gaps,
   };
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
@@ -107,7 +111,8 @@ function check() {
   // Cost and shape guards: a future edit that re-serializes or re-inflates the pipeline fails here, not in production.
   assert.ok(['triage', 'probes', 'dedupe', 'proofcheck', 'report'].every(id => byId.get(id).model === 'code'), 'deterministic nodes must be plain code, not agents');
   assert.ok(!byId.has('batch-verifier') && !Object.values(MODES).some(M => M.verify.includes('low')), 'lows are checked by proofcheck against real code, never by a ~45k-token agent');
-  assert.ok(LIM.pool >= 1 && LIM.pool <= 8, 'pool above 8 risks the gateway stall that once killed 9 reviewers; raise it only from runs.md data');
+  assert.ok([LIM.pool, ...Object.values(MODES).map(M => M.pool ?? LIM.pool)].every(p => p >= 1 && p <= 8), 'pool above 8 (the default or any mode) risks the gateway stall that once killed 9 reviewers; raise it only from runs.md data');
+  assert.ok(Object.entries(MODES).every(([k, M]) => !M.batch || (k === 'fast' && M.verify.includes('medium'))), 'batch verification is fast-only and must still verify medium+ (it batches the refuters, it does not drop them)');
   assert.ok(['reviewer', 'test-auditor', 'integration-probe'].every(id => byId.get(id).needs.includes('probes')), 'agents start from the probe facts, never before them');
   assert.deepEqual(NODES.filter(n => n.model === 'opus').map(n => n.id), ['adjudicator', 'critic'], 'opus only on the two gated judges');
   assert.deepEqual(byId.get('verifier-reproduce').needs, ['dedupe'], 'reproduce runs beside refute, not after it');
@@ -125,6 +130,11 @@ function check() {
     assert.equal(TIER_MODEL[n.tier], n.model, `${n.id}: tier ${n.tier} requires model ${TIER_MODEL[n.tier]}, got ${n.model}`);
   });
   assert.equal(plan('standard', 4, 0, 0, 5, 33).total, 9, 'measured 14-file diff: 4 reviewers + 5 refuters; its 33 lows no longer cost 5 batch agents');
+  // fast: one refuter per group that can hold a medium+ (never more than one per cluster), reproducers unchanged, no critic, no gap reviewers, no audits
+  assert.deepEqual(plan('fast', 4, 0, 1, 5, 30).counts, { reviewer: 4, 'test-auditor': 0, 'integration-probe': 0, 'verifier-refute': 4, 'verifier-reproduce': 1, adjudicator: 0, critic: 0, 'gap-reviewer': 0 });
+  assert.equal(plan('fast', 7, 2, 3, 30, 5).counts['verifier-refute'], 7, 'fast: refuters are capped by the number of groups');
+  assert.equal(plan('fast', 7, 0, 0, 2, 9).counts['verifier-refute'], 2, 'fast: never more refuters than medium+ clusters');
+  assert.equal(plan('standard', 7, 2, 3, 30, 5).counts['verifier-refute'], 35, 'standard keeps one refuter per cluster');
   TARGETS.forEach(t => assert.equal(current(t), block(t), `${t.file} block is stale - run: node graph.mjs --write`));
   assert.ok(Buffer.byteLength(read(TARGETS[0])) <= 16000, 'SKILL.md is over 16 KB: move long text into checklist.md');
   const cp = criticalPath();
@@ -142,4 +152,4 @@ else if (cmd === '--plan' && MODES[a[0]] && a.length === 6) {
   console.log(`plan ${a[0]}: ${a[1]} group(s), ${a[2]} critical, ${a[3]} high, ${a[4]} medium, ${a[5]} low`);
   Object.entries(counts).filter(([, n]) => n).forEach(([id, n]) => console.log(`  ${id.padEnd(19)} ${n}`));
   console.log(`  total ${total} agents (before: 95); adjudicator +1 per verifier split, integration-probe only if 13/18/21 fired`);
-} else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <quick|standard|deep> <groups> <critical> <high> <medium> <low>');
+} else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <quick|standard|deep|fast> <groups> <critical> <high> <medium> <low>');
