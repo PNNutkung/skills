@@ -23,7 +23,8 @@ export const NODES = [
   { id: 'red-gate', tier: 'T0', role: 'tdd.mjs red: every new test file fails now, and how (assertion, load error, passes already)', needs: ['red-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.red.json' },
   { id: 'red-navigator', tier: 'T2', role: 'Navigator: right reason, right invariant, DoD kinds really tested, precedent', needs: ['red-gate'], model: 'sonnet', effort: 'high', ponytail: 'full', agentType: 'code-reviewer', cap: 25, fanout: 'group', deliverable: 'PASS/FAIL + defects' },
   { id: 'green-driver', tier: 'T2', role: 'Driver: minimum code for the RED tests, then one cleanup only for a named duplication', needs: ['red-navigator'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 45, fanout: 'group', deliverable: 'Implementation in the group src files' },
-  { id: 'green-gate', tier: 'T0', role: 'tdd.mjs green: tests pass and exercise the change, frozen since RED, in scope, mutants, coverage', needs: ['green-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.green.json' },
+  { id: 'tdd-driver', tier: 'T2', role: 'Fast mode: ONE driver per group writes the failing tests, proves RED with the gate, then writes the code and proves GREEN (tests frozen from the first source edit, against the first RED); green-navigator judges both gates', needs: ['plan'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 75, fanout: 'group', gated: 'fast mode, group with no after', deliverable: 'Test files, code, matrix rows, the RED and GREEN gate files' },
+  { id: 'green-gate', tier: 'T0', role: 'tdd.mjs green: tests pass and exercise the change, frozen since RED, in scope, mutants, coverage', needs: ['green-driver', 'tdd-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.green.json' },
   { id: 'green-navigator', tier: 'T2', role: 'Navigator: minimal, reuses patterns, survivors are test gaps, no weakened tests', needs: ['green-gate'], model: 'sonnet', effort: 'high', ponytail: 'full', agentType: 'code-reviewer', cap: 25, fanout: 'group', deliverable: 'PASS/FAIL + defects' },
   { id: 'integration-tester', tier: 'T2', role: 'One real-dependency test of the full path', needs: ['green-navigator'], model: 'sonnet', effort: 'high', ponytail: 'lite', agentType: 'tdd-guide', cap: 35, gated: 'only when the change crosses a process, DB or network boundary', deliverable: 'Integration test + a real run' },
   { id: 'final-gate', tier: 'T0', role: 'tdd.mjs final: all group tests together, existing tests that mention the changed modules, scope, whole-diff patch', needs: ['green-navigator', 'integration-tester'], model: 'code', deliverable: 'RUN/gates/final.json + diff/final.patch' },
@@ -59,9 +60,12 @@ export function criticalPath() {
   return chain;
 }
 
-/** Agents of one run when every first pass is right: g groups, integration 0|1, findingGroups = groups that end up with review findings. Repair rounds are not counted (see worst()). */
-export function plan(g, integration, findingGroups) {
-  const counts = { 'red-driver': g, 'red-navigator': g, 'green-driver': g, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0 };
+/**
+ * Agents of one run when every first pass is right: g groups, integration 0|1, findingGroups = groups that end up with review findings. Repair rounds are not counted (see worst()).
+ * solo = groups that run with ONE driver (fast mode, a group that waits for no other); the rest run the default red-driver, red-navigator, green-driver.
+ */
+export function plan(g, integration, findingGroups, solo = 0) {
+  const rest = g - solo, counts = { 'red-driver': rest, 'red-navigator': rest, 'green-driver': rest, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0, ...(solo ? { 'tdd-driver': solo } : {}) };
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
 }
 /**
@@ -114,8 +118,9 @@ function check() {
   assert.deepEqual(byId.get('red-driver').needs, ['plan'], 'every group starts RED at once: nothing but the plan gates it');
   for (const s of ['red', 'green']) {
     assert.deepEqual(byId.get(`${s}-navigator`).needs, [`${s}-gate`], `${s}-navigator starts from the ${s} gate facts`);
-    assert.deepEqual(byId.get(`${s}-gate`).needs, [`${s}-driver`], `the ${s} gate runs right after its driver`);
+    assert.deepEqual(byId.get(`${s}-gate`).needs, s === 'red' ? ['red-driver'] : ['green-driver', 'tdd-driver'], `the ${s} gate runs right after its driver (fast mode: the green gate also follows the one tdd-driver)`);
   }
+  assert.deepEqual(byId.get('tdd-driver').needs, ['plan'], 'fast mode: the one driver of a group starts at once, like red-driver');
   assert.ok(NODES.filter(n => n.fanout).every(n => n.fanout === 'group'), 'work fans out per file group only');
   assert.ok(LIM.pool >= 1 && LIM.pool <= 8, 'pool above 8 risks the gateway stall that once killed 9 reviewers; raise it only from runs.md data');
   assert.ok(Number.isInteger(LIM.rounds) && LIM.rounds >= 1 && LIM.rounds <= 4, 'R4: repair rounds are bounded (1-4); a stuck group is stopped earlier by the stall check, never retried forever');
@@ -131,12 +136,16 @@ function check() {
     assert.ok(n.agentType && (n.cap !== undefined || n.outside), `${n.id}: agentType and cap are required`);
   });
   const atLeast = (c, m) => MODEL[byId.get(c).model] >= MODEL[byId.get(m).model] && EFFORT[byId.get(c).effort] >= EFFORT[byId.get(m).effort];
-  [['red-navigator', 'red-driver'], ['green-navigator', 'green-driver'], ['integration-tester', 'green-driver']].forEach(([c, m]) => assert.ok(atLeast(c, m), `${c} must be >= ${m} in model and effort (checker >= maker)`));
+  [['red-navigator', 'red-driver'], ['green-navigator', 'green-driver'], ['green-navigator', 'tdd-driver'], ['integration-tester', 'green-driver']].forEach(([c, m]) => assert.ok(atLeast(c, m), `${c} must be >= ${m} in model and effort (checker >= maker)`));
   // Structural fences: whoever judges cannot edit.
   assert.ok(['red-navigator', 'green-navigator', 'reviewer', 'final-verifier'].every(id => byId.get(id).agentType === 'code-reviewer'), 'navigators, the reviewer and the final verifier use the read-only agent type');
-  assert.ok(['red-driver', 'green-driver', 'fixer', 'integration-tester'].every(id => byId.get(id).agentType === 'tdd-guide'), 'makers use the TDD agent type');
+  assert.ok(['red-driver', 'green-driver', 'tdd-driver', 'fixer', 'integration-tester'].every(id => byId.get(id).agentType === 'tdd-guide'), 'makers use the TDD agent type');
   assert.equal(plan(3, 0, 1).total, 15, '3 groups: 12 build agents + 1 reviewer + 1 fixer + 1 final verifier');
   assert.equal(plan(3, 0, 0).total, 13, 'no findings: no fixer and no final verifier');
+  assert.equal(plan(3, 0, 0, 3).total, 7, 'fast mode, 3 independent groups: 3 drivers + 3 navigators + 1 reviewer');
+  assert.equal(plan(3, 0, 1, 3).total, 9, 'fast mode with findings: + 1 fixer + 1 final verifier');
+  assert.equal(plan(3, 0, 0, 2).total, 9, 'fast mode, 2 independent groups and 1 that waits: 2 tdd-drivers + red-driver, red-navigator, green-driver + 3 green navigators + 1 reviewer');
+  assert.deepEqual(Object.keys(plan(3, 0, 1).counts), ['red-driver', 'red-navigator', 'green-driver', 'green-navigator', 'integration-tester', 'reviewer', 'fixer', 'final-verifier'], 'the default plan lists exactly the nodes it always did');
   assert.equal(worst(3, 3, 99), 60, '3 groups, 3 repair rounds, no run-wide limit: at most 60 build agents (20 per group, reached by a script test with a navigator that never passes)');
   assert.equal(worst(3, 3), 30, 'with the default budget (2 repairs per group) the same change is capped at 4 x 3 + 3 x 6 = 30');
   assert.ok(Number.isInteger(LIM.repairs) && LIM.repairs >= 1 && LIM.repairs <= 4, 'the run-wide repair budget is 1-4 per group');
@@ -154,11 +163,11 @@ if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToP
   if (cmd === '--check') check();
   else if (cmd === '--write') { TARGETS.forEach(t => writeFileSync(join(HERE, t.file), read(t).replace(current(t), () => block(t)))); console.log('SKILL.md diagram and tiers, workflow.js node table and checkMatrix updated'); }
   else if (cmd === '--mermaid') console.log(mermaid());
-  else if (cmd === '--plan' && a.length >= 3 && a.length <= 5) {
-    const [g, integ, fg, rounds = LIM.rounds, maxRepairs = LIM.repairs * g] = a.map(Number), { counts, total } = plan(g, integ, fg);
-    console.log(`plan: ${g} group(s), integration ${integ}, ${fg} group(s) with findings`);
+  else if (cmd === '--plan' && a.length >= 3 && a.length <= 6 && (a.length <= 5 || a[5] === 'fast')) { // a trailing `fast`: plan.mode fast with every group independent (a group that waits runs the default path)
+    const fast = a[a.length - 1] === 'fast', [g, integ, fg, rounds = LIM.rounds, maxRepairs = LIM.repairs * g] = (fast ? a.slice(0, -1) : a).map(Number), { counts, total } = plan(g, integ, fg, fast ? g : 0);
+    console.log(`plan: ${g} group(s), integration ${integ}, ${fg} group(s) with findings${fast ? ', fast mode (one driver per group)' : ''}`);
     Object.entries(counts).filter(([, n]) => n).forEach(([id, n]) => console.log(`  ${id.padEnd(19)} ${n}`));
     console.log(`  total ${total} agents when every first pass is right (+ the graph-planner if used); at most ${worst(g, rounds, maxRepairs)} build agents (${maxRepairs} repair passes for the run, ${rounds} rounds per stage; ${worst(g, rounds, 99)} without that budget); a group still failing is paused and continues with \`tdd.mjs resume\`; the reviewer, fixers and couriers come on top`);
     console.log(`  the old design is estimated at ${oldTotal(g, 4)} for the same change (NOT measured)`);
-  } else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings> [rounds] [maxRepairs]');
+  } else console.log('usage: node graph.mjs --check | --write | --mermaid | --plan <groups> <integration 0|1> <groupsWithFindings> [rounds] [maxRepairs] [fast]');
 }

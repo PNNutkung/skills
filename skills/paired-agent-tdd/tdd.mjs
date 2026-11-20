@@ -9,6 +9,9 @@
 //   node tdd.mjs final  --run RUN [--again]               every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch (--again: a re-run after fixes)
 //   node tdd.mjs verify --run RUN --ret return.json       DoD closure from the gate files, fixes still present, reviewer proofs (proofcheck.mjs)
 //   node tdd.mjs snap   --run RUN --on REV [--files a,b]  print the sha of REV + those working-tree files (no --files: the whole working tree)
+// plan.mode "fast" (opt-in; any other value or none = the default pipeline, byte for byte; only the exact string "fast" is read): a group with no `after` has ONE driver that holds
+// both the RED and the GREEN command, so `red` keeps the first RED snapshot (`firstSnapshot`) once the group's source exists or a GREEN gate exists, and `green` compares the tests
+// against it; `plan` says the effective mode, `resume` remembers which groups were one-driver groups, `verify` lists them and the navigator's notes about their RED tests.
 // A snapshot is a git commit of the working tree built with a temporary index: no ref, no index and no file of the user's repo changes (only loose objects are added).
 // Group snapshots hold the BASE tree plus ONLY that group's files (and the groups it waits for), so a gate never sees another group's half-written edit.
 // Every test command runs through a runner: direct-run.mjs (no confinement: your rights, your network) unless plan.sandbox is true, which selects the sandbox runner of the
@@ -184,7 +187,12 @@ async function red(ctx, gid) {
   });
   discard(dir);
   const patch = writeDiff(ctx, `${gid}.red.patch`, ['diff', '-U10', plan.base, snap, '--', ...g.tests]);
-  const out = { kind: 'red', group: gid, base: plan.base, snapshot: snap, ok: redOk(tests), tests };
+  // fast mode: one driver holds the RED command while it writes code. The RED the code was built against stays the frozen reference (firstSnapshot) from the moment the group's
+  // source exists (any src file differs from the base) or a GREEN gate has run: a driver that edits a test to get green and re-runs RED cannot re-bless it, because the RED snapshot
+  // holds no source and the weakened test still fails there; `green` compares against firstSnapshot. Before the first source the reference moves with every run (the RED loop).
+  const prev = plan.mode === 'fast' ? readGate(ctx, `${gid}.red.json`) : null;
+  const built = prev && (readGate(ctx, `${gid}.green.json`) || parseNumstat(git(plan.repo, ['diff', '--numstat', plan.base, snapOf(ctx, g.src), '--', ...g.src])).changed.length > 0);
+  const out = { kind: 'red', group: gid, base: plan.base, snapshot: snap, ...(plan.mode === 'fast' ? { firstSnapshot: built ? prev.firstSnapshot ?? prev.snapshot : snap } : {}), ok: redOk(tests), tests };
   writeGate(ctx, `${gid}.red.json`, out);
   say([`RED ${gid} ok=${out.ok} snapshot ${short(snap)} patch ${patch}`, '  (a new test must FAIL now; a load error is only right when the code under test does not exist yet)',
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.exit === undefined ? '' : ` exit ${t.exit}, ${t.sec}s, run ${t.run}`}${t.tail ? `\n    ...${t.tail}` : ''}`)]);
@@ -195,7 +203,7 @@ async function green(ctx, gid, retest) {
   const baseDeps = deps.length ? snapOf(ctx, filesOf(deps)) : plan.base; // the tests must need THIS group's code, with the groups it waits for already in place
   const snap = snapOf(ctx, [...g.tests, ...g.src], baseDeps); // a CHILD of baseDeps: the probes diff `base...head` (merge base), so it must hold exactly this group's files
   const redGate = readGate(ctx, `${gid}.red.json`);
-  const frozen = redGate ? parseNumstat(git(plan.repo, ['diff', '--numstat', redGate.snapshot, snap, '--', ...g.tests])) : null;
+  const frozen = redGate ? parseNumstat(git(plan.repo, ['diff', '--numstat', redGate.firstSnapshot ?? redGate.snapshot, snap, '--', ...g.tests])) : null;
   const stray = strayFiles(ctx); // shared tree: a stray file cannot be pinned on this group, so it is a note here and blocks only at `final`
   const patch = writeDiff(ctx, `${gid}.green.patch`, ['diff', '-U10', baseDeps, snap, '--', ...g.tests, ...g.src]);
   const mut = plan.mutation ?? {}, kill = plan.killExits ? ['--kill-exits', plan.killExits.join(',')] : [];
@@ -325,7 +333,10 @@ function resume(ctx, retPath, only, flags = {}) {
     } else if (stalled) why += edited ? '; STALLED last run, but files were edited since: a repair may work now' : '; STALLED last run: read the defects before spending';
     if (hints[g.id]) note.hint = hints[g.id];
     if (escalate.has(g.id)) note.escalate = true;
-    groups[g.id] = { next, why, matrix, files: prev?.files ?? [], defects, retest, ...note };
+    // merged: a one-driver group of the last (fast) run keeps its navigator's RED duty. The return says so; with no return (or none for this group) a fast plan's group without `after`
+    // that already has a GREEN gate is one: no RED navigator ever saw its tests (a group the script moved to the default RED stage is judged by the return, which then exists).
+    const oneDriver = plan.mode === 'fast' && !(g.after ?? []).length && !prev && (next === 'green-check' || next === 'green-fix');
+    groups[g.id] = { next, why, matrix, files: prev?.files ?? [], defects, retest, ...(prev?.red?.merged || oneDriver ? { merged: true } : {}), ...note };
     lines.push(`  ${g.id}: ${next}${note.escalate ? ' [opus]' : ''}${note.hint ? ' [hint]' : ''} (${why})${defects.length ? `; ${defects.length} defect(s), first: ${defects[0].what.slice(0, 140)}` : ''}`);
   }
   const todo = Object.entries(groups).filter(([, v]) => v.next !== 'done').length, working = Object.values(groups).filter(v => !['done', 'env', 'hold'].includes(v.next)).length;
@@ -383,6 +394,12 @@ async function final(ctx, quiet, again) {
   return snap;
 }
 
+/** fast plans -> { merged: the groups that had ONE driver (no RED navigator ever saw their tests first), redNotes: what the one navigator said about their RED tests, by group } */
+function fastReport(ret) {
+  const groups = Object.entries(ret.groups ?? {}), notes = Object.fromEntries(groups.filter(([, v]) => v.green?.redNotes?.length).map(([k, v]) => [k, v.green.redNotes]));
+  return { merged: groups.filter(([, v]) => v.red?.merged).map(([k]) => k), ...(Object.keys(notes).length ? { redNotes: notes } : {}) };
+}
+
 async function verify(ctx, retPath) {
   const { plan } = ctx;
   let ret;
@@ -415,7 +432,8 @@ async function verify(ctx, retPath) {
     try { const parsed = JSON.parse(text.out); proof = (parsed.clusters ?? parsed).reduce((m, x) => ({ ...m, [x.status]: (m[x.status] ?? 0) + 1 }), {}); } catch { proof = `proofcheck exited ${text.code}: ${text.err.trim().split('\n')[0]}`; }
   }
   const integration = plan.integration?.file ? (ret.integration ? (ret.integration.exit === 0 ? 'ok' : `${plan.integration.file} exited ${ret.integration.exit}`) : 'not run') : undefined;
-  const res = { integration, dod: { covered: c.covered, total: c.total, gaps: c.gaps, phantom }, final: readGate(ctx, 'final.json')?.ok, overridden, unfixed, notDone: Object.entries(ret.groups ?? {}).filter(([, v]) => v.state !== 'done').map(([k, v]) => `${k}: ${v.state}`).concat(integration && integration !== 'ok' ? [`integration: ${integration}`] : []), proofcheck: proof, snapshot: snap, report: join(ctx.run, 'dod-matrix.md') };
+  const fast = plan.mode === 'fast' ? fastReport(ret) : undefined; // fast plans only: the default output has no such key
+  const res = { integration, dod: { covered: c.covered, total: c.total, gaps: c.gaps, phantom }, final: readGate(ctx, 'final.json')?.ok, overridden, unfixed, notDone: Object.entries(ret.groups ?? {}).filter(([, v]) => v.state !== 'done').map(([k, v]) => `${k}: ${v.state}`).concat(integration && integration !== 'ok' ? [`integration: ${integration}`] : []), ...(fast ? { fast } : {}), proofcheck: proof, snapshot: snap, report: join(ctx.run, 'dod-matrix.md') };
   writeGate(ctx, 'verify.json', res);
   process.stdout.write(`${JSON.stringify(res)}\n`);
 }
@@ -452,9 +470,12 @@ async function cmdPlan(o) {
   const pre = o['skip-preflight'] ? { ok: true, verdict: 'skipped', rows: ['PREFLIGHT skipped (--skip-preflight): a broken environment can look like a valid RED'] } : await preflight(load({ run, runner: o.runner }));
   process.stderr.write(`${pre.rows.join('\n')}\n`);
   if (!pre.ok) fail(3, `the sandbox cannot run this repo's tests, so no gate could be trusted. Fix it and run plan again (--run ${run} reuses this folder), or pass --skip-preflight to go on unproven`);
-  const args = { ...full, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict };
+  // `fast` is set here and nowhere else, and only for mode "fast" (it survives the Workflow's own mode: "plan", a dry run, replaces args.mode). A `fast` key of the user's plan.json is
+  // dropped from the args: it would switch the one-driver pipeline on while the gates stay standard (no firstSnapshot). Without mode "fast" the args are what they always were.
+  const { fast: _userFast, ...fullArgs } = full;
+  const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(plan.mode === 'fast' ? { fast: true } : {}) };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
-  process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${plan.dod.length} DoD item(s), base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}; Workflow args in ${join(run, 'args.json')}\n`);
+  process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${plan.dod.length} DoD item(s), base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${plan.mode === 'fast' ? 'fast' : 'standard'}; Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
   process.stdout.write(`${JSON.stringify(args)}\n`);
 }
 

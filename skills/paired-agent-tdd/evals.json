@@ -135,5 +135,25 @@
       "Fixes the environment, proves it with tdd.mjs preflight, re-runs the gate the output names (tdd.mjs green --run $RUN --group a) and runs resume again before any Workflow",
       "Does not use --skip-preflight to get around it"
     ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "Use paired TDD in fast mode for a change with three independent groups (no after edges) in the payments module: refunds, ledger entries and the auth check on the refund API. Make it as quick as possible.",
+    "files": [],
+    "expected_behavior": [
+      "Warns that fast mode is not for security-critical or tightly coupled groups (the code's author also wrote its tests) and keeps the default pipeline, or leaves out the group that touches authorization, before setting mode fast",
+      "Sets \"mode\": \"fast\" exactly (any other spelling is silently the default pipeline), reads the effective mode that tdd.mjs plan prints on stderr, and shows the agent count from graph.mjs --plan with the fast argument",
+      "Expects one tdd-driver and one green-navigator per independent group, with no red-navigator and no green-driver for them, and a normal reviewer, fixers and final courier"
+    ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "Fast mode run, group ledger (no after): the tdd-driver wrote the tests, ran red, wrote the code, then edited one test so it would pass and re-ran tdd.mjs red before its first green. The user asks whether the frozen-tests check still holds, and whether groups with after edges skip their RED navigator in fast mode.",
+    "files": [],
+    "expected_behavior": [
+      "Says the check holds for this sequence: once any of the group's src files differs from the base (or a GREEN gate exists) tdd.mjs red keeps the first RED snapshot as firstSnapshot, so tdd.mjs green reports 'tests changed since RED' for the edited test; the only way to re-baseline is green --retest. Adds the known limit: the seal starts at the first source edit or GREEN gate a gate run observes, so source stashed or reverted before any RED or GREEN run re-baselines the reference, which only the merged navigator and the mutation gate mitigate",
+      "Says a group with after edges, a continue-file restart and every repair run the default pipeline in fast mode, and no RED navigator is ever skipped",
+      "Says the one navigator also judges RED, that a test it calls outright wrong comes back as a WRONG TEST defect corrected in place, and that its notes are kept in green.redNotes and shown by verify"
+    ]
   }
 ]
