@@ -25,13 +25,15 @@ const MODES = {
   quick: {"use":"< 150 source lines and <= 5 files","merge":true,"cap":35,"verify":["critical","high"],"effort":{},"skip":["test-auditor","integration-probe","critic","gap-reviewer"]},
   standard: {"use":"default","merge":false,"cap":30,"verify":["critical","high","medium"],"effort":{},"skip":["test-auditor","integration-probe","critic","gap-reviewer"]},
   deep: {"use":"> 1500 source lines or > 40 files, security-critical, or asked","merge":false,"cap":45,"verify":["critical","high","medium"],"effort":{"reviewer":"high"},"skip":[]},
+  fast: {"use":"time matters, no auth/payments/migrations/security-critical code","merge":false,"cap":30,"verify":["critical","high","medium"],"effort":{},"skip":["test-auditor","integration-probe","critic","gap-reviewer"],"batch":true,"pool":8},
 }
 const LIM = {"pool":6,"gaps":3,"retry":1}
 function plan(mode, g, c, h, m, l) {
   const M = MODES[mode], on = id => (M.skip.includes(id) ? 0 : 1), v = s => (M.verify.includes(s) ? 1 : 0);
+  const refute = v('critical') * c + v('high') * h + v('medium') * m;  // batch mode: one refuter per reviewer group that can hold a medium+, never more than one per cluster
   const counts = {
     reviewer: M.merge ? Math.min(g, 1) : g, 'test-auditor': on('test-auditor'), 'integration-probe': on('integration-probe'),
-    'verifier-refute': v('critical') * c + v('high') * h + v('medium') * m, 'verifier-reproduce': v('critical') * c + v('high') * h,
+    'verifier-refute': M.batch ? Math.min(g, refute) : refute, 'verifier-reproduce': v('critical') * c + v('high') * h,
     adjudicator: 0, critic: on('critic'), 'gap-reviewer': on('gap-reviewer') * LIM.gaps,
   };
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
@@ -45,6 +47,7 @@ const SHA = A.sha || A.head
 const dry = A.mode === 'plan'
 const modeName = [dry ? A.as : A.mode, 'standard'].find(m => MODES[m])
 const MODE = MODES[modeName]
+const POOL = MODE.pool || LIM.pool  // agents in flight; only `fast` sets its own
 const G = Array.isArray(A.groups) ? A.groups : []
 if (!A.repo || !SHA || !A.base || !A.scratch || !A.skillDir) return { error: 'args must be the triage.py JSON plus repo, sha, scratch, skillDir' }
 if (!G.length) return { mode: modeName, counts: { units: 0 }, clusters: [], notReviewed: [], unverified: [], notes: 'empty diff: nothing to review' }
@@ -60,8 +63,8 @@ const h32 = s => { let h = 5381; for (const ch of s) h = ((h << 5) + h + ch.char
 const tok = s => new Set(String(s || '').toLowerCase().match(/[a-z0-9_]{3,}/g) || [])
 const jac = (a, b) => { let i = 0; a.forEach(x => { if (b.has(x)) i++ }); return a.size + b.size - i ? i / (a.size + b.size - i) : 0 }
 const used = {}
-// One rolling pool for every agent of the run (review, verify, critic): never more than LIM.pool in flight, no wave barrier, a stalled agent holds one slot.
-const gate = { n: 0, q: [], take() { return this.n < LIM.pool ? (this.n++, null) : new Promise(r => this.q.push(r)) }, free() { const w = this.q.shift(); if (w) w(); else this.n-- } }
+// One rolling pool for every agent of the run (review, verify, critic): never more than POOL in flight, no wave barrier, a stalled agent holds one slot.
+const gate = { n: 0, q: [], take() { return this.n < POOL ? (this.n++, null) : new Promise(r => this.q.push(r)) }, free() { const w = this.q.shift(); if (w) w(); else this.n-- } }
 const run = async (node, prompt, o) => {
   used[node] = (used[node] || 0) + 1
   await gate.take()
@@ -153,11 +156,23 @@ const LENS = {
   adjudicator: 'LENS adjudicate: the refuter and the reproducer disagree. Read the code yourself, decide who is right, give the final real, severity and inScope.',
 }
 const VERDICT_TAIL = 'Return the verdict only: real yes|no|partial|unverifiable, severity (none if not real), inScope=false when the hazard exists on the base and this diff does not newly route traffic through it, reasoning <= 500 chars, betterFix only if the reviewer fix is wrong, proof {mode executed|read|log|metric|trace|inferred|none, ref, quote <= 300 chars, command, exit}: executed = ref is the id after `ZT-RUN` that the sandbox runner printed, quote copied verbatim from its output; read = ref path:startLine-endLine at HEAD, quote copied verbatim from that code; log|metric|trace (a distributed trace) = ref is the telemetry tool name, quote copied verbatim from its result; inferred = you did not run, read or measure it (a guess). A tool re-checks every ref and quote against the real code and ledgers; a mismatch makes the claim unproven. real=yes at medium or above needs executed, read, log, metric or trace.'
+const findingBlock = c => 'FINDING ' + c.id + ' [' + c.severity + '] ' + c.title + '\nlocation: ' + c.file + ':' + c.startLine + '-' + c.endLine + '  points: ' + c.points.join(',') + '\nhazard: ' + c.hazard + '\nfailure scenario: ' + c.failureScenario + '\nreviewer evidence: ' + c.evidence + '\nreviewer fix: ' + (c.suggestedFix || '(none)')
 const verifierPrompt = (node, c, cap, vs) => [
   'ROLE: navigator (' + node + '). Independently verify exactly ONE finding of a code review; do not trust the reviewer, do not hunt for other findings.' + pony(NODE[node].ponytail) + '\n' + WHERE + '\nReviewed diff: git diff BASE...HEAD',
-  'FINDING ' + c.id + ' [' + c.severity + '] ' + c.title + '\nlocation: ' + c.file + ':' + c.startLine + '-' + c.endLine + '  points: ' + c.points.join(',') + '\nhazard: ' + c.hazard + '\nfailure scenario: ' + c.failureScenario + '\nreviewer evidence: ' + c.evidence + '\nreviewer fix: ' + (c.suggestedFix || '(none)'),
+  findingBlock(c),
   vs ? 'VERDICTS TO ADJUDICATE:\n' + vs.map(v => v.by + ': real=' + v.real + ' severity=' + v.severity + ' inScope=' + v.inScope + ' | ' + clip(v.reasoning, 400)).join('\n') : '',
   LENS[node], rules(cap, 'v-' + c.id), lazyTips.replace('"ID"', '"' + c.id + '"'), VERDICT_TAIL,
+].filter(Boolean).join('\n\n')
+// Batch mode (fast): ONE refuter for all medium+ clusters of one reviewer unit. Same LENS as the per-cluster refuter, applied to each finding on its own.
+const BATCH_MAX = 8  // clusters per batch agent; a larger unit splits so one agent's tool cap and attention still cover every finding
+const batchCap = n => Math.min(45, 10 + 6 * n)  // 16 calls for one cluster (>= the 15 of a lone medium refuter), 45 at most
+const BATCH = { type: 'object', properties: { verdicts: { type: 'array', items: { type: 'object', properties: { id: STR, ...V }, required: ['id', 'real', 'severity', 'inScope', 'reasoning'] } } }, required: ['verdicts'] }
+const batchPrompt = (cs, cap, tag) => [
+  'ROLE: navigator (verifier-refute, batch of ' + cs.length + '). Independently verify EACH of the ' + cs.length + ' findings below of a code review; do not trust the reviewer, do not hunt for other findings. Treat every finding as if it were the only one: another finding is never evidence for or against it, and a verdict on one never softens or hardens another.' + pony(NODE['verifier-refute'].ponytail) + '\n' + WHERE + '\nReviewed diff: git diff BASE...HEAD',
+  cs.map(findingBlock).join('\n\n'),
+  'Apply this lens to every finding separately. ' + LENS['verifier-refute'],
+  rules(cap, 'v-' + tag), lazyTips.replace('"ID"', '"' + tag + '"'),
+  'Return {"verdicts":[{"id":"<FINDING id copied exactly>", ...}]} with exactly one entry per finding above and no entry for anything else; a finding you cannot verify still gets an entry (real=unverifiable). Each entry is the verdict plus its id. ' + VERDICT_TAIL,
 ].filter(Boolean).join('\n\n')
 // ---------------------------------------------------------------- units and dry run
 function units() {
@@ -239,21 +254,39 @@ function decide(c, vs) {
 // 20 for the adjudicator (reads two verdicts), 15 for the single refute on a medium. Empirical; adjust only from runs.md data.
 const agentFor = c => (/\.[mc]?[jt]sx?$/.test(c.file) ? 'typescript-reviewer' : 'python-reviewer')
 const ask = async (node, c, cap, vs) => verdict(node.replace('verifier-', ''), await runR(node, verifierPrompt(node, c, cap, vs), { schema: VERDICT, label: node.replace('verifier-', '') + ':' + c.id, phase: 'Verify', agentType: agentFor(c) }, node.replace('verifier-', '') + ':' + c.id))
-async function verifyCluster(c) {
+// `refuted` (batch mode only) = this cluster's pending verdict from its unit's batch refuter, used in place of a refuter agent of its own; everything after it is unchanged
+async function verifyCluster(c, refuted) {
+  const refute = cap => refuted || ask('verifier-refute', c, cap)
   if (SEV[c.severity] >= SEV.high) {
-    const vs = (await parallel([() => ask('verifier-refute', c, 25), () => ask('verifier-reproduce', c, 25)])).map((v, i) => v || verdict(['refute', 'reproduce'][i], null))
+    const vs = (await parallel([() => refute(25), () => ask('verifier-reproduce', c, 25)])).map((v, i) => v || verdict(['refute', 'reproduce'][i], null))
     if (side(vs[0]) * side(vs[1]) < 0) vs.push(await ask('adjudicator', c, 20, vs))
     return vs
   }
-  const r = await ask('verifier-refute', c, 15)
+  const r = await refute(15)
   return r.nullResult || r.real === 'partial' || r.real === 'unverifiable' ? [r, await ask('verifier-reproduce', c, 25)] : [r]
+}
+// Batch mode: one refuter agent per chunk of a unit's clusters. A skipped cluster or a dead agent is a null verdict (never "no issues"): it goes to a reproducer exactly like a null single refuter.
+// The verifier is a new agent, never the reviewer that filed the finding; critical/high still get their own reproducer, and a split still goes to the adjudicator.
+async function askBatch(cs, tag) {
+  const r = await runR('verifier-refute', batchPrompt(cs, batchCap(cs.length), tag), { schema: BATCH, label: 'refute:' + tag, phase: 'Verify', agentType: cs.every(c => agentFor(c) === 'typescript-reviewer') ? 'typescript-reviewer' : 'python-reviewer' }, 'refute:' + tag)
+  const got = new Map()
+  for (const x of (r && r.verdicts) || []) if (x && typeof x.id === 'string' && !got.has(x.id)) { const { id, ...v } = x; got.set(id, v) }
+  return new Map(cs.map(c => [c.id, verdict('refute', got.get(c.id) || null)]))
+}
+function batchRefutes(cs) {
+  const pending = new Map()
+  for (let i = 0; i < cs.length; i += BATCH_MAX) {
+    const chunk = cs.slice(i, i + BATCH_MAX), got = askBatch(chunk, 'batch-' + cs[0].origins[0] + (i ? '-' + (i / BATCH_MAX + 1) : ''))
+    chunk.forEach(c => pending.set(c.id, got.then(m => m.get(c.id))))
+  }
+  return pending
 }
 const verified = new Map()
 const needVerify = c => MODE.verify.includes(c.severity)
 
 // ---------------------------------------------------------------- run: per-unit pipeline review -> cluster -> verify, no barrier between units
 phase('Review')
-log('mode ' + modeName + ': ' + US.length + ' unit(s) [' + US.map(u => u.id).join(', ') + '], pool ' + LIM.pool + ', tool cap ' + MODE.cap + ', run folder ' + RUN)
+log('mode ' + modeName + ': ' + US.length + ' unit(s) [' + US.map(u => u.id).join(', ') + '], pool ' + POOL + ', tool cap ' + MODE.cap + ', run folder ' + RUN)
 const findings = [], na = {}, questions = [], unverified = [], notReviewed = [], audit = [], reg = []
 function intake(u, r) {
   if (!r) { notReviewed.push(u.id + ': points ' + (u.points.join(',') || '-') + '; ' + u.files.length + ' file(s)'); unitState[u.id] = { node: u.node, state: 'failed' }; log('NOT REVIEWED after ' + (attempts[u.id] || 1) + ' attempt(s): ' + u.id + '; resume the run, its checkpoint file keeps progress'); return }
@@ -276,7 +309,11 @@ function reviewStage(prefix, phaseName) {
   }
 }
 // lows get no agent (~45k tokens of fixed context each): they stay `pending-code-check` and proofcheck.mjs re-checks their quote against the real code
-const verifyStage = async cs => { await parallel(cs.filter(c => SEV[c.severity] >= SEV.medium && needVerify(c)).map(c => async () => { verified.set(c.id, await verifyCluster(c)) })) }
+const verifyStage = async cs => {
+  const need = cs.filter(c => SEV[c.severity] >= SEV.medium && needVerify(c))
+  const refuted = MODE.batch ? batchRefutes(need) : new Map()
+  await parallel(need.map(c => async () => { verified.set(c.id, await verifyCluster(c, refuted.get(c.id))) }))
+}
 
 await pipeline(US, reviewStage('C', 'Review'), verifyStage)
 if (!reg.some(c => SEV[c.severity] >= SEV.medium)) log('EARLY EXIT: no finding of severity >= medium; skipping refute/reproduce/adjudicate' + (reg.length ? ', ' + reg.length + ' low(s) go to proofcheck' : ''))
@@ -344,7 +381,7 @@ const postmortemMd = ['# Postmortem ' + sha8 + ' ' + modeName, '', failed.length
 return {
   mode: modeName,
   counts: { units: US.length, rawFindings: findings.length, clusters: out.length, bySeverity: tally('severity'), byStatus: tally('status'), byEvidence: tally('evidence') },
-  stats: { agentsByNode: used, total: Object.values(used).reduce((a, b) => a + b, 0), pool: LIM.pool },
+  stats: { agentsByNode: used, total: Object.values(used).reduce((a, b) => a + b, 0), pool: POOL },
   run: { dir: RUN, ckDir: CKDIR, units: unitState, failed },
   boardMd, postmortemMd,
   notReviewed, clusters: out, notApplicable: { ...skipped, ...na }, audit,

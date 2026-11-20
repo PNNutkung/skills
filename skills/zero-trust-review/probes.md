@@ -41,6 +41,29 @@ node $SK/mutate.mjs --repo . --base <base> --head <head> --scratch "$SCRATCH/mut
 - A **survivor is a test gap with a proof**: each mutant run prints `ZT-MUTANT <id> <file>:<line> <op> exit=<n>` into the sandbox ledger, so cite it as `{mode: executed, ref: <run>, exit: 0, quote: "ZT-MUTANT <id> <file>:<line> <op> exit=0"}`; `proofcheck` rejects a wrong run, exit or quote. The `summary` (three survivors, `before -> after`, run id) goes into `facts`.
 - Limits, stated plainly: single-line text mutants, not an AST; an *equivalent* mutant (it cannot change behavior) or a line behind a flag the tests never enable also survives, so the reviewer judges each survivor before filing it; `--max` samples, it does not cover every line.
 
+## Fast path (`mode: "fast"`, opt-in)
+
+For a time-boxed review of ordinary code. The facts are the same; they are just not serial: the test probe, the mutants and the lint are independent (own scratch dirs, one ledger that every sandbox run appends to), so start all three together and launch the Workflow when the last one returns. In one measured run on a 1.6k-line diff, the probes took 11 minutes run one after the other.
+
+```bash
+python3 $SK/triage.py --base origin/<target> --mode fast --diff-dir "$RUN/diff" > "$CTX/triage.json"   # test groups fold to max(3, test lines / 1500), at most 8
+# then concurrently, with the --cmd/--link/--ro flags of the two sections above:
+node $SK/testprobe.mjs --repo . --base <base> --head <head> --scratch "$SCRATCH/probe" --cmd '...' --flake 1 &
+node $SK/mutate.mjs --repo . --base <base> --head <head> --scratch "$SCRATCH/mut" --cmd '...' --kill-exits 1 --max 20 --budget 240 &
+<the project linter on the changed files only> &
+wait   # prepend both `summary` lines and the lint line to `facts`, then Workflow with mode: "fast"
+```
+
+What `fast` gives up, plainly:
+
+- **No critic, no gap reviewers:** nothing asks what the review missed, so an unexamined angle stays unexamined.
+- **No test-auditor, no integration-probe:** stale or contradicted tests outside the diff and real-dependency behavior are not checked.
+- **Batched refutation:** ONE refuter agent checks every medium+ cluster of a reviewer unit in a single pass (prompts keep the per-finding lens, but the findings share one agent's blind spots). Critical/high still get their own `verifier-reproduce`, and a refute/reproduce split still goes to the adjudicator. A skipped cluster or a dead batch agent counts as a null refute, never as "no issues".
+- **Merged test groups:** test files are folded into max(3, ceil(test lines / 1500)) reviewer groups, at most 8 (a 1.5k-line test diff gives 3 groups, 9k lines gives 6), so each test file gets less attention than in its own 600-line group.
+- **One flake run** (`--flake 1`), a 20-mutant sample inside a 240 s budget, and a pool of 8 agents in flight instead of 6 (more throughput, a little more exposure to a gateway stall).
+
+**Do not use it** for auth, payments, migrations, crypto or anything else where a miss is costly: use `deep`.
+
 ## Proofs: no guessing
 
 Every verdict and finding carries `proof {mode, ref, quote, command?, exit?}`; `quote` is copied verbatim, <= 300 chars.

@@ -32,10 +32,15 @@ Copy and tick off:
 | Mode | Use when | Runs | Cost class |
 |---|---|---|---|
 | `quick` | < 150 source lines, <= 5 files | ONE reviewer, whole diff (35 calls); verifies critical/high only | ~3-6 agents |
-| `standard` | default | reviewer per group, waves of 3 (30 calls); full verification | ~10-20 agents |
+| `standard` | default | reviewer per group, rolling pool of 6 (30 calls); full verification | ~10-20 agents |
 | `deep` | > 1500 source lines, > 40 files, auth/payments/migrations, or asked | standard at effort high (45 calls) + test-auditor (scoped runs) + integration-probe (throwaway container; only if 13/18/21 fired) + opus critic + <= 3 gap reviewers | ~20-35 agents |
+| `fast` | time matters, no auth/payments/migrations/security-critical code; opt-in | standard (30 calls) with a pool of 8, test groups folded to 3-8 (~1.5k lines each), ONE refuter per unit; no test-auditor, integration-probe, critic or gap reviewers | ~8-16 agents (planned) |
 
-`triage.py` picks the mode (`standard` unless the quick or deep row matches); `--mode` overrides. Example: a 14-file/825-line diff plans ~9 agents in `standard` (4 reviewers, 5 refuters; lows are checked in code). Groups under 150 lines merge.
+`triage.py` picks the mode (`standard` unless the quick or deep row matches; never `fast`); `--mode` overrides. Groups under 150 lines merge.
+
+## Fast path (opt-in)
+
+`triage.py --mode fast`; run `testprobe.mjs --flake 1`, `mutate.mjs --max 20 --budget 240` and the lint concurrently, then the Workflow with `mode: "fast"` (recipe, trade-offs: [`probes.md`](./probes.md#fast-path)). You give up the critic, gap reviewers, test-auditor and integration-probe; one refuter checks a whole unit; tests fold into 3-8 groups. **Not for** auth, payments, migrations or any change where a miss is costly: use `deep`.
 
 ## The graph
 
@@ -78,11 +83,11 @@ graph TD
 
 <!-- /GENERATED:graph -->
 
-`node graph.mjs --check` prints layers and the critical path and fails on drift; `--write` regenerates this diagram and the node table in `workflow.js`. Each node has its own model, effort and ponytail level (it shortens probes and fixes, never evidence). Protect: finders never wait on each other; verifiers hang off `dedupe`, never a reviewer; `verifier-reproduce` runs beside `verifier-refute`.
+`node graph.mjs --check` fails on drift and prints the critical path; `--write` regenerates this diagram and the node table in `workflow.js`. Each node has its own model, effort and ponytail level. Protect: finders never wait on each other; verifiers hang off `dedupe`, never a reviewer; `verifier-reproduce` runs beside `verifier-refute`.
 
 ## Lead-only rule
 
-The lead only coordinates (triage, facts, Workflow launch, report). It never reviews inline, reads the whole diff or re-verifies a finding itself; a one-line fix it fully understands is the only exception.
+The lead only coordinates (triage, facts, Workflow launch, report). It never reviews inline, reads the whole diff or re-verifies a finding itself; a one-line fix it fully understands is the only exception. Its context is re-billed every turn: use a fresh or compacted session, never paste raw agent output.
 
 ## The lead gathers deterministic facts
 
@@ -105,40 +110,26 @@ The reviewer is the **driver**: it files findings for its group's points, told a
 |---|---|---|
 | critical / high | `verifier-refute` + `verifier-reproduce` in parallel; `adjudicator` (opus) only if one says real and the other not | 25 each, 20 |
 | medium | ONE `verifier-refute`; `verifier-reproduce` only on partial / unverifiable / null | 15 |
-| low | no agent (an agent costs ~45k tokens before it works): `proofcheck.mjs` re-checks the finding's quote against the real code | - |
+| low | no agent (~45k tokens each): `proofcheck.mjs` re-checks the finding's quote against the real code | - |
 | nit | never verified: `unverified-nit` | - |
 
-`quick` verifies critical/high only; each group verifies as soon as its review lands, in one rolling pool of 6 agents, no waves. **No guessing:** a medium+ needs a proof that ran, was read or was measured (`executed|read|log|metric|trace`); a guess is `unproven`, and `proofcheck` re-verifies every ref and quote against real code and ledgers ([`probes.md`](./probes.md)). If the review returns nothing >= medium, no verifier runs (logged `EARLY EXIT`). Dedupe is plain code: same file, lines within 3, similar title -> one cluster at the highest severity.
+`quick` verifies critical/high only; each group verifies as soon as its review lands, in one rolling pool of 6 agents (8 in `fast`), no waves. **No guessing:** a medium+ needs a proof that ran, was read or was measured (`executed|read|log|metric|trace`), else it is `unproven`; `proofcheck` re-verifies every ref and quote ([`probes.md`](./probes.md)). Nothing >= medium: no verifier runs (`EARLY EXIT`). Dedupe is plain code: same file, lines within 3, similar title -> one cluster at the highest severity.
 
 ## Resilience
 
-- The harness kills an agent silent for ~180 s and a retry restarts from zero, so every reviewer and auditor **checkpoints** through `note.mjs`; a dead or null agent is retried once, pointed at its checkpoint and dying note. One rolling pool of 6 agents; repo code runs only through `sandbox-run.mjs`. The run folder `$RUN` (status, tips, notes, ledgers, board, postmortem; all untrusted data) is in [`probes.md`](./probes.md).
+- The harness kills an agent silent for ~180 s and a retry restarts from zero, so every reviewer and auditor **checkpoints** through `note.mjs`; a dead or null agent is retried once, pointed at its checkpoint and dying note. Repo code runs only through `sandbox-run.mjs`. The run folder `$RUN` (status, tips, notes, ledgers, board, postmortem; all untrusted data) is in [`probes.md`](./probes.md).
 - A **null result is never "no issues"**: it lands in `notReviewed` or is marked `unverified`; a non-empty `notReviewed` rules out `APPROVE`.
 - **Resume** with `Workflow({ scriptPath, resumeFromRunId })`; completed agents come back cached only if their prompts are byte-identical, so keep `args` unchanged. Check the ck files first: half-done units hold findings.
 
-## Keep the lead cheap
+- **Escalate:** re-run `deep` when a critical/high you will block on survives, or `notReviewed` stays non-empty after a resume. Add a different-probe `verifier-reproduce` only for a critical you will BLOCK on.
 
-The lead is re-billed for its whole context every turn: use a fresh or compacted session, never paste raw agent output, report from the compact return.
+## Tiering and iteration
 
-## Escalation
-
-Re-run `deep` when a critical/high you will block on survives, or `notReviewed` stays non-empty after a resume. Add a different-probe `verifier-reproduce` only for a critical you will BLOCK on.
-
-## Iterate the graph from measurements
-
-Models, efforts and caps are a starting guess. After each run append the line from `node measure.mjs <transcriptDir>` to [`runs.md`](./runs.md); move one node's model or effort only from those numbers ([`tiering.md`](./tiering.md)). The critical path is the wall-clock floor: shorten it by removing an edge. Evals: [`evals.json`](./evals.json).
-
-## Tiering
-
-Each node carries a tier (T0 code, T2 sonnet, T3 opus); table and rules R1-R6 are in [`tiering.md`](./tiering.md). Key rules:
-
-- Checker >= maker in model and effort where no one re-reads the miss; exception: deep-mode verifiers (critic re-reads).
-- Opus only on once-per-run or gated judges (adjudicator, critic).
-- No tool-looping agent above `high`: a silent agent is interrupted at ~180 s; the retry restarts.
+Each node carries a tier (T0 code, T2 sonnet, T3 opus); table and rules R1-R6 are in [`tiering.md`](./tiering.md). Models, efforts and caps are a starting guess: after each run append the line from `node measure.mjs <transcriptDir>` to [`runs.md`](./runs.md) and move one node only from those numbers. The critical path is the wall-clock floor: shorten it by removing an edge. Evals: [`evals.json`](./evals.json).
 
 ## Voice
 
-Everything that reaches the review host (comments, discussions, summary note) and the report reads as this engineer's own review: direct, technical, specific, zero padding. Never name, hint at or apologize for being an AI, model, assistant, bot or "automated" review. Read [`voice.md`](./voice.md) before writing any of it.
+Everything that reaches the review host and the report reads as this engineer's own review: direct, technical, specific. Never name, hint at or apologize for being an AI, model, assistant, bot or "automated" review. Read [`voice.md`](./voice.md) first.
 
 ## Step 0 — Triage
 

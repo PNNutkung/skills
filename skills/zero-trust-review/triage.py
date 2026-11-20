@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Lead-side diff triage for zero-trust-review. Stdlib only; prints ONE compact JSON object.
-usage: triage.py [--base origin/main] [--head HEAD] [--mode auto|quick|standard|deep] [--force-all]
-                 [--no-merge] [--min-group 150] [--diff-dir DIR] [--self-test]"""
+usage: triage.py [--base origin/main] [--head HEAD] [--mode auto|quick|standard|deep|fast] [--force-all]
+                 [--no-merge] [--min-group 150] [--diff-dir DIR] [--self-test]
+`--mode fast` (opt-in, never picked by auto) also folds the test-only groups into max(3, ceil(test lines / 1500)) of roughly equal size, at most 8."""
 import argparse, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 
@@ -32,6 +33,7 @@ GATED = {
 RX = {n: re.compile(r, re.I) for n, r in GATED.items()}
 CAP = 600  # max changed lines per reviewer group (empirical; adjust only from runs.md data)
 MIN_GROUP = 150  # groups below this many changed lines are merged with a partner (see merge_small)
+FAST_TEST_MIN, FAST_TEST_MAX, FAST_TEST_LINES = 3, 8, 1500  # --mode fast: a test-only group is a 2-point review but costs a full ~45k-token agent (see fast_test_bins)
 TEST = re.compile(r'(^|/)(tests?|__tests__|specs?|e2e|cypress|playwright)/|(^|/)(test_|conftest)[^/]*$|[_.](test|spec)\.\w+$', re.I)
 FRONT = re.compile(r'\.(m?[jt]sx?|s?css|less)$', re.I)
 TS = re.compile(r'\.[mc]?[jt]sx?$', re.I)
@@ -50,6 +52,20 @@ def pack(items):  # sorted (path, lines) -> bins of <= CAP changed lines, direct
     bins, cur, n = [], [], 0
     for p, l in sorted(items):
         if cur and n + l > CAP: bins.append(cur); cur, n = [], 0
+        cur.append(p); n += l
+    return bins + ([cur] if cur else [])
+
+
+def fast_test_bins(total):  # about one test group per 1500 changed test lines, never fewer than 3 or more than 8: a huge test diff gets more groups, not giant ones
+    return min(FAST_TEST_MAX, max(FAST_TEST_MIN, -(-total // FAST_TEST_LINES)))
+
+
+def balance(items, k):  # sorted (path, lines) -> at most k bins of roughly equal changed lines; directories stay adjacent, a file is never split
+    items = sorted(items)
+    bins, cur, n, left, rest = [], [], 0, k, sum(l for _, l in items)  # rest = lines not yet in a closed bin
+    for p, l in items:
+        if cur and left > 1 and abs(n + l - rest / left) > abs(n - rest / left):  # adding this file lands farther from the bin's share than stopping here
+            bins.append(cur); rest -= n; left -= 1; cur, n = [], 0
         cur.append(p); n += l
     return bins + ([cur] if cur else [])
 
@@ -126,13 +142,49 @@ def self_test():
         assert 'a/a.py' in patch and 'a/b.md' in patch and patch.count('\n row5\n') == 2 and '\n row4\n' not in patch  # -U15 around line 20
         gs = run('--no-merge')['groups']
         assert ids(gs) == [('src', 2), ('docs', 2)] and all('diff' not in g for g in gs)
+    # --mode fast: balance() folds test files into at most k bins of roughly equal lines, every file once, order kept
+    assert balance([], 3) == [] and balance([('a', 5)], 3) == [['a']] and balance([('a', 10), ('b', 10)], 1) == [['a', 'b']]
+    eight = [(f'f{i}.py', 590) for i in range(8)]
+    assert [len(b) for b in balance(eight, 3)] == [3, 3, 2] and sum(balance(eight, 3), []) == [p for p, _ in eight]
+    assert balance([('a', 1000), ('b', 10)], 3) == [['a'], ['b']]  # one huge file: fewer bins than k, never an empty one
+    # group count: one per 1500 test lines, never < 3 or > 8 (a huge test diff gets more groups, not three giant ones)
+    assert [fast_test_bins(n) for n in (0, 1500, 4500, 4501, 9000, 12000, 10**6)] == [3, 3, 3, 4, 6, 8, 8]
+    fifteen = [(f'f{i:02d}.py', 600) for i in range(15)]  # 9000 test lines
+    big = balance(fifteen, fast_test_bins(9000))
+    assert len(big) == 6 and sum(big, []) == [p for p, _ in fifteen] and max(len(b) for b in big) <= 3
+    ident = ('-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false')
+
+    def triage_repo(d, files):  # repo in d: a seed commit, then one commit adding {path: line count}
+        git('init', '-q', cwd=d); Path(d, 'seed.txt').write_text('x\n')
+        git('add', '.', cwd=d); git(*ident, 'commit', '-q', '--no-verify', '-m', '0', cwd=d)
+        for p, n in files.items(): Path(d, p).parent.mkdir(parents=True, exist_ok=True); Path(d, p).write_text(''.join(f'row{i}\n' for i in range(n)))
+        git('add', '.', cwd=d); git(*ident, 'commit', '-q', '--no-verify', '-m', '1', cwd=d)
+
+    def run_in(d):  # this file's triage.py against the one-commit diff in d
+        return lambda *x: json.loads(subprocess.run([sys.executable, os.path.abspath(__file__), '--base', 'HEAD~1', *x], cwd=d, capture_output=True, text=True, check=True).stdout)
+    with tempfile.TemporaryDirectory() as d:  # real repo: 4 test bins (400 lines each) + one 700-line source file
+        triage_repo(d, {'pkg/big.py': 700, **{f'tests/test_{i}.py': 400 for i in range(4)}}); run = run_in(d)
+        plain, fast = run(), run('--mode', 'fast')
+        assert ids(plain['groups']) == [('src', 700)] + [(f'tests-{i}', 400) for i in range(1, 5)] and plain['mode'] == 'standard'
+        assert fast['mode'] == 'fast' and [g['id'] for g in fast['groups']] == ['src', 'tests-1', 'tests-2', 'tests-3']
+        assert fast['groups'][0] == plain['groups'][0], 'source groups are left as they are'
+        assert sum(g['lines'] for g in fast['groups']) == 1600 + 700 and sorted(f for g in fast['groups'][1:] for f in g['files']) == [f'tests/test_{i}.py' for i in range(4)]
+        assert all(g['points'] == [2, 3] for g in fast['groups'][1:]), 'test groups keep their points'
+        assert [g['id'] for g in run('--mode', 'quick')['groups']] == [g['id'] for g in plain['groups']], 'only fast folds test groups'
+    with tempfile.TemporaryDirectory() as d:  # 9000 test lines in 15 files: 15 groups by default, 6 (not 3 giant ones) in fast
+        triage_repo(d, {f'tests/test_{i:02d}.py': 600 for i in range(15)}); run = run_in(d)
+        plain, fast = run(), run('--mode', 'fast')
+        assert len(plain['groups']) == 15 and [g['id'] for g in fast['groups']] == [f'tests-{i}' for i in range(1, 7)]
+        assert sorted(f for g in fast['groups'] for f in g['files']) == [f'tests/test_{i:02d}.py' for i in range(15)] and sum(g['lines'] for g in fast['groups']) == 9000
+        assert max(g['lines'] for g in fast['groups']) - min(g['lines'] for g in fast['groups']) <= 600, 'balanced to within one file'
+        assert [g['id'] for g in run('--mode', 'deep')['groups']] == [g['id'] for g in plain['groups']], 'only fast folds test groups'
     print('ok')
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--base', default='origin/main'); ap.add_argument('--head', default='HEAD')
-    ap.add_argument('--mode', default='auto', choices=['auto', 'quick', 'standard', 'deep'])
+    ap.add_argument('--mode', default='auto', choices=['auto', 'quick', 'standard', 'deep', 'fast'])
     ap.add_argument('--force-all', action='store_true'); ap.add_argument('--self-test', action='store_true')
     ap.add_argument('--no-merge', action='store_true'); ap.add_argument('--min-group', type=int, default=MIN_GROUP)
     ap.add_argument('--diff-dir')
@@ -160,6 +212,9 @@ def main():
     for k in ('src', 'tests', 'frontend', 'docs'):
         items = [(p, f['lines']) for p, f in files.items() if kind(p) == k]
         bins = [b for b in (pack(items) if k != 'docs' else [sorted(p for p, _ in items)]) if b]
+        if a.mode == 'fast' and k == 'tests':
+            want = fast_test_bins(sum(l for _, l in items))
+            if len(bins) > want: bins = balance(items, want)
         for i, b in enumerate(bins):
             ts = k == 'frontend' or all(TS.search(p) for p in b)
             groups.append({'id': k + (f'-{i + 1}' if len(bins) > 1 else ''), 'label': LABEL[k], 'files': b, 'lines': sum(files[p]['lines'] for p in b),

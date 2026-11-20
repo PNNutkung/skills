@@ -178,4 +178,72 @@ assert.equal(sugOf('mechanical tidy').replacement, 'x = 1\ny = 2');
 for (const t of ['replacement far too long', 'no anchor for this one', 'fix changed by navigator']) assert.equal(sugOf(t).replacement, undefined, t + ': no block without an applyable, unchanged fix');
 assert.ok(/replacement/.test(r.calls.find(c => c.o.label === 'src').prompt) && /exact new text/.test(r.calls.find(c => c.o.label === 'src').prompt), 'reviewers are told when and how to write it');
 assert.ok(r.calls.every(c => c.prompt.length < 4608), 'prompt budget');
-console.log('ok - workflow.js: 18 scenarios');
+
+// 19 fast plan: one refuter per group that can hold a medium+ (never more than one per cluster), reproducers unchanged, no critic, gap reviewers or audits; standard unchanged
+const planOf = async (as, expect) => (await play({ mode: 'plan', as, expect }, () => null)).out.plan;
+let pl = await planOf('fast');  // default mix: 0 critical, 1 high, 5 medium, 30 low over 4 groups
+assert.deepEqual([pl.counts.reviewer, pl.counts['verifier-refute'], pl.counts['verifier-reproduce'], pl.total], [4, 4, 1, 9]);
+assert.deepEqual(['test-auditor', 'integration-probe', 'critic', 'gap-reviewer', 'adjudicator'].map(k => pl.counts[k]), [0, 0, 0, 0, 0]);
+pl = await planOf('fast', { critical: 2, high: 3, medium: 20, low: 5 });
+assert.deepEqual([pl.counts['verifier-refute'], pl.counts['verifier-reproduce']], [4, 5], 'refuters capped by the 4 groups, reproducers still one per critical/high');
+assert.equal((await planOf('fast', { critical: 0, high: 0, medium: 2, low: 9 })).counts['verifier-refute'], 2, 'never more refuters than medium+ clusters');
+assert.equal((await planOf('fast', { critical: 0, high: 0, medium: 0, low: 9 })).total, 4, 'only lows: the 4 reviewers and nothing else');
+assert.equal((await planOf('standard', { critical: 2, high: 3, medium: 20, low: 5 })).counts['verifier-refute'], 25, 'standard keeps one refuter per cluster');
+
+// 20 fast run: ONE refuter per reviewer unit that has a medium+ cluster (its prompt carries every cluster id of that unit and none of another unit's);
+// reproducers per critical/high, and per medium the refuter calls partial/unverifiable or skipped; the adjudicator on a split; no audits, critic or gap reviewers
+const FG = [grp('src', ['superset/a.py'], [1, 4, 13]), grp('tests-1', ['tests/test_a.py'], [2, 3]), grp('docs', ['UPDATING.md'], [1, 27])];
+const fastCanned = {
+  src: REV(F('Race in cache fill', 'high', 'superset/a.py', 10, 12), F('Cursor never closed', 'medium', 'superset/b.py', 5, 6), F('Pool never drained', 'medium', 'superset/c.py', 7, 8), ...lows(3)),
+  'tests-1': REV(F('Weak assert on retry', 'medium', 'tests/test_a.py', 20, 21), F('Flaky sleep in test', 'medium', 'tests/test_b.py', 30, 31)),
+  docs: REV(),
+};
+const batchTable = { 'Race in cache fill': V('no', 'none'), 'Cursor never closed': V('yes', 'medium', 'read'), 'Pool never drained': V('partial', 'medium', 'read'), 'Weak assert on retry': V('yes', 'medium', 'read') };  // no entry for 'Flaky sleep in test': the agent skipped it
+const batchAnswer = p => ({ verdicts: [...p.matchAll(/FINDING (\S+) \[\w+\] (.*)/g)].filter(m => batchTable[m[2]]).map(m => ({ id: m[1], ...batchTable[m[2]] })) });
+const navVerdicts = byTitle({
+  'reproduce:Race in cache fill': V('yes'), 'adjudicator:Race in cache fill': V('yes'), 'reproduce:Pool never drained': V('yes', 'medium'), 'reproduce:Flaky sleep in test': V('no', 'none', 'read'), 'reproduce:Cursor never closed': V('yes', 'medium', 'read'),
+  'refute:Race in cache fill': V('no', 'none'), 'refute:Cursor never closed': V('yes', 'medium', 'read'), 'refute:Pool never drained': V('partial', 'medium', 'read'), 'refute:Weak assert on retry': V('yes', 'medium', 'read'), 'refute:Flaky sleep in test': V('yes', 'medium', 'read'),
+});
+const respondFast = (l, p) => (l in fastCanned ? fastCanned[l] : /^refute:batch-/.test(l) ? batchAnswer(p) : navVerdicts(l, p));
+r = await play({ mode: 'fast', groups: FG }, respondFast);
+assert.deepEqual(r.n, { reviewer: 3, 'verifier-refute': 2, 'verifier-reproduce': 3, adjudicator: 1 });  // 2 batch refuters (src, tests-1), not 5; reproducers: the high, the partial, the skipped one
+const batches = r.calls.filter(c => /^refute:batch-/.test(c.o.label)), idOfTitle = t => r.out.clusters.find(c => c.title === t).id;
+assert.deepEqual(batches.map(c => c.o.label).sort(), ['refute:batch-src', 'refute:batch-tests-1']);
+assert.ok(!r.calls.some(c => /^refute:(?!batch-)/.test(c.o.label)), 'no refuter of its own per cluster in fast mode');
+const mine = (b, ts) => ts.every(t => b.prompt.includes('FINDING ' + idOfTitle(t) + ' [')) && (b.prompt.match(/FINDING \S+ \[/g) || []).length === ts.length;
+assert.ok(mine(batches.find(c => c.o.label === 'refute:batch-src'), ['Race in cache fill', 'Cursor never closed', 'Pool never drained']), 'src batch: every src cluster and no other');
+assert.ok(mine(batches.find(c => c.o.label === 'refute:batch-tests-1'), ['Weak assert on retry', 'Flaky sleep in test']), 'tests batch: every tests cluster and no other');
+assert.ok(batches.every(c => /independently verify EACH/i.test(c.prompt) && /LENS refute/.test(c.prompt) && /note\.mjs env/.test(c.prompt) && !/note\.mjs notes|--driver|notes\.jsonl|note\.mjs begin/.test(c.prompt) && /sandbox-run\.mjs/.test(c.prompt) && /exit 86/.test(c.prompt)), 'batch refuter: same lens, run-folder rules and sandbox rule as a single refuter; no driver notes');
+assert.ok(!r.calls.some(c => ['test-auditor', 'integration-probe', 'critic'].includes(c.o.label) || /^GAP/.test(c.o.label)), 'fast skips audits, critic and gap reviewers');
+const stat = t => r.out.clusters.find(c => c.title === t);
+assert.deepEqual(['Race in cache fill', 'Cursor never closed', 'Pool never drained', 'Weak assert on retry', 'Flaky sleep in test'].map(t => stat(t).status), ['confirmed', 'confirmed', 'confirmed', 'confirmed', 'refuted']);
+assert.deepEqual(stat('Race in cache fill').verdicts.map(v => v.by), ['refute', 'reproduce', 'adjudicator'], 'a refute/reproduce split still reaches the adjudicator');
+assert.deepEqual(stat('Flaky sleep in test').verdicts.map(v => v.by), ['refute', 'reproduce'], 'a cluster the batch skipped counts as a null refute and gets a reproducer');
+assert.equal(stat('Flaky sleep in test').verdicts[0].real, 'unverifiable');
+assert.equal(r.out.stats.pool, 8);
+const std =await play({ groups: FG }, respondFast);
+assert.equal(std.n['verifier-refute'], 5, 'same findings in standard: one refuter per cluster');
+// batched prompts are deterministic whatever the completion order (the resume cache keys on prompt bytes)
+const batchPrompts = async hold => (await play({ mode: 'fast', groups: FG }, respondFast, hold)).calls.filter(c => /^refute:batch-/.test(c.o.label)).map(c => c.prompt).sort();
+assert.deepEqual(await batchPrompts(0), await batchPrompts(3));
+
+// 21 a dead batch agent is retried once; if it stays dead its clusters are unverified by refute, never "no issues": reproducers still run and the failure is a postmortem entry
+r = await play({ mode: 'fast', groups: [FG[0]] }, (l, p) => (/^refute:batch-/.test(l) ? null : respondFast(l, p)));
+assert.deepEqual(r.n, { reviewer: 1, 'verifier-refute': 2, 'verifier-reproduce': 3 });  // refuter: attempt + retry; the high plus both mediums fall back to a reproducer
+assert.deepEqual(r.out.run.failed.map(f => [f.id, f.attempts]), [['refute:batch-src', 2]]);
+assert.ok(r.out.clusters.filter(c => /^(Race|Cursor|Pool)/.test(c.title)).every(c => c.status !== 'refuted' && c.verdicts[0].real === 'unverifiable'));
+
+// 22 a unit with more than 8 medium+ clusters splits into chunks of 8, each with its own tool cap
+const NINE = Array.from({ length: 9 }, (_, i) => F('Unbounded read number ' + i, 'medium', 'superset/m' + i + '.py', 5, 6));
+r = await play({ mode: 'fast', groups: [FG[0]] }, (l, p) => (l === 'src' ? REV(...NINE) : /^refute:batch-/.test(l) ? { verdicts: [...p.matchAll(/FINDING (\S+) \[/g)].map(m => ({ id: m[1], ...V('yes', 'medium', 'read') })) } : null));
+const chunks = r.calls.filter(c => /^refute:batch-/.test(c.o.label)).sort((a, b) => a.o.label.localeCompare(b.o.label));
+assert.deepEqual(chunks.map(c => [c.o.label, (c.prompt.match(/FINDING \S+ \[/g) || []).length]), [['refute:batch-src', 8], ['refute:batch-src-2', 1]]);
+assert.ok(/At most 45 tool calls/.test(chunks[0].prompt) && /At most 16 tool calls/.test(chunks[1].prompt), 'cap = min(45, 10 + 6 per cluster)');
+assert.ok(r.out.clusters.every(c => c.status === 'confirmed') && r.n['verifier-reproduce'] === undefined, 'every chunk verdict reaches its cluster');
+
+// 23 fast pool is 8, the others stay at 6: the pool fills to its own size and never beyond it
+const MANY8 = Array.from({ length: 14 }, (_, i) => grp('g' + i, ['f' + i + '.py'], [1]));
+r = await play({ mode: 'fast', groups: MANY8 }, () => REV(), 5);
+assert.equal(r.live.max, 8, 'fast pool never filled to 8 (or went past it)');
+assert.equal(r.out.stats.pool, 8);
+console.log('ok - workflow.js: 23 scenarios');
