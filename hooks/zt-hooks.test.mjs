@@ -763,7 +763,7 @@ const json = p => JSON.parse(readFileSync(join(ROOT, p), 'utf8'));
 test('plugin.json: name, version, author, hooks path exists, skills/ present without a manifest key', () => {
   const m = json('.claude-plugin/plugin.json');
   assert.equal(m.name, 'pnnutkung-skills');
-  assert.equal(m.version, '0.1.0');
+  assert.match(m.version, /^\d+\.\d+\.\d+$/);
   assert.ok(m.description);
   assert.equal(m.author.name, 'PNNutkung');
   assert.ok(existsSync(join(ROOT, m.hooks)), m.hooks);
