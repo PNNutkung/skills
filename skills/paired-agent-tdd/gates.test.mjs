@@ -110,6 +110,11 @@ test('redOk: every file must fail now; a passing, empty or unverifiable file is 
   assert.ok(!redOk([]));
 });
 
+test('validatePlan: a mode key changes nothing, whatever its value: only the fast pipeline reads it, validation stays what it was', () => {
+  for (const mode of [undefined, null, 'standard', 'fast', 'plan', 'turbo', 'Fast', 'FAST', '', true, 7, ['fast'], { fast: true }]) assert.deepEqual(bad(p => { p.mode = mode; }), [], JSON.stringify(mode));
+  assert.deepEqual(bad(p => { p.mode = 'turbo'; p.cmd = 'pytest'; }), ['cmd must contain {file}'], 'a mode adds no error of its own to an unrelated one');
+});
+
 test('parseNumstat and outOfScope', () => {
   const n = parseNumstat('3\t1\ttests/a.py\n-\t-\timg.png\n0\t5\ttests/b.py\n');
   assert.deepEqual(n, { changed: ['tests/a.py', 'img.png', 'tests/b.py'], removed: 6 });

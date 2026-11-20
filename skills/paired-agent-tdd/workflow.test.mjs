@@ -27,6 +27,7 @@ function agentsFor(args, over = {}) {
     if (label in over) { const v = over[label]; return typeof v === 'function' ? v() : v; }
     const node = label.split(':')[0], g = gOf(args, label);
     if (node === 'red-driver') return { matrix: rows(g), files: g.tests, reuse: 'codebase' };
+    if (node === 'tdd-driver') return { matrix: rows(g), files: g.tests, srcFiles: g.src, reuse: 'codebase', cleanup: 'none' }; // fast mode only
     if (node === 'red-navigator' || node === 'green-navigator') return PASS;
     if (node === 'green-driver') return { files: g.src, reuse: 'docs', cleanup: 'none' };
     if (node === 'reviewer') return { findings: [] };
@@ -597,4 +598,203 @@ assert.ok(r.logs.some(m => /args\.maxRepairs \(0\) is ignored: the continue file
 assert.equal((await withBudget(99)).out.stats.repairBudget, 0, 'an out-of-range value in the file falls back to the args');
 assert.equal((await withBudget(undefined, { maxRepairs: undefined })).out.stats.repairBudget, 2, 'an older continue file with no budget falls back to the default');
 
-console.log('ok - paired-agent-tdd workflow.js: 27 scenarios');
+// 28 fast mode (plan.mode "fast", opt-in): a group that waits for no other gets ONE driver and ONE navigator over both gates; a group that waits, a continue-file restart and every repair
+// run the default pipeline (its RED navigator is never skipped); the reviewer and the fixers are the default ones
+{ // a block: the names below (td, group, ...) are scenario-local
+const FASTA = { mode: 'fast', fast: true }, gB = BASE.groups[1]
+r = await play(FASTA, {}, 4);
+assert.deepEqual(r.n, { 'tdd-driver': 2, 'red-driver': 1, 'red-navigator': 1, 'green-driver': 1, 'green-navigator': 3, reviewer: 1 }, 'a and c: one driver, one navigator; b waits for a: the four default agents');
+assert.deepEqual([r.out.mode, r.out.stats.total, Object.values(r.out.groups).map(g => g.state)], ['fast', 9, ['done', 'done', 'done']]);
+assert.deepEqual(new Set(r.events.slice(0, 3)), new Set(['start tdd-driver:a', 'start red-driver:b', 'start tdd-driver:c']), 'every group starts at once, the one that waits in RED as before');
+assert.ok(idx(r.events, 'end tdd-driver:a') < idx(r.events, 'start green-navigator:a') && r.by('red-navigator:a').length + r.by('green-driver:a').length === 0, 'no hand-off between a RED and a GREEN agent in a one-driver group');
+assert.ok(idx(r.events, 'end green-navigator:a') < idx(r.events, 'start green-driver:b'), 'b still waits for a only before GREEN');
+assert.deepEqual([r.out.groups.a.red, r.out.groups.a.green.verdict, r.out.groups.a.matrix.length, r.out.groups.a.files], [{ reworks: 0, verdict: 'merged', merged: true }, 'PASS', 3, ['tests/test_a.py']], 'RED is recorded as merged into the one check: nobody judged it separately, and the board does not say PASS for it');
+assert.equal(r.out.stats.repairsLeft, BASE.maxRepairs, 'a first pass spends no repair');
+const td = r.by('tdd-driver:a')[0], tn = r.by('green-navigator:a')[0], tb = r.by('green-navigator:b')[0];
+assert.deepEqual([td.o.agentType, td.o.model, td.o.effort, td.o.schema.required.includes('srcFiles')], ['tdd-guide', 'sonnet', 'medium', true]);
+assert.deepEqual([tn.o.agentType, tn.o.model, tn.o.effort], ['code-reviewer', 'sonnet', 'high'], 'the one navigator is the green navigator role');
+assert.match(td.prompt.replace(/\n/g, ' '), /STEP 1, RED: write ONLY the tests[\s\S]*tdd\.mjs red --run \/tmp\/pat-test --group a` and `[^`]*tdd\.mjs dod --run \/tmp\/pat-test --group a --stage red --row 'ID:kind:test:file'[\s\S]*Write no source before that[\s\S]*STEP 2, GREEN: the tests are now FROZEN \(tests\/test_a\.py\)[\s\S]*never run the RED gate again[\s\S]*tdd\.mjs green --run \/tmp\/pat-test --group a`/, 'the order the gates check, and the frozen tests');
+assert.match(td.prompt, /HARD SCOPE FENCE: edit or create ONLY tests\/test_a\.py, src\/a\.py\./);
+assert.match(td.prompt, /At most 3 gate runs per step; return gateOk/);
+assert.ok(/never sed or a heredoc/.test(td.prompt) && /RESEARCH FIRST/.test(td.prompt) && /PRECEDENT/.test(td.prompt) && /At most 75 tool calls/.test(td.prompt));
+assert.doesNotMatch(td.prompt, /navSkip|FAST MODE|skip=/, 'no RED navigator is ever skipped: nothing in any prompt talks about it');
+assert.match(tn.prompt, /tdd\.mjs green --run \/tmp\/pat-test --group a` then[\s\S]*ALSO judge RED: run `[^`]*tdd\.mjs red --run \/tmp\/pat-test --group a` then `[^`]*--stage red --row 'A1:happy:test_a1_happy_case:tests\/test_a\.py'[\s\S]*report a weak RED test as cls gap[\s\S]*outright WRONG[\s\S]*as cls test with `what` starting `WRONG TEST <test name>:`/, 'one navigator reads both gate files and knows how to report a wrong test');
+assert.doesNotMatch(tn.prompt, /KNOWN GAPS/);
+assert.doesNotMatch(tb.prompt, /ALSO judge RED/, 'b had its own RED navigator path: its green navigator judges GREEN only');
+assert.ok(td.prompt.length < 5200 && tn.prompt.length < 4608, 'prompt budgets: the one driver does two jobs (' + td.prompt.length + '), the navigator is under the usual cap (' + tn.prompt.length + ')');
+assert.ok(r.calls.filter(c => /^(tdd-driver|green-navigator)/.test(c.o.label)).every(c => /At most \d+ tool calls/.test(c.prompt) && /REPO \/repo/.test(c.prompt)));
+
+// the default plan never sees any of it
+r = await play({ groups: [grp('a')] });
+assert.deepEqual([r.out.mode, r.n['tdd-driver'], /FAST MODE|navSkip/.test(r.by('red-driver:a')[0].prompt)], ['standard', undefined, false]);
+assert.doesNotMatch(r.by('green-navigator:a')[0].prompt, /ALSO judge RED/);
+assert.equal((await play({ mode: 'plan' })).out.prompts.some(p => /tdd-driver|merged/.test(p.node)), false, 'a default dry run lists the default prompts only');
+
+// a group that waits runs the DEFAULT pipeline in fast mode: the same agents, prompts, options and schemas, byte for byte, and its RED navigator is never skipped
+const std = await play({}, {}, 0), fastRun = await play(FASTA, {}, 0)
+for (const label of ['red-driver:b', 'red-navigator:b', 'green-driver:b', 'green-navigator:b']) {
+  assert.deepEqual(JSON.stringify(fastRun.by(label).map(c => [c.prompt, c.o])), JSON.stringify(std.by(label).map(c => [c.prompt, c.o])), label + ' is the default agent call');
+}
+r = await play(FASTA, { 'red-driver:b': { matrix: rows(gB), files: ['tests/test_b.py'], reuse: 'none', gateOk: true, gateRuns: 1, navSkip: true } })
+assert.deepEqual([r.by('red-navigator:b').length, r.out.stats.total], [1, 9], 'a skip flag from a driver means nothing: the RED navigator always runs for a group that waits');
+
+// one driver, one navigator: the repair loop is the default one
+const tddA = o => ({ 'tdd-driver:a': { matrix: rows(a), files: ['tests/test_a.py'], srcFiles: ['src/a.py'], reuse: 'none', ...o } })
+r = await play({ ...FASTA, groups: [grp('a')] }, tddA({ gateOk: false, gateRuns: 3, remaining: [{ cls: 'impl', file: 'src/a.py', what: 'the edge case still fails' }] }));
+assert.deepEqual([r.by('green-navigator:a').length, r.by('green-driver:a:rework').length, r.by('green-navigator:a:recheck').length, r.out.groups.a.state], [0, 1, 1, 'done'], 'a driver that admits a failing GREEN gate goes straight to a code repair, with no navigator spent on it');
+assert.match(r.by('green-driver:a:rework')[0].prompt, /FIX EXACTLY THESE DEFECTS[\s\S]*the edge case still fails/);
+assert.match(r.by('green-navigator:a:recheck')[0].prompt, /ALSO judge RED/, 'the re-check still judges both gates');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': FAIL('gap', 'RED: test_a1_edge_case asserts truthiness only'), 'red-driver:a:strengthen': strengthened });
+assert.deepEqual([r.by('red-driver:a:strengthen').length, r.out.groups.a.state, r.out.groups.a.retest], [1, 'done', true], 'a weak RED test found by the one navigator is strengthened, sanctioned by --retest');
+assert.match(r.by('green-navigator:a:recheck')[0].prompt, /--retest/);
+assert.match(r.by('red-driver:a:strengthen')[0].prompt, /every new test must PASS on the current code/);
+assert.deepEqual(r.out.groups.a.matrix.filter(m => m.late).map(m => m.test), ['test_a1_edge_zero'], 'its row is late: it never failed at RED, so the DoD closure does not credit it');
+r = await play({ ...FASTA, groups: [grp('a')] }, tddA({ matrix: rows(a, ['happy']) }));
+assert.deepEqual([r.out.groups.a.state, r.n['green-navigator'], r.n['green-driver'], r.n['red-driver'], r.out.stats.repairsLeft], ['blocked', undefined, undefined, undefined, BASE.maxRepairs], 'a gap left after GREEN cannot be closed by a later test: the group stops at once, no navigator and no repair is spent');
+assert.match(r.out.groups.a.reason, /^the one driver left DoD pairs uncovered \(A1\/fail has no test; A1\/edge has no test\) and a test written after GREEN cannot close them[\s\S]*tdd\.mjs green --retest[\s\S]*without fast mode/);
+assert.deepEqual([r.out.groups.a.red.merged, r.out.groups.a.matrix.length], [true, 1], 'what the driver wrote stays in the return');
+r = await play({ ...FASTA, groups: [grp('a'), grp('b', { after: ['a'] })], dod: BASE.dod }, tddA({ matrix: rows(a, ['happy']) }));
+assert.deepEqual([r.out.groups.a.state, r.out.groups.b.state], ['blocked', 'blocked'], 'what waits for it is blocked, as for any blocked group');
+r = await play({ ...FASTA, groups: [grp('a')] }, tddA({ testDefects: [{ file: 'tests/test_a.py', line: 9, why: 'asserts the old message' }] }));
+assert.deepEqual(r.out.groups.a.green.testDefects, [{ file: 'tests/test_a.py', line: 9, why: 'asserts the old message' }], 'what the one driver says about its frozen tests reaches the return');
+
+// the one navigator's notes about RED tests are kept, and a test it calls outright WRONG is a defect corrected in place (cls test, never "restored" to the RED version)
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: 'test_a1_edge_case only checks truthiness' } });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.a.green.redNotes], ['done', ['test_a1_edge_case only checks truthiness']], 'a PASS with a note about RED: the note reaches st.green and the return');
+assert.match(r.out.boardMd, /RED notes of the one navigator \(one-driver groups\):\n- a: test_a1_edge_case only checks truthiness/, 'and the board');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: 'x'.repeat(900) }, });
+assert.equal(r.out.groups.a.green.redNotes[0].length, 400, 'a note is clipped to 400 characters');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...FAIL('gap', 'weak edge test'), notes: 'same note' }, 'red-driver:a:strengthen': strengthened, 'green-navigator:a:recheck': { ...PASS, notes: 'same note' } });
+assert.deepEqual(r.out.groups.a.green.redNotes, ['same note'], 'a note the re-check repeats is kept once');
+const checksOf = (n, lastPasses) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`green-navigator:a${i ? ':recheck' + (i > 1 ? i : '') : ''}`, i === n - 1 && lastPasses ? { ...PASS, notes: 'note ' + i } : { ...FAIL('gap', 'weak ' + i), notes: 'note ' + i }]));
+r = await play({ ...FASTA, groups: [grp('a')] }, checksOf(4, true));
+assert.deepEqual(r.out.groups.a.green.redNotes, ['note 0', 'note 1', 'note 2', 'note 3'], 'one note per check, in order');
+r = await play({ ...FASTA, groups: [grp('a')], rounds: 4 }, checksOf(5, true));
+assert.deepEqual(r.out.groups.a.green.redNotes, ['note 0', 'note 1', 'note 2', 'note 3'], 'at most 4 notes are kept: the fifth check\'s note is dropped');
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: 'a default navigator note' } });
+assert.deepEqual(['redNotes' in r.out.groups.a.green, /RED notes/.test(r.out.boardMd)], [false, false], 'a default group keeps neither the notes nor the board lines');
+const wrongT = { verdict: 'FAIL', gateOk: false, defects: [{ cls: 'test', file: 'tests/test_a.py', line: 7, what: 'WRONG TEST test_a1_fail_case: it expects ValueError, the DoD says TypeError' }] };
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': wrongT });
+const fixP = r.by('red-driver:a:strengthen')[0].prompt;
+assert.deepEqual([r.by('red-driver:a:strengthen').length, r.by('green-driver:a:rework').length, r.out.groups.a.state, r.out.groups.a.retest], [1, 0, 'done', true], 'a wrong test goes to the strengthen path (one maker), sanctioned by --retest');
+assert.match(fixP, /driver: STRENGTHEN the tests[\s\S]*outright WRONG[\s\S]*Correct each assertion IN PLACE[\s\S]*WRONG TEST test_a1_fail_case/);
+assert.doesNotMatch(fixP, /driver: RESTORE|Undo that|mutants SURVIVED/, 'never the restore prompt');
+assert.match(fixP, /tdd\.mjs green --run \/tmp\/pat-test --group a --retest/);
+assert.match(r.by('green-navigator:a:recheck')[0].prompt, /--retest[\s\S]*ALSO judge RED|ALSO judge RED[\s\S]*--retest/, 'the re-check still judges both gates, and knows the tests were changed on purpose');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': FAIL('test', 'tests changed since RED: tests/test_a.py (3 line(s) removed)') });
+assert.match(r.by('red-driver:a:strengthen')[0].prompt, /driver: RESTORE the tests/, 'a gate-reported change of the frozen tests is still RESTORED, in a one-driver group too');
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': wrongT });
+assert.match(r.by('red-driver:a:strengthen')[0].prompt, /driver: RESTORE the tests/, 'outside a one-driver group the marker means nothing: a cls test defect is restored, as always');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': FAIL('gap', 'WRONG TEST test_a1_edge_case: a gap that happens to start with the marker'), 'red-driver:a:strengthen': strengthened });
+assert.match(r.by('red-driver:a:strengthen')[0].prompt, /mutants SURVIVED/);
+assert.doesNotMatch(r.by('red-driver:a:strengthen')[0].prompt, /outright WRONG/, 'only a cls test defect with the marker is a wrong test: the class decides the route');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': FAIL('impl', 'WRONG TEST x: an impl defect'), });
+assert.deepEqual([r.by('green-driver:a:rework').length, r.by('red-driver:a:strengthen').length], [1, 0], 'an impl defect that starts with the marker still goes to the code maker');
+// the marker is read leniently: any case, leading blanks, and a PASS whose notes carry it is a FAIL that gets repaired (a navigator that "passes" a wrong test must not end the group done)
+for (const what of ['wrong test test_a1_fail_case: lowercase', '   WRONG TEST test_a1_fail_case: leading spaces', '\n\tWrong Test test_a1_fail_case: mixed case']) {
+  r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...wrongT, defects: [{ ...wrongT.defects[0], what }] } });
+  assert.match((r.by('red-driver:a:strengthen')[0] || { prompt: '' }).prompt, /outright WRONG[\s\S]*Correct each assertion IN PLACE/, JSON.stringify(what) + ' is a wrong test');
+  assert.doesNotMatch(r.by('red-driver:a:strengthen')[0].prompt, /driver: RESTORE/);
+}
+const wrongNote = 'WRONG TEST test_a1_fail_case: it expects ValueError, the DoD says TypeError';
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: wrongNote } });
+assert.deepEqual([r.by('red-driver:a:strengthen').length, r.by('green-navigator:a:recheck').length, r.out.groups.a.state, r.out.groups.a.retest], [1, 1, 'done', true], 'a PASS whose notes start with WRONG TEST is a FAIL: the test is corrected, then re-checked');
+assert.match(r.by('red-driver:a:strengthen')[0].prompt, /outright WRONG[\s\S]*WRONG TEST test_a1_fail_case: it expects ValueError/);
+assert.deepEqual(r.out.groups.a.green.redNotes, [wrongNote], 'and the note is still kept');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: '  wrong test test_a1_fail_case: lowercase and indented' } });
+assert.equal(r.by('red-driver:a:strengthen').length, 1);
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...wrongT, notes: wrongNote } });
+assert.equal((r.by('red-driver:a:strengthen')[0].prompt.match(/WRONG TEST test_a1_fail_case/g) || []).length, 1, 'a FAIL that already names the wrong test, and says it again in its notes, is one defect, never two');
+assert.equal((r.by('red-driver:a:strengthen')[0].prompt.match(/^- \[test\]/gm) || []).length, 1);
+assert.deepEqual([r.out.groups.a.green.reworks, r.out.groups.a.state], [1, 'done']);
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: wrongNote } });
+assert.deepEqual([r.out.groups.a.green.reworks, r.out.groups.a.green.verdict], [1, 'PASS'], 'the group record keeps the repair that the PASS-with-a-wrong-test-note caused');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...FAIL('impl', 'extra feature'), notes: wrongNote } });
+assert.deepEqual([r.by('green-driver:a:rework').length, r.by('red-driver:a:strengthen').length], [1, 1], 'a FAIL with a code defect and a wrong-test note repairs both, side by side');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: 'the retry test is wrong in spirit but not an assertion about behavior' } });
+assert.deepEqual([r.by('red-driver:a:strengthen').length, r.out.groups.a.state], [0, 'done'], 'a note that does not START with the marker is only recorded');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: 'this is not a WRONG TEST finding: the retry test is only a little weak' } });
+assert.deepEqual([r.by('red-driver:a:strengthen').length, r.out.groups.a.state, r.out.groups.a.green.redNotes.length], [0, 'done', 1], 'the marker in the middle of a note is only words: it must open the note');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: wrongNote }, 'green-navigator:a:recheck': { ...PASS, notes: wrongNote } });
+assert.deepEqual([r.out.groups.a.state, r.by('red-driver:a:strengthen').length], ['blocked', 1], 'a navigator that keeps insisting is a stall, not a loop');
+assert.match(r.out.groups.a.reason, /GREEN made no progress/);
+r = await play({ groups: [grp('a')] }, { 'green-navigator:a': { ...PASS, notes: wrongNote } });
+assert.deepEqual([r.by('red-driver:a:strengthen').length, r.out.groups.a.state], [0, 'done'], 'outside a one-driver group the notes mean nothing: the default pipeline is untouched');
+
+// a RED-phase failure admitted by the one driver (no source written) is repaired by the DEFAULT RED stage: the normal RED defects prompt and a RED navigator, then the default green driver
+const redStuck = { matrix: rows(a), files: ['tests/test_a.py'], srcFiles: [], reuse: 'none', gateOk: false, gateRuns: 3, remaining: [{ cls: 'test', file: 'tests/test_a.py', what: 'the edge test still passes already' }] };
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'tdd-driver:a': redStuck });
+assert.deepEqual([r.by('red-driver:a:rework').length, r.by('red-navigator:a:recheck').length, r.by('red-navigator:a').length, r.by('green-driver:a').length, r.by('green-navigator:a').length, r.out.groups.a.state], [1, 1, 0, 1, 1, 'done']);
+assert.match(r.by('red-driver:a:rework')[0].prompt, /FIX EXACTLY THESE DEFECTS FROM THE CHECK[\s\S]*the edge test still passes already/);
+assert.doesNotMatch(r.by('red-driver:a:rework')[0].prompt, /STRENGTHEN|RESTORE|Undo that/, 'not the GREEN-phase strengthen or restore prompt');
+assert.doesNotMatch(r.by('green-navigator:a')[0].prompt, /ALSO judge RED/, 'a RED navigator judged RED: the GREEN navigator judges GREEN only');
+assert.notEqual(r.out.groups.a.red.merged, true, 'the RED stage record is the default one');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'tdd-driver:a': { ...redStuck, gateOk: undefined, remaining: undefined } });
+assert.deepEqual([r.by('red-navigator:a').length, r.by('green-driver:a').length, r.out.groups.a.state], [1, 1, 'done'], 'no source and nothing admitted: a RED navigator looks at the tests the driver wrote, then GREEN runs by the default driver');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'tdd-driver:a': { ...redStuck, matrix: rows(a, ['happy']) }, 'red-driver:a:rework': thin });
+assert.match(r.by('red-driver:a:rework')[0].prompt, /FIX EXACTLY THESE DEFECTS/);
+assert.match(r.by('red-navigator:a:recheck')[0].prompt, /KNOWN GAPS \(code-checked\)/, 'the RED navigator sees the matrix gap: before GREEN it can still be closed');
+
+// resume: a one-driver group of the last run keeps its marker and its navigator keeps judging RED; with no marker the continue entry is the default one
+const mergedEnt = (next, o = {}) => ent(next, { merged: true, ...o });
+r = await play({ ...FASTA, groups: [grp('a')], ...cont({ a: mergedEnt('green-check') }) });
+assert.deepEqual([r.out.groups.a.red, /ALSO judge RED/.test(r.by('green-navigator:a')[0].prompt), r.n['tdd-driver']], [{ reworks: 0, verdict: 'merged', merged: true, carried: true }, true, undefined]);
+r = await play({ ...FASTA, groups: [grp('a')], ...cont({ a: mergedEnt('green-fix', { defects: [{ cls: 'impl', file: 'src/a.py', what: 'the edge case still fails' }] }) }) });
+assert.deepEqual([r.by('green-driver:a:rework').length, /ALSO judge RED/.test(r.by('green-navigator:a:recheck')[0].prompt), r.out.groups.a.red.merged], [1, true, true]);
+r = await play({ ...FASTA, groups: [grp('a')], ...cont({ a: mergedEnt('done') }) });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.a.red.merged, r.out.stats.total], ['done', true, 1], 'a carried-over one-driver group is still named in the return');
+r = await play({ groups: [grp('a')], ...cont({ a: mergedEnt('green-check') }) });
+assert.deepEqual([r.out.groups.a.red, /ALSO judge RED/.test(r.by('green-navigator:a')[0].prompt)], [{ reworks: 0, verdict: 'PASS', carried: true }, false], 'outside fast mode a stray merged flag does nothing');
+r = await play({ ...FASTA, groups: [grp('a')] }, { 'tdd-driver:a': () => null });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.a.reason, r.out.failed.map(f => [f.id, f.attempts])], ['failed', 'tdd-driver returned nothing', [['tdd-driver:a', 2]]]);
+assert.match(r.by('tdd-driver:a')[1].prompt, /^RETRY 2\/2 of tdd-driver:a[\s\S]*Run `node \S+\/tdd\.mjs resume --run \/tmp\/pat-test --group a` first/, 'a dead one driver is replaced by an agent that asks the gate files where the group stands');
+// the documented ceiling of a one-driver group: the driver, R + 1 checks and two makers a round = 2 + 3R, never the default's 5 + 5R
+let mixF = 0;
+const bothF = () => ({ verdict: 'FAIL', gateOk: false, defects: [{ cls: 'gap', what: 'mutant ' + (++mixF) + ' survived' }, { cls: 'impl', what: 'extra behavior ' + mixF }] });
+r = await play({ ...FASTA, groups: [grp('a')] }, Object.fromEntries(Array.from({ length: ROUNDS }, (_, i) => [`green-navigator:a${i ? ':recheck' + (i > 1 ? i : '') : ''}`, bothF])));
+const group = r.calls.filter(c => c.o.label.split(':')[1] === 'a' && ['tdd-driver', 'red-driver', 'green-driver', 'green-navigator'].includes(c.o.label.split(':')[0])).length;
+assert.deepEqual([group, r.out.groups.a.state], [2 + 3 * ROUNDS, 'done'], 'the worst case is reached and is below the default\'s 5 + 5R = ' + (5 + 5 * ROUNDS));
+
+// resume: a group a continue file restarts mid-way keeps the two-stage path (and its default prompts); a fresh start through a continue file is a fresh start
+const onlyF = (e, args = {}) => play({ ...FASTA, groups: [grp('a')], ...cont({ a: e }), ...args });
+r = await onlyF(ent('green-check'));
+assert.deepEqual([r.n['tdd-driver'], r.by('green-navigator:a').length, /ALSO judge RED/.test(r.by('green-navigator:a')[0].prompt)], [undefined, 1, false]);
+r = await onlyF(ent('red-check'));
+assert.deepEqual([r.n['tdd-driver'], r.by('red-navigator:a').length, r.by('green-driver:a').length], [undefined, 1, 1], 'red-check: a navigator looks at the tests on disk, as always');
+r = await onlyF(ent('red'));
+assert.deepEqual([r.n['tdd-driver'], r.n['red-driver'], r.n['green-navigator']], [1, undefined, 1], 'nothing to continue from: a normal fast start');
+r = await onlyF(ent('green-fix', { defects: [{ cls: 'impl', file: 'tests/test_a.py', what: 'fails-on-head' }] }));
+assert.deepEqual([r.n['tdd-driver'], r.by('green-driver:a:rework').length, r.out.groups.a.red.carried], [undefined, 1, true]);
+
+// fast mode keeps the rest of the pipeline: review, fixers by owner, the final courier, the integration test
+r = await play(FASTA, { reviewer: { findings: [F('Validation missing', 'high', 'src/a.py'), F('in c', 'low', 'src/c.py', 'none')] }, 'fixer:a': { fixed: ['x'], notFixed: [] } });
+assert.deepEqual([r.n.reviewer, r.n.fixer, r.n['final-verifier'], r.out.verified.ok], [1, 2, 1, true]);
+assert.match(r.by('fixer:a')[0].prompt, /ONLY tests\/test_a\.py, src\/a\.py\./);
+r = await play({ ...FASTA, integration: integ });
+assert.deepEqual([r.n['integration-tester'], idx(r.events, 'end integration-tester') < idx(r.events, 'start reviewer')], [1, true]);
+r = await play(FASTA, { 'tdd-driver:a': () => null });
+assert.deepEqual([r.out.groups.a.state, r.out.groups.b.state, r.out.groups.c.state, r.n.reviewer], ['failed', 'blocked', 'done', 1], 'a failed one-driver group blocks what waits for it, as a failed red-driver does');
+
+// the dry run: the agent count knows the one-driver groups, the extra prompts are sized, and the real prompts have those sizes
+r = await play({ mode: 'plan', fast: true });
+assert.deepEqual([r.out.plan.counts['tdd-driver'], r.out.plan.counts['red-driver'], r.out.plan.counts['green-navigator'], r.out.plan.total], [2, 1, 3, 11], '2 independent groups + 1 that waits (RED navigator counted: skipping it is a run-time fact)');
+const real1 = await play({ ...FASTA, groups: [grp('a')] });
+const dry1 = await play({ mode: 'plan', fast: true, groups: [grp('a')] });
+assert.equal(dry1.out.prompts.find(p => p.node === 'tdd-driver').promptChars, real1.by('tdd-driver:a')[0].prompt.length);
+assert.equal(dry1.out.prompts.find(p => p.node === 'green-navigator-merged').promptChars, real1.by('green-navigator:a')[0].prompt.length);
+assert.equal(dry1.out.plan.total, 5, 'one independent group, no integration: driver, navigator, reviewer, fixer, courier');
+assert.equal(dry1.calls.length, 0);
+for (const extra of [{ fast: true }, { mode: 'standard', fast: true }, { fast: 1 }, { fast: null }, { fast: 'FAST' }, { fast: 'true' }, { mode: 'Fast' }, { mode: 'FAST', fast: true }]) {
+  r = await play({ ...extra, groups: [grp('a')] });
+  assert.deepEqual([r.out.mode, r.n['tdd-driver'], r.n['red-driver']], ['standard', undefined, 1], JSON.stringify(extra) + ': a stray `fast` key never switches the one-driver pipeline on (the gates would stay standard, with no firstSnapshot); only mode "fast" does');
+}
+r = await play({ mode: 'plan', fast: 'true' });
+assert.equal(r.out.prompts.some(p => p.node === 'tdd-driver') || r.out.plan.counts['tdd-driver'] !== undefined, false, 'a dry run of a default plan stays the default one even with a stray fast key');
+r = await play({ mode: 'plan', fast: true });
+assert.equal(r.out.plan.counts['tdd-driver'], 2, 'the dry run of a FAST plan (tdd.mjs plan sets fast: true only for mode "fast") keeps the fast pipeline');
+// determinism: a resumed fast run replays cached agents only when the prompts are byte-identical
+const fastPrompts = async () => Object.fromEntries((await play(FASTA, {}, 0)).calls.map(c => [c.o.label, c.prompt]));
+assert.deepEqual(await fastPrompts(), await fastPrompts());
+}
+
+console.log('ok - paired-agent-tdd workflow.js: 28 scenarios');
