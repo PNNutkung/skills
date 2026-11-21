@@ -90,6 +90,8 @@ A fresh GREEN verdict outranks a stale RED one (tests grow after GREEN on purpos
 
 ## Naming rule (after `verify`, before the commit)
 
+The repo-wide rule is [`rules/test-naming.md`](../../rules/test-naming.md); tool use follows [`rules/tool-discipline.md`](../../rules/tool-discipline.md).
+
 The DoD closure matches a row to its test by the `test_ac<ID>_<kind>_…` name, so those names stay until `verify` passes: renamed earlier, the pair is reported `missing`. When the repo has a test naming rule:
 
 1. Rename each `test_ac<ID>_<kind>_…` the run added to a name that states the expected behavior and the state that triggers it: Python `test_should_<behavior>_when_<state>`, TS/JS `should <behavior> when <state>`. Keep the id in a section comment (`# AC1 happy`), not in the name. A rename changes no logic, so the lead may do it, or the group's fixer.

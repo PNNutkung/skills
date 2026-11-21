@@ -23,6 +23,8 @@ Delivery gates for agent-written code: gate it, triage review depth, demand proo
 - **Fresh reviewer.** The authoring session never reviews its own diff.
 - **Flag off, not revert.** Roll back by flipping the flag.
 
+Questions go to the user only for judgment calls or changes no convention covers ([`rules/ask-dont-assume.md`](../../rules/ask-dont-assume.md)).
+
 ## Hand-offs
 
 - Independent review of the diff (runbook 5.1): **REQUIRED SUB-SKILL:** use `zero-trust-review` in a new session. It owns production-hazard and test-integrity findings, including feature-flag ON/OFF paths.
