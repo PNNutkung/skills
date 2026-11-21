@@ -33,7 +33,8 @@ const fail = (code, msg) => { process.stderr.write(`tdd: ${msg}\n`); process.exi
 if (!existsSync(join(ZT, 'probelib.mjs'))) fail(2, `the zero-trust-review skill is not at ${ZT} (set ZT_DIR): its sandbox runner and probes are required`);
 const imp = f => import(pathToFileURL(join(ZT, f)).href);
 const lib = await imp('probelib.mjs');
-const { createRunDir, readMarker, resolveRun, writeSafe } = await imp('runctx.mjs');
+const { createRunDir, markerDir, readMarker, resolveRun, writeSafe } = await imp('runctx.mjs');
+const { FENCE_ENV, clearFence, writeFence } = await import('./fence.mjs');
 const { changedLines } = await imp('mutants.mjs');
 
 const COMMIT_ENV = { GIT_AUTHOR_NAME: 'pat', GIT_AUTHOR_EMAIL: 'pat@localhost', GIT_COMMITTER_NAME: 'pat', GIT_COMMITTER_EMAIL: 'pat@localhost' };
@@ -402,6 +403,7 @@ function fastReport(ret) {
 
 async function verify(ctx, retPath) {
   const { plan } = ctx;
+  clearFence(ctx.run, markerDir(process.env)); // the run's agents are done: lift the file fence
   let ret;
   try { ret = JSON.parse(readFileSync(resolve(retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); }
   const fileMap = (gid, stage) => Object.fromEntries((readGate(ctx, `${gid}.${stage}.json`)?.tests ?? []).map(t => [t.file, t.verdict]));
@@ -476,6 +478,7 @@ async function cmdPlan(o) {
   const cap = /^\d+$/.test(process.env.PTDD_AGENT_CAP ?? '') && +process.env.PTDD_AGENT_CAP > 0 ? +process.env.PTDD_AGENT_CAP : null; // opt-in hard ceiling, enforced by workflow.js
   const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(plan.mode === 'fast' ? { fast: true } : {}), ...(cap ? { agentCap: cap } : {}) };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
+  if (process.env[FENCE_ENV] === '1') writeFence(run, full, markerDir(process.env)); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
   process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${plan.dod.length} DoD item(s), base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${plan.mode === 'fast' ? 'fast' : 'standard'}; Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
   process.stdout.write(`${JSON.stringify(args)}\n`);
 }

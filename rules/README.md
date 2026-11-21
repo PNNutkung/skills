@@ -25,6 +25,7 @@ Skills installed with `npx skills add` get their own folder only, without `rules
 | qa-sweep only adds tests: no product-code edits, no removed or rewritten test lines, no commit or push, no discarding git command | `hooks/qa-guard.mjs` | always on while a run is open |
 | A zero-trust-review subagent runs repo code only in the sandbox, has no network and no `gh`/`glab` | `hooks/zt-guard.mjs` | always on while a run is active |
 | zero-trust-review does not post to the review host until the user approves | `hooks/zt-post-guard.mjs` (via `zt-guard.mjs`) | `ZT_POST_GUARD=1` |
+| A paired-agent-tdd subagent edits only its group's files, and never through Bash | `hooks/ptdd-guard.mjs`, `fence.mjs` | `PTDD_GUARD=1` |
 | No more than N agents in a review or TDD run | `workflow.js` `agentCap` | `ZT_AGENT_CAP`, `PTDD_AGENT_CAP` |
 | A medium+ finding with no proof is never confirmed | `workflow.js`, `proofcheck.mjs` | always |
 | paired-agent-tdd: RED fails, tests frozen after RED, DoD closure, judges cannot edit | `tdd.mjs` gates, read-only agent types | always |

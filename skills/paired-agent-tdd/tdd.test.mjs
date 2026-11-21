@@ -94,6 +94,18 @@ test('plan: should write agentCap into the Workflow args when PTDD_AGENT_CAP is 
   }
 });
 
+test('plan: should write the file fence and its marker when PTDD_GUARD=1, and nothing when it is unset', t => {
+  for (const [flag, want] of [['1', true], ['', false], ['0', false]]) {
+    const fx = fixture(t);
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_GUARD: flag });
+    assert.equal(r.status, 0, r.err);
+    const run = JSON.parse(r.out.trim().split('\n').pop()).runDir;
+    assert.equal(existsSync(join(fx.dir, 'marker', '.ptdd-active')), want, `marker for ${JSON.stringify(flag)}`);
+    assert.equal(existsSync(join(run, 'fence.json')), want, `fence.json for ${JSON.stringify(flag)}`);
+    if (want) assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(run, 'fence.json'), 'utf8')).groups).length > 0, true);
+  }
+});
+
 test('plan: a dirty working tree becomes the base (a snapshot), and the user\'s repo is untouched', t => {
   const fx = fixture(t);
   put(fx.repo, { 'src/alpha.txt': 'dirty\n', 'notes.txt': 'new file\n' });
