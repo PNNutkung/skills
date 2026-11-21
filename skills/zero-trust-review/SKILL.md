@@ -142,7 +142,7 @@ python3 $SK/triage.py --base "origin/$TARGET" --diff-dir "$RUN/diff" > "$CTX/tri
 node $SK/graph.mjs --plan <mode> <groups> 0 1 5 30   # args after mode: groups, expected critical, high, medium, low
 ```
 
-Show the user a short summary (mode, groups with lines, fired vs skipped points, drift) and the plan. **If the planned total exceeds 25 agents, confirm with the user before spending.** `--force-all` fires every gated point.
+Show the user a short summary (mode, groups with lines, fired vs skipped points, drift) and the plan. **Over 25 planned agents: confirm first** ([cap](./probes.md#agent-cap)). `--force-all` fires every gated point.
 
 ## Step 1 — Gather context
 

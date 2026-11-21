@@ -227,9 +227,18 @@ def main():
     drift = f'{a.base} is {ahead} commit(s) ahead of merge-base {mb[:10]} (tip {tip[:10]})' if ahead != '0' else f'{a.base} has not moved since the merge-base'
     facts = (f'drift: {drift}\n$ git log {a.base}..{head[:10]} --oneline\n{git("log", "--oneline", "-n", "8", f"{a.base}..{head}").strip()}\n'
              f'$ git diff --stat {a.base}...{head[:10]}\n{git("diff", "--stat=100,60,40", "--stat-graph-width=10", rng).strip()}')
-    print(json.dumps({'base': a.base, 'head': head, 'mergeBase': mb, 'baseTip': tip, 'filesChanged': len(files),
-                      'linesChanged': sum(f['lines'] for f in files.values()), 'sourceLines': src_lines, 'mode': mode, 'groups': groups,
-                      'points': {'always': ALWAYS, 'fired': fired, 'skipped': skipped}, 'facts': facts}, separators=(',', ':')))
+    out = {'base': a.base, 'head': head, 'mergeBase': mb, 'baseTip': tip, 'filesChanged': len(files),
+           'linesChanged': sum(f['lines'] for f in files.values()), 'sourceLines': src_lines, 'mode': mode, 'groups': groups,
+           'points': {'always': ALWAYS, 'fired': fired, 'skipped': skipped}, 'facts': facts}
+    cap = agent_cap(os.environ.get('ZT_AGENT_CAP', ''))
+    if cap:
+        out['agentCap'] = cap  # workflow.js never spawns past it; raising it is the user's call
+    print(json.dumps(out, separators=(',', ':')))
+
+
+def agent_cap(raw):
+    """ZT_AGENT_CAP as a positive int, or None (unset, empty or invalid: no cap, as before)."""
+    return int(raw) if raw.strip().isdigit() and int(raw) > 0 else None
 
 
 if __name__ == '__main__':

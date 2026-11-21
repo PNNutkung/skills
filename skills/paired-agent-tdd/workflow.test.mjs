@@ -797,4 +797,14 @@ const fastPrompts = async () => Object.fromEntries((await play(FASTA, {}, 0)).ca
 assert.deepEqual(await fastPrompts(), await fastPrompts());
 }
 
-console.log('ok - paired-agent-tdd workflow.js: 28 scenarios');
+// agentCap (tdd.mjs plan writes it from PTDD_AGENT_CAP) is a hard ceiling: no agent past it, and the groups it stops are not done
+r = await play({ agentCap: 3 });
+assert.equal(r.calls.length, 3, 'spawned past the cap');
+assert.ok(r.out.stats.capped > 0 && r.out.notDone.length > 0, 'capped work must show as not done');
+assert.equal(r.out.stats.agentCap, 3);
+for (const cap of [undefined, 0, -3, '3', 1.5, null]) {
+  r = await play({ agentCap: cap, groups: [grp('a')] });
+  assert.deepEqual([r.out.stats.capped, r.out.stats.agentCap], [0, null], 'only a positive integer turns the cap on: ' + JSON.stringify(cap));
+}
+
+console.log('ok - paired-agent-tdd workflow.js: 29 scenarios');

@@ -65,7 +65,12 @@ const jac = (a, b) => { let i = 0; a.forEach(x => { if (b.has(x)) i++ }); return
 const used = {}
 // One rolling pool for every agent of the run (review, verify, critic): never more than POOL in flight, no wave barrier, a stalled agent holds one slot.
 const gate = { n: 0, q: [], take() { return this.n < POOL ? (this.n++, null) : new Promise(r => this.q.push(r)) }, free() { const w = this.q.shift(); if (w) w(); else this.n-- } }
+// agentCap (a positive integer, written into args by code from an opt-in env var) is a hard ceiling on agents spawned: past it, run() returns null
+// without spawning, and the caller's null path (retry, then not reviewed / failed) reports the work as not done. Raising it means changing args: ask the user.
+const CAP = Number.isInteger(A.agentCap) && A.agentCap > 0 ? A.agentCap : null
+let capped = 0
 const run = async (node, prompt, o) => {
+  if (CAP !== null && Object.values(used).reduce((a, b) => a + b, 0) >= CAP) { capped++; return null }
   used[node] = (used[node] || 0) + 1
   await gate.take()
   try { return await agent(prompt, { model: NODE[node].model, effort: MODE.effort[node] || NODE[node].effort, ...o }) } finally { gate.free() }
@@ -381,7 +386,7 @@ const postmortemMd = ['# Postmortem ' + sha8 + ' ' + modeName, '', failed.length
 return {
   mode: modeName,
   counts: { units: US.length, rawFindings: findings.length, clusters: out.length, bySeverity: tally('severity'), byStatus: tally('status'), byEvidence: tally('evidence') },
-  stats: { agentsByNode: used, total: Object.values(used).reduce((a, b) => a + b, 0), pool: POOL },
+  stats: { agentsByNode: used, total: Object.values(used).reduce((a, b) => a + b, 0), pool: POOL, agentCap: CAP, capped },
   run: { dir: RUN, ckDir: CKDIR, units: unitState, failed },
   boardMd, postmortemMd,
   notReviewed, clusters: out, notApplicable: { ...skipped, ...na }, audit,

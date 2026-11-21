@@ -85,6 +85,15 @@ test('plan: validates, snapshots a clean tree as HEAD, writes the run folder, pr
   assert.ok(args.scratch.startsWith(realpathSync(tmpdir())) && args.skillDir === HERE);
 });
 
+test('plan: should write agentCap into the Workflow args when PTDD_AGENT_CAP is a positive integer, and leave it out otherwise', t => {
+  for (const [raw, want] of [['25', 25], ['', undefined], ['0', undefined], ['-5', undefined], ['abc', undefined], ['2.5', undefined]]) {
+    const fx = fixture(t);
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_AGENT_CAP: raw });
+    assert.equal(r.status, 0, r.err);
+    assert.equal(JSON.parse(r.out.trim().split('\n').pop()).agentCap, want, JSON.stringify(raw));
+  }
+});
+
 test('plan: a dirty working tree becomes the base (a snapshot), and the user\'s repo is untouched', t => {
   const fx = fixture(t);
   put(fx.repo, { 'src/alpha.txt': 'dirty\n', 'notes.txt': 'new file\n' });

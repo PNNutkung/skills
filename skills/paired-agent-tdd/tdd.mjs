@@ -473,7 +473,8 @@ async function cmdPlan(o) {
   // `fast` is set here and nowhere else, and only for mode "fast" (it survives the Workflow's own mode: "plan", a dry run, replaces args.mode). A `fast` key of the user's plan.json is
   // dropped from the args: it would switch the one-driver pipeline on while the gates stay standard (no firstSnapshot). Without mode "fast" the args are what they always were.
   const { fast: _userFast, ...fullArgs } = full;
-  const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(plan.mode === 'fast' ? { fast: true } : {}) };
+  const cap = /^\d+$/.test(process.env.PTDD_AGENT_CAP ?? '') && +process.env.PTDD_AGENT_CAP > 0 ? +process.env.PTDD_AGENT_CAP : null; // opt-in hard ceiling, enforced by workflow.js
+  const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(plan.mode === 'fast' ? { fast: true } : {}), ...(cap ? { agentCap: cap } : {}) };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
   process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${plan.dod.length} DoD item(s), base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${plan.mode === 'fast' ? 'fast' : 'standard'}; Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
   process.stdout.write(`${JSON.stringify(args)}\n`);

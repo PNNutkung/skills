@@ -246,4 +246,13 @@ const MANY8 = Array.from({ length: 14 }, (_, i) => grp('g' + i, ['f' + i + '.py'
 r = await play({ mode: 'fast', groups: MANY8 }, () => REV(), 5);
 assert.equal(r.live.max, 8, 'fast pool never filled to 8 (or went past it)');
 assert.equal(r.out.stats.pool, 8);
-console.log('ok - workflow.js: 23 scenarios');
+// 24 agentCap (set by triage.py from ZT_AGENT_CAP) is a hard ceiling: no agent past it, the units it stops land in notReviewed, the stats say how many
+r = await play({ agentCap: 2 }, (l, p) => (l in canned ? canned[l] : verdicts(l, p)));
+assert.equal(r.calls.length, 2, 'spawned past the cap');
+assert.ok(r.out.notReviewed.length > 0 && r.out.stats.capped > 0, 'capped work must show as not reviewed');
+assert.equal(r.out.stats.agentCap, 2);
+for (const cap of [undefined, 0, -1, '2', 2.5, null]) {
+  r = await play({ agentCap: cap }, (l, p) => (l in canned ? canned[l] : verdicts(l, p)));
+  assert.deepEqual([r.out.stats.capped, r.out.stats.agentCap], [0, null], 'only a positive integer turns the cap on: ' + JSON.stringify(cap));
+}
+console.log('ok - workflow.js: 24 scenarios');

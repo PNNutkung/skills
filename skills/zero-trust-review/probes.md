@@ -64,6 +64,10 @@ What `fast` gives up, plainly:
 
 **Do not use it** for auth, payments, migrations, crypto or anything else where a miss is costly: use `deep`.
 
+## Agent cap
+
+`ZT_AGENT_CAP=N` (opt-in) makes triage.py write `agentCap: N` into its JSON, and `workflow.js` never spawns agent N+1: past the cap, units land in `notReviewed` and clusters stay unverified, and `stats.capped` counts what was stopped. Pass the triage JSON through unchanged. To go past the cap, ask the user and re-run with a higher one; never edit `agentCap` on your own. Unset, empty or not a positive integer: no cap, as before.
+
 ## Proofs: no guessing
 
 Every verdict and finding carries `proof {mode, ref, quote, command?, exit?}`; `quote` is copied verbatim, <= 300 chars.
