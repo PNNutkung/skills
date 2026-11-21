@@ -10,6 +10,10 @@ Personal agent skills and hooks that gate how agent-written code is tested, revi
 A request to merge a branch into a base branch, on GitHub or GitLab.
 _Avoid_: MR, PR, merge request, pull request (as the generic term)
 
+**Definition of done**:
+The list of observable behaviors a change must show before it counts as finished, each quoted from a spec, the ticket or the user's own answer, plus its feature flag, backward compatibility, non-goals, verify environment and test tiers. Written by `definition-of-done` in `docs/dod/<slug>.json`.
+_Avoid_: DoD as a bare term outside a skill's own text, acceptance criteria (as a separate list)
+
 ### Testing
 
 **Test tier**:
