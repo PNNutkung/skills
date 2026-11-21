@@ -77,8 +77,8 @@ jobs:
         run: |
           set -euo pipefail
           v=$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | grep -o 'node-v[0-9.]*-linux-x64.tar.xz' | head -1)
-          mkdir -p ~/node && curl -fsSL "https://nodejs.org/dist/latest-v24.x/$v" | tar -xJ -C ~/node --strip-components=1
-          export PATH="$HOME/node/bin:$PATH"
-          rm -rf ~/skills && cp -r . ~/skills && cd ~/skills
-          node --version
-          git ls-files -z '*.test.mjs' | xargs -0 node --test
+          mkdir -p /opt/node && curl -fsSL "https://nodejs.org/dist/latest-v24.x/$v" | tar -xJ -C /opt/node --strip-components=1
+          # WSL logs in as root, which ignores file modes; run as a plain user, the way a developer does.
+          id dev >/dev/null 2>&1 || useradd -m dev
+          rm -rf /home/dev/skills && cp -r . /home/dev/skills && chown -R dev:dev /home/dev/skills
+          su - dev -c 'export PATH=/opt/node/bin:$PATH; cd ~/skills && node --version && git ls-files -z "*.test.mjs" | xargs -0 node --test'
