@@ -14,6 +14,8 @@ Cite findings as `path:line` | permalink | finding. With no host URL, cite `path
 
 **Do not post** until the user asks to comment on the CR.
 
+**Opt-in guard.** With `ZT_POST_GUARD=1` in the environment (for example in `~/.claude/settings.json` under `env`), the plugin's Bash hook denies, while the run is active, `gh pr comment|review`, `gh issue comment`, `glab mr note|comment|approve` and `gh`/`glab api` writes to comments, reviews, discussions or notes. The user approves posting for the run by running `node $SK/note.mjs allow-post` in their own terminal or with the `!` prefix; the hook denies the agent running it. `note.mjs deactivate` ends the run and the approval with it. Without the flag nothing changes.
+
 ## Anchorable or not
 
 **Anchorable** = one file and a line or range on the diff's new side, inside a diff hunk (changed or context lines). **Not anchorable** = spans the CR, names a missing artifact (no test file, no description, no CI run on this SHA) or has no single line ("has the flag-OFF path run in staging?"). Never invent a line number; say why there is no anchor.

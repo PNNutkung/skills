@@ -8,6 +8,8 @@
 // can defeat the guard with obfuscation: variable indirection, base64 into a file, eval-by-config, a script written then run via an allowed tool,
 // `git` aliases or hooks already present in the repo's .git/config, `rm` of a whole parent folder, subshell `cd` leaking into later segments, etc.
 //
+// The lead session (no agent_id) is checked only by the opt-in post guard (ZT_POST_GUARD=1, zt-post-guard.mjs): no posting to the review host until the user approves.
+//
 // Active = hook input has agent_id AND runctx.readMarker() names a trusted run dir (marker owned by us, not a symlink, not group/world-writable,
 // < 12 h old). Otherwise (main thread, no run, untrusted marker) it exits 0 with no output. Fail-open: any internal error exits 0 silently, logged
 // to RUN/hook-errors.log (via runctx.appendSafe) when RUN is known, so a guard bug can never brick a session.
@@ -1135,6 +1137,15 @@ try {
   const input = JSON.parse(readFileSync(0, 'utf8'));
   run = input?.agent_id ? runctx.readMarker() : '';
   const command = input?.tool_input?.command;
+  if (!input?.agent_id && process.env.ZT_POST_GUARD === '1' && typeof command === 'string') {
+    // the lead session: only the opt-in post guard applies (zt-post-guard.mjs); every other check below is for review subagents
+    const leadRun = runctx.readMarker();
+    if (leadRun) {
+      const { postVerdict } = await import('./zt-post-guard.mjs');
+      const reason = postVerdict(command, { run: leadRun, note: join(PLUGIN_SKILL_DIR, 'note.mjs') });
+      if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
+    }
+  }
   if (run && typeof command === 'string') {
     const reason = decide(command, {
       cwd: input.cwd || process.cwd(), tmp: realish(tmpdir()), home: homedir(), run, marker: realish(runctx.markerDir()), trusted: trustedScripts(run),

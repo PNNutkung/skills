@@ -156,13 +156,13 @@ Only what agents cannot get themselves: the ticket (Jira, GitHub Issue, Linear, 
 Workflow({ scriptPath: "<skillDir>/workflow.js", args: { ...triageJson, repo, sha, scratch, runDir: RUN, skillDir, ticket, decisions, prior, mode } })
 ```
 
-Then write the return's `boardMd` and `postmortemMd` verbatim to `$RUN/board.md` and `$RUN/postmortem.md` (the postmortem tells the next run what to do and not do). **Step 2b, no guessing:** save the return as `$RUN/return.json`, run `node $SK/proofcheck.mjs --ret $RUN/return.json --repo . --head <sha> --run $RUN`, and report from its adjusted clusters; it writes `$RUN/evidence.md` and `verified.json`. When the review is done, `node $SK/note.mjs deactivate`.
+Then write the return's `boardMd` and `postmortemMd` verbatim to `$RUN/board.md` and `$RUN/postmortem.md` (the postmortem tells the next run what to do and not do). **Step 2b, no guessing:** save the return as `$RUN/return.json`, run `node $SK/proofcheck.mjs --ret $RUN/return.json --repo . --head <sha> --run $RUN`, and report from its adjusted clusters; it writes `$RUN/evidence.md` and `verified.json`. After Step 4 and any posting, `node $SK/note.mjs deactivate`.
 
 `scratch` = the session scratchpad; `sha` defaults to triage `head`; agents Read their points from `checklist.md`. Read the **compact return** only: `{mode, counts, stats, notReviewed, clusters[{id,status,severity,file,startLine,endLine,points,anchorable,title,hazard,failureScenario,suggestedFix,replacement?,verdicts}], notApplicable, questions, unverified}`. Confirmed critical/high -> Critical Blockers; refuted -> one line; out-of-scope -> refactor CR; unverified/disputed -> Grilling as questions, never as facts.
 
 ## Step 3 — Point out the code on the review host
 
-Cite each finding as `path:line` | permalink pinned to the reviewed SHA | finding. **Do not post** until the user asks to comment on the CR. Before citing or posting, Read [`posting.md`](./posting.md): permalink format per host, anchorable or not, one inline comment per finding, voice.
+Cite each finding as `path:line` | permalink pinned to the reviewed SHA | finding. **Do not post** until the user asks to comment on the CR. `ZT_POST_GUARD=1` enforces it ([`posting.md`](./posting.md)). Before citing or posting, Read [`posting.md`](./posting.md): permalink format per host, anchorable or not, one inline comment per finding, voice.
 
 ## Step 3b — Suggest the fix for a line range, do not describe it
 
