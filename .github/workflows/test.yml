@@ -25,15 +25,15 @@ jobs:
           - { os: ubuntu-latest, node: 22 }
           - { os: macos-latest, node: 22 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      # Every *.test.mjs file in the repo. macOS runs the sandbox tests through its built-in sandbox-exec; Ubuntu installs no bwrap,
-      # so the tests that need a sandbox backend report themselves skipped there.
+      # Every *.test.mjs file in the repo. macOS runs the sandbox tests through its built-in sandbox-exec; Ubuntu runs them through bwrap,
+      # which the runner image ships.
       - name: Run tests
         shell: bash
         run: git ls-files -z '*.test.mjs' | xargs -0 node --test

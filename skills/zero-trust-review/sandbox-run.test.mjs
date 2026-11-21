@@ -36,6 +36,13 @@ const sh = (script, ...args) => ['--', '/bin/sh', '-c', script, ...args];
 const lines = s => s.split('\n').filter(Boolean);
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const gone = async pids => { for (let i = 0; i < 20 && pids.some(alive); i++) await new Promise(r => setTimeout(r, 50)); return !pids.some(alive); };
+// bwrap runs the command in its own pid namespace, so a pid the command prints is not a host pid: look for its unique argv on the host instead.
+const hostRuns = token => spawnSync('ps', ['-A', '-o', 'args='], { encoding: 'utf8' }).stdout.split('\n').some(l => l.includes(token));
+const goneEverywhere = async (token, pids) => {
+  for (let i = 0; i < 20 && hostRuns(token); i++) await new Promise(r => setTimeout(r, 50));
+  return !hostRuns(token) && (BACKEND === 'bwrap' || gone(pids));
+};
+const sleepToken = () => `31.${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`; // a sleep long past the 1 s timeout, findable by its exact argument
 const nodeRoot = dirname(dirname(realpathSync(process.execPath)));
 
 const probe = spawnSync(process.execPath, [RUN, '--check'], { encoding: 'utf8', env: CLEAN_ENV });
@@ -152,7 +159,10 @@ test('4. env is scrubbed to PATH LANG LC_ALL TERM TZ + --env; HOME is the runner
   const r = await run(['--cwd', d, '--env', 'FOO=bar', '--env', 'EQ=a=b', '--', '/usr/bin/env'], { ZT_SECRET: '1', AWS_SECRET_ACCESS_KEY: 'x', LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8', TERM: 'xterm', TZ: 'UTC' });
   const env = Object.fromEntries(lines(r.stdout).map(l => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
   assert.equal(r.code, 0, r.stderr);
-  assert.deepEqual(Object.keys(env).sort(), ['EQ', 'FOO', 'HOME', 'LANG', 'LC_ALL', 'PATH', 'TERM', 'TMPDIR', 'TZ']);
+  // bwrap always sets PWD to its --chdir dir after clearing the env; it names the sandbox cwd and nothing else.
+  const pwd = BACKEND === 'bwrap' ? ['PWD'] : [];
+  assert.deepEqual(Object.keys(env).sort(), ['EQ', 'FOO', 'HOME', 'LANG', 'LC_ALL', 'PATH', ...pwd, 'TERM', 'TMPDIR', 'TZ']);
+  if (pwd.length) assert.equal(env.PWD, d);
   assert.equal(env.FOO, 'bar');
   assert.equal(env.EQ, 'a=b');
   assert.equal(env.HOME, env.TMPDIR);
@@ -162,18 +172,20 @@ test('4. env is scrubbed to PATH LANG LC_ALL TERM TZ + --env; HOME is the runner
 
 test('5. timeout: sleep 30 with --timeout 1 returns 124 fast and leaves nothing alive', real, async () => {
   const d = mk();
-  const r = await run(['--cwd', d, '--rw', d, '--timeout', '1', ...sh('sleep 30 & echo $! > "$0/kid"; echo $$ > "$0/sh"; wait', d)]);
+  const t = sleepToken();
+  const r = await run(['--cwd', d, '--rw', d, '--timeout', '1', ...sh(`sleep ${t} & echo $! > "$0/kid"; echo $$ > "$0/sh"; wait`, d)]);
   assert.equal(r.code, 124, r.stderr);
   assert.ok(r.ms < 5000, `took ${r.ms} ms`);
-  assert.equal(await gone(['kid', 'sh'].map(f => +readFileSync(join(d, f), 'utf8'))), true);
+  assert.equal(await goneEverywhere(t, ['kid', 'sh'].map(f => +readFileSync(join(d, f), 'utf8'))), true);
 });
 
 test('5b. timeout: SIGTERM-ignoring tree is SIGKILLed after 2 s', real, async () => {
   const d = mk();
-  const r = await run(['--cwd', d, '--rw', d, '--timeout', '1', ...sh('trap "" TERM; sleep 30 & echo $! > "$0/kid"; wait', d)]);
+  const t = sleepToken();
+  const r = await run(['--cwd', d, '--rw', d, '--timeout', '1', ...sh(`trap "" TERM; sleep ${t} & echo $! > "$0/kid"; wait`, d)]);
   assert.equal(r.code, 124, r.stderr);
   assert.ok(r.ms < 5000, `took ${r.ms} ms`);
-  assert.equal(await gone([+readFileSync(join(d, 'kid'), 'utf8')]), true);
+  assert.equal(await goneEverywhere(t, [+readFileSync(join(d, 'kid'), 'utf8')]), true);
 });
 
 test('6. child exit code and stdout/stderr pass through', real, async () => {
