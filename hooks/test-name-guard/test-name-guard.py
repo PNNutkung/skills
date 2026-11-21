@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""PreToolUse hook (Bash matcher): deny `git commit` when the commit adds a test
-whose name does not follow Should_ExpectedBehavior_When_StateUnderTest, written in
-the language's own style:
+"""PreToolUse hook (Bash matcher) for test names that follow
+Should_ExpectedBehavior_When_StateUnderTest, written in the language's own style:
 
   Python      def test_should_<expected_behavior>_when_<state_under_test>(...)   snake_case
   TS / JS     test('should <expected behavior> when <state under test>', ...)   also it(...)
 
-Only ADDED lines of the commit are checked, so legacy tests never block an edit.
+TEST_NAME_GUARD_MODE picks how hard it is (the naming rule is a convention, rules/test-naming.md):
+  warn (default)  `git commit` goes through with a note telling the agent which tests to rename;
+                  `gh pr create` / `glab mr create` is DENIED while the branch adds a badly named test
+  deny            both are denied (the behavior before modes existed)
+  off             the hook does nothing
+An unknown value counts as warn.
+
+Only ADDED lines are checked (the commit's, or the branch's against its base for a
+change request), so legacy tests never block an edit.
 Every git repo is guarded by default; TEST_NAME_GUARD_SCOPE (colon-separated path
 prefixes) narrows it. Fails open on any internal error.
 
-Escape hatch:  TEST_NAME_GUARD=off git commit ...
+Escape hatch:  TEST_NAME_GUARD=off git commit ...   (or ... gh pr create)
 Per-repo override: <repo>/.claude/test-naming.json
     {"enabled": true, "python": "<regex>" | null, "javascript": "<regex>" | null}
   null turns that language off; a string replaces the built-in name regex
@@ -86,6 +93,52 @@ def find_commit(raw_cmd, cwd):
     return None
 
 
+def find_cr(raw_cmd, cwd):
+    """Return (repo_dir, args, escaped, exe) for the first `gh pr create` / `glab mr create|new`, else None."""
+    cur = cwd
+    for seg in re.split(r"&&|\|\||;|\||&", raw_cmd):
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            continue
+        if tokens[:1] == ["cd"] and len(tokens) > 1:
+            cur = os.path.join(cur, os.path.expanduser(tokens[1]))
+            continue
+        for i, tok in enumerate(tokens):
+            exe = tok.rsplit("/", 1)[-1]
+            if exe not in ("gh", "glab"):
+                continue
+            words = [t for t in tokens[i + 1 :] if not t.startswith("-")][:2]
+            if (exe == "gh" and words == ["pr", "create"]) or (exe == "glab" and words[:1] == ["mr"] and words[1:] in (["create"], ["new"])):
+                return cur, tokens[i + 1 :], bool(ESCAPE_RE.search(seg)), exe
+    return None
+
+
+def mode():
+    value = (os.environ.get("TEST_NAME_GUARD_MODE") or "warn").strip().lower()
+    return value if value in ("warn", "deny", "off") else "warn"
+
+
+def base_ref(root, args, exe):
+    """The change request's base: --base/-B (gh), --target-branch/-b (glab), else origin/HEAD, main, master."""
+    flags = ("--base", "-B") if exe == "gh" else ("--target-branch", "-b")
+    named = None
+    for k, a in enumerate(args):
+        if a in flags and k + 1 < len(args):
+            named = args[k + 1]
+        for f in flags:
+            if f.startswith("--") and a.startswith(f + "="):
+                named = a[len(f) + 1 :]
+    head = _git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], root).strip()
+    for cand in (named, head, "main", "master"):
+        if not cand:
+            continue
+        for ref in (cand,) if cand.startswith("origin/") else (f"origin/{cand}", cand):
+            if _git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], root).strip():
+                return ref
+    return None
+
+
 def in_scope(repo_root):
     prefixes = os.environ.get("TEST_NAME_GUARD_SCOPE") or DEFAULT_SCOPE
     real = os.path.realpath(repo_root)
@@ -136,6 +189,16 @@ def violations(diff_text, rules):
     return bad
 
 
+def warn(text):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}))
+
+
+def listing(bad):
+    shown = "\n".join(f"  {f}: {n}" for f, n in bad[:20])
+    more = f"\n  ... and {len(bad) - 20} more" if len(bad) > 20 else ""
+    return f"{shown}{more}\nPython: {EXAMPLES['python']}\nTS/JS:  {EXAMPLES['javascript']}\n"
+
+
 def deny(reason):
     print(
         json.dumps(
@@ -150,20 +213,43 @@ def deny(reason):
     )
 
 
+def repo_rules(repo):
+    """(root, rules) for a repo in scope with the rule on, else None."""
+    root = _git(["rev-parse", "--show-toplevel"], repo).strip()
+    if not root or not in_scope(root):
+        return None
+    rules = load_rules(root)
+    return (root, rules) if rules else None
+
+
 def main():
+    how = mode()
+    if how == "off":
+        return
     try:
         data = json.load(sys.stdin)
         cmd = data.get("tool_input", {}).get("command", "")
-        found = find_commit(cmd, data.get("cwd") or os.getcwd())
+        cwd = data.get("cwd") or os.getcwd()
+        found, cr = find_commit(cmd, cwd), find_cr(cmd, cwd)
+        if cr is not None and not cr[2]:
+            ctx = repo_rules(cr[0])
+            base = ctx and base_ref(ctx[0], cr[1], cr[3])
+            mb = base and _git(["merge-base", base, "HEAD"], ctx[0]).strip()
+            if mb:
+                bad = violations(_git(["diff", mb, "HEAD", "--unified=0", "--no-color", "--diff-filter=ACMR"], ctx[0]), ctx[1])
+                if bad:
+                    return deny(
+                        f"This branch adds tests not named should ... when ... (rules/test-naming.md), so the change request is refused until they are renamed:\n"
+                        f"{listing(bad)}Rename them in a new commit, then create the change request again. "
+                        "Bypass once with `TEST_NAME_GUARD=off gh pr create ...`. Per-repo override: <repo>/.claude/test-naming.json."
+                    )
         if found is None or found[2]:
             return
         repo, args, _ = found
-        root = _git(["rev-parse", "--show-toplevel"], repo).strip()
-        if not root or not in_scope(root):
+        ctx = repo_rules(repo)
+        if not ctx:
             return
-        rules = load_rules(root)
-        if not rules:
-            return
+        root, rules = ctx
         all_flag = any(a == "--all" or re.fullmatch(r"-[a-zA-Z]*a[a-zA-Z]*", a) for a in args)
         diff = _git(
             ["diff", "HEAD" if all_flag else "--cached", "--unified=0", "--no-color", "--diff-filter=ACMR"],
@@ -174,14 +260,16 @@ def main():
         return
     if not bad:
         return
-    shown = "\n".join(f"  {f}: {n}" for f, n in bad[:20])
-    more = f"\n  ... and {len(bad) - 20} more" if len(bad) > 20 else ""
+    if how == "warn":
+        return warn(
+            "Test-name convention (rules/test-naming.md): this commit adds tests not named should ... when ...:\n"
+            f"{listing(bad)}The commit goes through, but rename these tests in your next commit: "
+            "a pull request or merge request is refused while the branch still adds them."
+        )
     deny(
         "Test names must follow Should_ExpectedBehavior_When_StateUnderTest in the "
         "language's style. Added tests that do not:\n"
-        f"{shown}{more}\n"
-        f"Python: {EXAMPLES['python']}\n"
-        f"TS/JS:  {EXAMPLES['javascript']}\n"
+        f"{listing(bad)}"
         "Rename them, or bypass once with `TEST_NAME_GUARD=off git commit ...`. "
         "Per-repo override: <repo>/.claude/test-naming.json."
     )
