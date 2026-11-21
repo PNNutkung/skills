@@ -9,7 +9,7 @@ Finds **defects**, **weak tests** and **test gaps** in a whole repo or one featu
 
 **Terms.** A *requirement* is a behavior quoted from a spec, a ticket or the user's own answer; a behavior nobody stated is not one. A *defect* is the app behaving differently from a requirement. A *weak test* passes when the behavior it checks is broken. A *test gap* is a requirement that no test checks. A *test tier* is unit, integration or e2e.
 
-**Requires:** Node 18+, Python 3, git, and the sibling skills `zero-trust-review` (mutation, run folder, sandbox) and `paired-agent-tdd` (its `direct-run.mjs`). The `qa-guard` hook comes with the plugin install. Without it the rules below still hold, but nothing enforces them.
+**Requires:** Node 22+, Python 3, git, and the sibling skills `zero-trust-review` (mutation, run folder, sandbox) and `paired-agent-tdd` (its `direct-run.mjs`). The `qa-guard` hook comes with the plugin install. Without it the rules below still hold, but nothing enforces them.
 
 ## Paths
 
