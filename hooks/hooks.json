@@ -26,6 +26,12 @@
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/zt-capture.mjs\"", "timeout": 5 }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/zt-authors.mjs\"", "timeout": 5 }
+        ]
       }
     ]
   }

@@ -20,8 +20,8 @@ const API_VALUE_FLAGS = new Set(['-X', '--method', '-f', '-F', '--field', '--raw
 const API_BODY_FLAGS = new Set(['-f', '-F', '--field', '--raw-field', '--input']);
 
 const unquote = t => t.replace(/^(["'])(.*)\1$/s, '$2');
-const tokenize = seg => (seg.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(unquote);
-function stripPrefix(tokens) {
+export const tokenize = seg => (seg.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(unquote);
+export function stripPrefix(tokens) {
   let i = 0;
   while (i < tokens.length && (/^[A-Za-z_]\w*=/.test(tokens[i]) || WRAPPERS.has(tokens[i]))) i++;
   return tokens.slice(i);
@@ -66,17 +66,21 @@ function segmentPosts(tokens) {
   return null;
 }
 
-/** A deny reason, or null. ctx = { run, note? (path shown in the message) }. */
-export function postVerdict(command, ctx) {
-  const note = ctx.note ?? 'node <skillDir>/note.mjs';
-  const approve = `${note.startsWith('node ') ? note : `node "${note}"`} allow-post`;
-  // a quoted span is data (echo "gh pr comment"), so blank it before splitting; the tokens of each segment come from the original text
+/** The simple commands of a command line. A quoted span is data (echo "gh pr comment"), so it is blanked before splitting; segments keep the original text. */
+export function commandSegments(command) {
   const masked = command.replace(/"[^"]*"|'[^']*'/g, m => ' '.repeat(m.length));
   let start = 0;
   const segments = [];
   for (const m of masked.matchAll(new RegExp(SEGMENT_SPLIT_RE.source, 'g'))) { segments.push(command.slice(start, m.index)); start = m.index + m[0].length; }
   segments.push(command.slice(start));
-  for (const seg of segments) {
+  return segments;
+}
+
+/** A deny reason, or null. ctx = { run, note? (path shown in the message) }. */
+export function postVerdict(command, ctx) {
+  const note = ctx.note ?? 'node <skillDir>/note.mjs';
+  const approve = `${note.startsWith('node ') ? note : `node "${note}"`} allow-post`;
+  for (const seg of commandSegments(command)) {
     const what = segmentPosts(stripPrefix(tokenize(seg)));
     if (what === 'allow-post') {
       return `zero-trust-review: only the user approves posting. Do not run note.mjs allow-post yourself. Ask the user to review the findings and, to approve, run in their own terminal (or with the ! prefix): ${approve}`;

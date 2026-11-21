@@ -20,7 +20,7 @@ Delivery gates for agent-written code: gate it, triage review depth, demand proo
 - **Flag first.** No feature code is written until the flag exists and integration points sit behind it.
 - **Proof or reject.** A PR missing the flag name, test results, runtime/visual proof or a concise summary is rejected; name the missing item.
 - **Trunk gets read, leaf gets skimmed.** Deep line-by-line only for trunk code; a gated leaf needs tests and artifacts.
-- **Fresh reviewer.** The authoring session never reviews its own diff.
+- **Fresh reviewer.** The authoring session never reviews its own diff. With `ZT_SELF_REVIEW_GUARD=1` the plugin hook denies `gh pr review` / `glab mr approve` from a session or agent that edited a file the change touches; a fresh subagent is not the author.
 - **Flag off, not revert.** Roll back by flipping the flag.
 
 Questions go to the user only for judgment calls or changes no convention covers ([`rules/ask-dont-assume.md`](../../rules/ask-dont-assume.md)).

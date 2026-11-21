@@ -8,6 +8,7 @@
 // can defeat the guard with obfuscation: variable indirection, base64 into a file, eval-by-config, a script written then run via an allowed tool,
 // `git` aliases or hooks already present in the repo's .git/config, `rm` of a whole parent folder, subshell `cd` leaking into later segments, etc.
 //
+// Opt-in for everyone (ZT_SELF_REVIEW_GUARD=1, zt-self-review.mjs): the author of a change never posts its review verdict.
 // The lead session (no agent_id) is checked only by the opt-in post guard (ZT_POST_GUARD=1, zt-post-guard.mjs): no posting to the review host until the user approves.
 //
 // Active = hook input has agent_id AND runctx.readMarker() names a trusted run dir (marker owned by us, not a symlink, not group/world-writable,
@@ -1137,6 +1138,12 @@ try {
   const input = JSON.parse(readFileSync(0, 'utf8'));
   run = input?.agent_id ? runctx.readMarker() : '';
   const command = input?.tool_input?.command;
+  if (process.env.ZT_SELF_REVIEW_GUARD === '1' && typeof command === 'string') {
+    // any session or agent, run or no run: the author of a change never posts its review verdict (zt-self-review.mjs)
+    const { selfReviewVerdict } = await import('./zt-self-review.mjs');
+    const reason = selfReviewVerdict(command, { session: input.session_id, agent: input.agent_id, cwd: input.cwd, markerDir: runctx.markerDir() });
+    if (reason) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })); process.exit(0); }
+  }
   if (!input?.agent_id && process.env.ZT_POST_GUARD === '1' && typeof command === 'string') {
     // the lead session: only the opt-in post guard applies (zt-post-guard.mjs); every other check below is for review subagents
     const leadRun = runctx.readMarker();
