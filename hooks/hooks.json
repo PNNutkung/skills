@@ -18,6 +18,12 @@
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ptdd-guard.mjs\"", "timeout": 5 }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/dod-guard.mjs\"", "timeout": 5 }
+        ]
       }
     ],
     "PostToolUse": [

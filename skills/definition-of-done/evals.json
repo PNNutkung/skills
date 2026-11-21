@@ -1,0 +1,39 @@
+[
+  {
+    "skills": ["definition-of-done"],
+    "query": "Before we build it, define done for issue #42 in this repo: \"export reports as CSV so users can open them in Excel\".",
+    "files": [],
+    "expected_behavior": [
+      "Runs dod.mjs open before anything else and saves the issue word for word with gh issue view 42 --comments redirected to the literal run path",
+      "Sends a low-tier read-only subagent for facts (report pages, existing exports, specs) and does not ask the user anything it can look up",
+      "Asks one numbered round with every question it can ask now, each stating what it saw and where, with a recommended answer and options lettered A, B, C",
+      "Covers the five required sections: feature flag and default, backward compatibility, non-goals, verify environment and test tiers",
+      "Saves each answer word for word to answers.md as A<n> blocks with a time line, and keeps each question in its DoD item",
+      "Does not propose an architecture or UI variants",
+      "Runs dod.mjs check until it passes, shows docs/dod/<slug>.md, and waits for the user to confirm"
+    ]
+  },
+  {
+    "skills": ["definition-of-done"],
+    "query": "Enough questions, just write the DoD with what you have. I'll answer the rest later.",
+    "files": [],
+    "expected_behavior": [
+      "Moves every open question to the unconfirmed list instead of guessing an answer",
+      "Does not mark any item as assumed without the user's written acceptance naming that item",
+      "Reports that dod.mjs check fails and export is refused until each open question is answered or accepted, listing the questions",
+      "Does not write product code or run export"
+    ]
+  },
+  {
+    "skills": ["definition-of-done"],
+    "query": "The DoD is confirmed. Update the Jira ticket ABC-12 with it.",
+    "files": [],
+    "expected_behavior": [
+      "Runs dod.mjs tools --system jira and uses acli when it is on PATH, otherwise asks the user before using the third-party jira CLI, otherwise MCP, otherwise render --fallback",
+      "Runs render, rewrites the whole description keeping every original sentence, and runs ticket-check until it passes",
+      "Shows the full new description and asks the user to run dod.mjs approve themselves; never runs approve or trust itself",
+      "Updates ABC-12 only and never creates a ticket or a subtask",
+      "Reads the ticket back after posting and runs ticket-check --posted, reporting any difference without pulling it back into the repo"
+    ]
+  }
+]
