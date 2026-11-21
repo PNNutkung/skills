@@ -57,7 +57,7 @@ Two standalone hooks that are not part of the plugin. Install steps are in each 
 git ls-files -z '*.test.mjs' | xargs -0 node --test
 ```
 
-CI runs the same command on every pull request (Ubuntu with Node 20 and 22, macOS with Node 22). Sandbox tests run through sandbox-exec on macOS and bwrap on Linux, and skip where neither is installed.
+CI runs the same command on every pull request: Node 22, 24 and 26 (the three newest LTS majors) on Ubuntu and macOS, Node 24 from asdf shims, and Node 24 in WSL on Windows. Sandbox tests run through sandbox-exec on macOS and bwrap on Linux, and skip where neither is installed.
 
 ## Telemetry
 
