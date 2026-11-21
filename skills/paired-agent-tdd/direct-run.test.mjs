@@ -33,6 +33,12 @@ test('the command runs in --cwd with the inherited environment plus --env; its o
   assert.match(r.stderr, /oops/);
 });
 
+test('a NODE_TEST_CONTEXT inherited from an outer node --test is dropped, so a node --test command reports TAP to the gates; --env can still set it', () => {
+  const show = ['--', 'sh', '-c', 'echo "ctx=${NODE_TEST_CONTEXT-unset}"'];
+  assert.equal(go(show, { NODE_TEST_CONTEXT: 'child-v8' }).stdout.trim(), 'ctx=unset');
+  assert.equal(go(['--env', 'NODE_TEST_CONTEXT=child', ...show], { NODE_TEST_CONTEXT: 'child-v8' }).stdout.trim(), 'ctx=child');
+});
+
 test('a command over --timeout exits 124 and is stopped; one that cannot start exits 127; bad usage exits 64', () => {
   const t0 = Date.now();
   assert.equal(go(['--timeout', '1', '--', 'sh', '-c', 'sleep 30']).status, 124);

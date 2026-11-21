@@ -7,7 +7,7 @@ description: Use for a non-trivial, multi-file feature or bugfix that must be bu
 
 TDD (RED, GREEN) as **driver/navigator pairs**, one pipeline per file group, run by a Workflow script ([`workflow.js`](./workflow.js)) from an execution graph ([`graph.mjs`](./graph.mjs)). Plain-code **gates** ([`tdd.mjs`](./tdd.mjs), [`probes.md`](./probes.md)) produce the facts: tests run, new code is mutated, scope is diffed, the DoD is closed against real runs. Agents judge those facts and never grade their own work. **A stage is a loop, never one shot** (repair loop, Rules below).
 
-**Requires:** Node 18+, git, the Workflow tool, the sibling skill `zero-trust-review` (mutation probe, `proofcheck.mjs`, sandbox runner; `ZT_DIR` if elsewhere). The gates run the test command **directly** (your rights, your network); `plan.sandbox: true` confines it (macOS `sandbox-exec`, Linux `bwrap`, docker). Agent types `tdd-guide` and `code-reviewer` (the judges have no Edit or Write).
+**Requires:** Node 22+, git, the Workflow tool, the sibling skill `zero-trust-review` (mutation probe, `proofcheck.mjs`, sandbox runner; `ZT_DIR` if elsewhere). The gates run the test command **directly** (your rights, your network); `plan.sandbox: true` confines it (macOS `sandbox-exec`, Linux `bwrap`, docker). Agent types `tdd-guide` and `code-reviewer` (the judges have no Edit or Write).
 
 Cost levers ([`runs.md`](./runs.md)): no barrier between groups, gates are code, one whole-diff reviewer, one fixer per group, narrow agent types.
 

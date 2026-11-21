@@ -1,0 +1,84 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The three newest Node LTS majors on each OS. macOS runs the sandbox tests through its built-in sandbox-exec; Ubuntu runs them
+  # through bwrap, which the runner image ships.
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Run tests
+        shell: bash
+        run: git ls-files -z '*.test.mjs' | xargs -0 node --test
+
+  # The same suite with node coming from asdf shims, the way a developer machine with a version manager has it.
+  asdf:
+    name: node 24 via asdf on ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install asdf and node
+        shell: bash
+        run: |
+          git clone --depth 1 --branch v0.14.1 https://github.com/asdf-vm/asdf.git ~/.asdf
+          . ~/.asdf/asdf.sh
+          asdf plugin add nodejs
+          asdf install nodejs latest:24
+          asdf global nodejs latest:24
+          echo "$HOME/.asdf/shims" >> "$GITHUB_PATH"
+          echo "$HOME/.asdf/bin" >> "$GITHUB_PATH"
+      - name: Run tests
+        shell: bash
+        run: |
+          command -v node | grep -q '/.asdf/shims/node'
+          node --version
+          git ls-files -z '*.test.mjs' | xargs -0 node --test
+
+  # Windows runs the skills under WSL. The repo is copied into the WSL home so file modes and line endings are Linux ones.
+  wsl:
+    name: node 24 in WSL on windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: Vampire/setup-wsl@v5
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: git python3 curl xz-utils bubblewrap
+      - name: Run tests
+        shell: wsl-bash {0}
+        run: |
+          set -euo pipefail
+          v=$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | grep -o 'node-v[0-9.]*-linux-x64.tar.xz' | head -1)
+          mkdir -p /opt/node && curl -fsSL "https://nodejs.org/dist/latest-v24.x/$v" | tar -xJ -C /opt/node --strip-components=1
+          # WSL logs in as root, which ignores file modes; run as a plain user, the way a developer does.
+          id dev >/dev/null 2>&1 || useradd -m dev
+          rm -rf /home/dev/skills && cp -r . /home/dev/skills && chown -R dev:dev /home/dev/skills
+          su - dev -c 'export PATH=/opt/node/bin:$PATH; cd ~/skills && node --version && git ls-files -z "*.test.mjs" | xargs -0 node --test'

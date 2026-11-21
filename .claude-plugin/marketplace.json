@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "pnnutkung-skills",
-      "description": "zero-trust-review, paired-agent-tdd and ai-code-delivery skills, plus the zero-trust-review bash guard and observability capture hooks.",
+      "description": "zero-trust-review, paired-agent-tdd, ai-code-delivery, qa-sweep and branch-summary skills, plus the zero-trust-review bash guard, the qa-sweep qa-guard and observability capture hooks.",
       "source": "./",
       "category": "development"
     }

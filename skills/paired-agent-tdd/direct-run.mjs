@@ -45,7 +45,11 @@ function capture() { // bounded memory: the first and last OUT_HALF chars of the
 const tee = (src, dst, cap) => { const dec = new StringDecoder('utf8'); dst.on('error', () => {}); src.pipe(dst, { end: false }); src.on('data', d => cap.add(dec.write(d))); src.on('end', () => cap.add(dec.end())); };
 
 const id = `r${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6).padEnd(4, '0')}`, t0 = Date.now(), cap = capture();
-const child = spawn(cmd[0], cmd.slice(1), { cwd: o.cwd, env: { ...process.env, ...userEnv }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+// NODE_TEST_CONTEXT is how an outer `node --test` tells its child to report over V8 serialization instead of TAP. Inherited, it turns a gate's
+// `node --test {file}` silent and the gates misread its result, so it never passes through unless --env sets it.
+const inherited = { ...process.env };
+delete inherited.NODE_TEST_CONTEXT;
+const child = spawn(cmd[0], cmd.slice(1), { cwd: o.cwd, env: { ...inherited, ...userEnv }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 tee(child.stdout, process.stdout, cap); tee(child.stderr, process.stderr, cap);
 const killGroup = sig => { try { process.kill(-child.pid, sig); } catch { /* group already gone */ } };
 const terminate = () => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS).unref(); };

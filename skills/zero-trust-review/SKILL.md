@@ -9,7 +9,7 @@ Strict review of **only the changes in the current branch diff against the targe
 
 It runs as an **execution graph** ([`graph.mjs`](./graph.mjs)) executed by [`workflow.js`](./workflow.js). The lead gathers facts with plain code ([`triage.py`](./triage.py)); the 30-point audit lives in [`checklist.md`](./checklist.md) and agents Read only their own points. Related: `code-review` (standards + spec), `security-review` (escalate when point 6 or 7 finds a real flaw). This skill owns **production-hazard and test-integrity review**.
 
-**Requires:** Node 18+ (`graph.mjs`, `workflow.js`), python3 (`triage.py`, stdlib only), git, and a sandbox for probes (macOS `sandbox-exec` built in, Linux `bwrap`, or docker via `ZT_SANDBOX_IMAGE`); with none, probes are `unverifiable` and never run bare. Optional: the host CLI (`glab` GitLab, `gh` GitHub) plus `jq`, to read CR metadata and post. Without one the skill runs git-only: report only. Per-host commands: [`hosts.md`](./hosts.md).
+**Requires:** Node 22+ (`graph.mjs`, `workflow.js`), python3 (`triage.py`, stdlib only), git, and a sandbox for probes (macOS `sandbox-exec` built in, Linux `bwrap`, or docker via `ZT_SANDBOX_IMAGE`); with none, probes are `unverifiable` and never run bare. Optional: the host CLI (`glab` GitLab, `gh` GitHub) plus `jq`, to read CR metadata and post. Without one the skill runs git-only: report only. Per-host commands: [`hosts.md`](./hosts.md).
 
 **Terms:** *change request (CR)* = a GitLab merge request (MR) or GitHub pull request (PR); *lead* = the coordinating session; *driver* = a finding agent (`reviewer`, `gap-reviewer`); *navigator* = a verifying agent (`verifier-*`); *finding* = one defect; *cluster* = findings merged by `dedupe`, the unit verified.
 

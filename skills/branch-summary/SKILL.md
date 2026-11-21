@@ -282,7 +282,7 @@ Steps:
 
 1. **Choose temp path**: run `mktemp -d` via the Bash tool to get a fresh per-invocation directory (avoids collisions with concurrent runs and keeps the workspace clean). The two files are `<that-dir>/branch-summary-<slugified-title>.md` and `<that-dir>/branch-summary-<slugified-title>.html`. Slugify the title by lowercasing, replacing non-alphanumerics with `-`, and trimming leading/trailing dashes.
 2. **Write the markdown report** to the `.md` path with the Write tool, using the template below (with the section omission rules and trimmed sections already applied).
-3. **Build the HTML** from it with the helper that ships next to this file: `SK=${SK:-$HOME/.claude/skills/branch-summary}; node "$SK/build-report.mjs" <report.md> <report.html>` (Node 18+). Never write the HTML yourself: the helper embeds the markdown as inert JSON data, which is what stops text from the branch from running as script. If Node is missing, stop after step 2 and print the `.md` path instead.
+3. **Build the HTML** from it with the helper that ships next to this file: `SK=${SK:-$HOME/.claude/skills/branch-summary}; node "$SK/build-report.mjs" <report.md> <report.html>` (Node 22+). Never write the HTML yourself: the helper embeds the markdown as inert JSON data, which is what stops text from the branch from running as script. If Node is missing, stop after step 2 and print the `.md` path instead.
 4. **In chat, print only**:
    - the absolute HTML path (clickable / copyable for the user),
    - the one-paragraph `## Summary` body,
