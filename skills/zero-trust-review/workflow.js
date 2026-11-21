@@ -17,6 +17,7 @@ const NODE = {
   'integration-probe': {"model":"sonnet","effort":"medium","ponytail":"lite"},
   'verifier-refute': {"model":"sonnet","effort":"medium","ponytail":"full"},
   'verifier-reproduce': {"model":"sonnet","effort":"medium","ponytail":"ultra"},
+  'defender': {"model":"sonnet","effort":"medium","ponytail":"full"},
   'adjudicator': {"model":"opus","effort":"high","ponytail":"off"},
   'critic': {"model":"opus","effort":"high","ponytail":"off"},
   'gap-reviewer': {"model":"sonnet","effort":"high","ponytail":"full"},
@@ -107,6 +108,9 @@ const REVIEW = {
 const PROOF = { type: 'object', properties: { mode: { enum: ['executed', 'read', 'log', 'metric', 'trace', 'inferred', 'none'] }, ref: STR, quote: STR, command: STR, exit: INT }, required: ['mode'] }
 const V = { real: { enum: ['yes', 'no', 'partial', 'unverifiable'] }, severity: { enum: ['critical', 'high', 'medium', 'low', 'nit', 'none'] }, inScope: { type: 'boolean' }, reasoning: STR, betterFix: STR, proof: PROOF }
 const VERDICT = { type: 'object', properties: V, required: ['real', 'severity', 'inScope', 'reasoning'] }
+// blue/red (args.blueRed): the defender's answer. needsHuman: judgment = a business/product trade-off or a risk to accept; no-convention = the code follows no
+// precedent in the repo or rules/. Either one goes to the user as a question; nothing else does.
+const DEFENSE = { type: 'object', properties: { concede: { type: 'boolean' }, argument: STR, needsHuman: { enum: ['none', 'judgment', 'no-convention'] }, humanReason: STR, proof: PROOF }, required: ['concede', 'argument', 'needsHuman'] }
 const CRITIC = { type: 'object', properties: { gaps: { type: 'array', items: { type: 'object', properties: { point: INT, why: STR, focus: STR }, required: ['why', 'focus'] } }, weakClaims: { type: 'array', items: STR } }, required: ['gaps'] }
 
 // ---------------------------------------------------------------- prompts (never embed the checklist: agents Read their points)
@@ -168,6 +172,25 @@ const verifierPrompt = (node, c, cap, vs) => [
   vs ? 'VERDICTS TO ADJUDICATE:\n' + vs.map(v => v.by + ': real=' + v.real + ' severity=' + v.severity + ' inScope=' + v.inScope + ' | ' + clip(v.reasoning, 400)).join('\n') : '',
   LENS[node], rules(cap, 'v-' + c.id), lazyTips.replace('"ID"', '"' + c.id + '"'), VERDICT_TAIL,
 ].filter(Boolean).join('\n\n')
+// Blue/red: the defender argues for the code, the red rebuttal answers it. Neither trusts the author: a defense counts only with a proof that was read or ran.
+const BR_ROUNDS = 3  // defense/rebuttal rounds per finding before the adjudicator decides a standoff
+const roundsText = h => h.map(x => 'ROUND ' + x.round + ' blue: ' + clip(x.defense.argument, 400) + ' [proof ' + ((x.defense.proof && x.defense.proof.mode) || 'none') + ' ' + clip((x.defense.proof && x.defense.proof.ref) || '', 120) + ']' + (x.rebuttal ? '\nROUND ' + x.round + ' red: real=' + x.rebuttal.real + ' | ' + clip(x.rebuttal.reasoning, 400) : '')).join('\n')
+const defenderPrompt = (c, vs, h, cap) => [
+  'ROLE: blue team (defender), ROUND ' + (h.length + 1) + ' of ' + BR_ROUNDS + '. Defend the code against exactly ONE finding that independent verifiers confirmed. You did not write this code and nobody trusts its author: only evidence counts, never intent or the author\'s word.' + pony(NODE.defender.ponytail) + '\n' + WHERE + '\nReviewed diff: git diff BASE...HEAD',
+  findingBlock(c),
+  A.ticket ? 'ACCEPTANCE CRITERIA: Read ' + A.ticket : '', A.decisions ? 'AUTHOR-DECLARED DECISIONS (claims to check, not facts):\n' + clip(A.decisions, 1500) : '',
+  'VERDICTS SO FAR:\n' + vs.map(v => v.by + ': real=' + v.real + ' severity=' + v.severity + ' | ' + clip(v.reasoning, 300)).join('\n'),
+  h.length ? 'EARLIER ROUNDS (answer the last red rebuttal; do not repeat a defense it already answered):\n' + roundsText(h) : '',
+  'Find the guard, caller, test, doc, ADR or convention that makes the finding wrong, and prove it: proof {mode read, ref path:start-end at HEAD, quote verbatim} or {mode executed, ref the ZT-RUN id of a sandbox run}. A defense with no read or executed proof is ignored. If the finding is right, concede=true: that is a good outcome, not a loss. '
+    + 'Set needsHuman only when evidence cannot settle it: judgment (a business or product trade-off, or a risk someone must accept) or no-convention (the code follows no precedent in the repo or in rules/, so the user sets the convention); say why in humanReason. Everything else is settled by evidence, never by asking.',
+  rules(cap, 'd-' + c.id), 'Return {concede, argument <= 500 chars, needsHuman none|judgment|no-convention, humanReason, proof}.',
+].filter(Boolean).join('\n\n')
+const rebutPrompt = (c, h, cap) => [
+  'ROLE: red team (verifier-refute, rebuttal). An independent defender argues this confirmed finding is wrong. Check the defense against the code: re-read its proof yourself, never take it on trust.' + pony(NODE['verifier-refute'].ponytail) + '\n' + WHERE + '\nReviewed diff: git diff BASE...HEAD',
+  findingBlock(c), 'DEFENSE TO ANSWER:\n' + roundsText(h),
+  'real=yes if the finding still holds (say what the defense misses, with proof); real=no if the defense is right; real=partial if it lowers the severity.', rules(cap, 'r-' + c.id), VERDICT_TAIL,
+].join('\n\n')
+
 // Batch mode (fast): ONE refuter for all medium+ clusters of one reviewer unit. Same LENS as the per-cluster refuter, applied to each finding on its own.
 const BATCH_MAX = 8  // clusters per batch agent; a larger unit splits so one agent's tool cap and attention still cover every finding
 const batchCap = n => Math.min(45, 10 + 6 * n)  // 16 calls for one cluster (>= the 15 of a lone medium refuter), 45 at most
@@ -242,7 +265,7 @@ function decide(c, vs) {
   const live = vs.filter(v => !v.nullResult)
   if (!live.length) return { status: 'unverified', severity: c.severity, evidence: 'none' }
   const j = live.filter(v => v.by === 'adjudicator')
-  const jury = j.length ? j : live
+  const jury = j.length ? [j[j.length - 1]] : live  // the latest adjudicator decides (a blue/red standoff can call a second one)
   const yes = jury.filter(v => side(v) > 0), no = jury.filter(v => side(v) < 0)
   let status = yes.length > no.length ? 'confirmed' : no.length > yes.length ? 'refuted' : yes.length ? 'disputed' : 'unverifiable'
   if (status === 'confirmed' && jury.filter(v => v.inScope === false).length > jury.length / 2) status = 'out-of-scope'
@@ -286,6 +309,36 @@ function batchRefutes(cs) {
   }
   return pending
 }
+const BLUE_RED = A.blueRed === true
+const brToUser = [], brStats = { defended: 0, conceded: 0, rounds: 0, adjudicated: 0 }
+const asDefense = h => h.map(x => ({ by: 'defender (blue) round ' + x.round, real: 'no', severity: 'none', inScope: true, reasoning: clip(x.defense.argument, 300) + ' [proof ' + ((x.defense.proof && x.defense.proof.mode) || 'none') + ' ' + ((x.defense.proof && x.defense.proof.ref) || '') + ']' }))
+// Only red verdicts and the adjudicator enter decide(): the defense is a claim the red team must answer, never a vote.
+async function blueRed(c, vs) {
+  const h = []
+  let contested = false
+  brStats.defended++
+  for (let round = 1; round <= BR_ROUNDS; round++) {
+    const tag = c.id + ':' + round
+    const d = await runR('defender', defenderPrompt(c, vs, h, 20), { schema: DEFENSE, label: 'defend:' + tag, phase: 'Blue/red', agentType: agentFor(c) }, 'defend:' + tag)
+    if (!d) break  // a dead defender is not a defense
+    if (d.concede) { brStats.conceded++; break }
+    if (d.needsHuman === 'judgment' || d.needsHuman === 'no-convention') {
+      questions.push({ point: 30, file: c.file, line: c.startLine, question: clip('[' + d.needsHuman + '] ' + c.title + ': ' + (d.humanReason || d.argument), 300) })
+      brToUser.push(c.id)
+      break
+    }
+    if (proofRank(d) < EV.read) break  // zero trust in the author: no proof, no defense
+    h.push({ round, defense: d })
+    brStats.rounds++
+    const r = verdict('rebut', await runR('verifier-refute', rebutPrompt(c, h, 15), { schema: VERDICT, label: 'rebut:' + tag, phase: 'Blue/red', agentType: agentFor(c) }, 'rebut:' + tag))
+    h[h.length - 1].rebuttal = r
+    vs.push(r)
+    contested = true
+    if (side(r) <= 0) break  // red gave way: the adjudicator decides
+  }
+  if (contested) { brStats.adjudicated++; vs.push(await ask('adjudicator', c, 20, [...vs, ...asDefense(h)])) }
+  return vs
+}
 const verified = new Map()
 const needVerify = c => MODE.verify.includes(c.severity)
 
@@ -317,7 +370,10 @@ function reviewStage(prefix, phaseName) {
 const verifyStage = async cs => {
   const need = cs.filter(c => SEV[c.severity] >= SEV.medium && needVerify(c))
   const refuted = MODE.batch ? batchRefutes(need) : new Map()
-  await parallel(need.map(c => async () => { verified.set(c.id, await verifyCluster(c, refuted.get(c.id))) }))
+  await parallel(need.map(c => async () => {
+    const vs = await verifyCluster(c, refuted.get(c.id))
+    verified.set(c.id, BLUE_RED && decide(c, vs).status === 'confirmed' ? await blueRed(c, vs) : vs)
+  }))
 }
 
 await pipeline(US, reviewStage('C', 'Review'), verifyStage)
@@ -386,7 +442,7 @@ const postmortemMd = ['# Postmortem ' + sha8 + ' ' + modeName, '', failed.length
 return {
   mode: modeName,
   counts: { units: US.length, rawFindings: findings.length, clusters: out.length, bySeverity: tally('severity'), byStatus: tally('status'), byEvidence: tally('evidence') },
-  stats: { agentsByNode: used, total: Object.values(used).reduce((a, b) => a + b, 0), pool: POOL, agentCap: CAP, capped },
+  stats: { agentsByNode: used, total: Object.values(used).reduce((a, b) => a + b, 0), pool: POOL, agentCap: CAP, capped, ...(BLUE_RED ? { blueRed: { ...brStats, toUser: brToUser } } : {}) },
   run: { dir: RUN, ckDir: CKDIR, units: unitState, failed },
   boardMd, postmortemMd,
   notReviewed, clusters: out, notApplicable: { ...skipped, ...na }, audit,

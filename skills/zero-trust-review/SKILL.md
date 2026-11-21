@@ -13,7 +13,7 @@ It runs as an **execution graph** ([`graph.mjs`](./graph.mjs)) executed by [`wor
 
 **Terms:** *change request (CR)* = a GitLab merge request (MR) or GitHub pull request (PR); *lead* = the coordinating session; *driver* = a finding agent (`reviewer`, `gap-reviewer`); *navigator* = a verifying agent (`verifier-*`); *finding* = one defect; *cluster* = findings merged by `dedupe`, the unit verified.
 
-Cost levers: disjoint groups, gated points, checklist by pointer, plain-code dedupe, tiered verification, changed tests run for real once in plain code, checkpoints, few agents (each costs ~45k tokens before it works; figures in [`runs.md`](./runs.md)). **Do not reach for `deep` or extra verifiers reflexively.**
+Cost levers ([`runs.md`](./runs.md)): disjoint groups, gated points, plain-code dedupe, tiered verification, checkpoints, few agents (~45k tokens each). **Do not reach for `deep` or extra verifiers reflexively.** Blue/red (opt-in): [`probes.md`](./probes.md#bluered).
 
 ## Progress checklist
 
@@ -40,7 +40,7 @@ Copy and tick off:
 
 ## Fast path (opt-in)
 
-`triage.py --mode fast`; run `testprobe.mjs --flake 1`, `mutate.mjs --max 20 --budget 240` and the lint concurrently, then the Workflow with `mode: "fast"` (recipe, trade-offs: [`probes.md`](./probes.md#fast-path)). You give up the critic, gap reviewers, test-auditor and integration-probe; one refuter checks a whole unit; tests fold into 3-8 groups. **Not for** auth, payments, migrations or any change where a miss is costly: use `deep`.
+`triage.py --mode fast`; run `testprobe.mjs --flake 1`, `mutate.mjs --max 20 --budget 240` and the lint concurrently, then the Workflow with `mode: "fast"` (recipe, trade-offs: [`probes.md`](./probes.md#fast-path)). **Not for** auth, payments, migrations or any change where a miss is costly: use `deep`.
 
 ## The graph
 
@@ -56,6 +56,7 @@ graph TD
   dedupe["dedupe<br/>code"]
   verifier-refute["verifier-refute<br/>sonnet/medium · per finding"]
   verifier-reproduce["verifier-reproduce<br/>sonnet/medium · per finding · gated"]
+  defender["defender<br/>sonnet/medium · per finding · gated"]
   adjudicator["adjudicator<br/>opus/high · per finding · gated"]
   critic["critic<br/>opus/high · gated"]
   gap-reviewer["gap-reviewer<br/>sonnet/high · per gap · gated"]
@@ -73,8 +74,11 @@ graph TD
   integration-probe --> dedupe
   dedupe --> verifier-refute
   dedupe --> verifier-reproduce
+  verifier-refute --> defender
+  verifier-reproduce --> defender
   verifier-refute --> adjudicator
   verifier-reproduce --> adjudicator
+  defender --> adjudicator
   adjudicator --> critic
   critic --> gap-reviewer
   gap-reviewer --> proofcheck
@@ -87,7 +91,7 @@ graph TD
 
 ## Lead-only rule
 
-The lead only coordinates (triage, facts, Workflow launch, report). It never reviews inline, reads the whole diff or re-verifies a finding itself; a one-line fix it fully understands is the only exception. Its context is re-billed every turn: use a fresh or compacted session, never paste raw agent output.
+The lead only coordinates (triage, facts, Workflow launch, report). It never reviews inline, reads the whole diff or re-verifies a finding itself; a one-line fix it fully understands is the only exception. Its context is re-billed each turn: use a fresh session; never paste raw agent output.
 
 ## The lead gathers deterministic facts
 
@@ -121,7 +125,7 @@ The reviewer is the **driver**: it files findings for its group's points, told a
 - A **null result is never "no issues"**: it lands in `notReviewed` or is marked `unverified`; a non-empty `notReviewed` rules out `APPROVE`.
 - **Resume** with `Workflow({ scriptPath, resumeFromRunId })`; completed agents come back cached only if their prompts are byte-identical, so keep `args` unchanged. Check the ck files first: half-done units hold findings.
 
-- **Escalate:** re-run `deep` when a critical/high you will block on survives, or `notReviewed` stays non-empty after a resume. Add a different-probe `verifier-reproduce` only for a critical you will BLOCK on.
+- **Escalate:** re-run `deep` when a critical/high you will block on survives, or `notReviewed` stays non-empty after a resume. A different-probe `verifier-reproduce` only for a critical you BLOCK on.
 
 ## Tiering and iteration
 
