@@ -569,6 +569,8 @@ test('PYTHONPATH works end to end inside the sandbox', real, async () => {
 
 // --- mount guard: what --cwd / --ro / --rw may expose or write. Checked in validate(), before anything is launched. ---
 const HOME = realpathSync(userInfo().homedir);
+// A plain tool dir inside home (like ~/.asdf). Made per run, so the test does not depend on what the host has installed.
+const homeToolDir = () => { const d = mkdtempSync(join(HOME, '.zt-test-tool-')); made.push(d); return d; };
 const CRED = ['.ssh', '.aws', '.gnupg', '.config/gcloud', '.azure', '.kube', '.docker', '.claude', '.netrc', '.npmrc', '.pypirc', 'Library/Keychains', '.cache/zt-review'];
 // runs a marker-writing command with extra args in front; `ran` says whether it ever started
 const attempt = async (args, env = {}) => {
@@ -645,7 +647,7 @@ test('credential and home mounts are refused at the CLI: exit 64 and the command
 });
 
 test('a repo checkout, a venv and ~/.asdf inside home stay allowed for --ro; tmp scratch dirs are allowed for --rw', async () => {
-  for (const [flag, p] of [['--ro', HERE], ['--ro', nodeRoot], ['--ro', join(HOME, '.asdf')], ['--ro', mk()], ['--rw', mk()]]) {
+  for (const [flag, p] of [['--ro', HERE], ['--ro', nodeRoot], ['--ro', homeToolDir()], ['--ro', mk()], ['--rw', mk()]]) {
     assert.doesNotThrow(() => validate(parseArgs(['--cwd', mk(), flag, p, '--', '/bin/true'])), `${flag} ${p}`);
   }
   const r = await run(['--cwd', mk(), '--ro', HERE, '--ro', nodeRoot, '--', process.execPath, '-e', "console.log(require('fs').readdirSync(process.argv[1]).includes('sandbox-run.mjs'))", HERE], LT);
@@ -681,10 +683,11 @@ test('--rw outside the temp dir is refused at the CLI: exit 64 and the command n
 
 test('--rw: a symlink in tmp that points into home (or at a repo) is judged by where it lands: refused; one pointing at a tmp dir is fine', () => {
   const lnk = target => { const l = join(mk(), 'l'); symlinkSync(target, l); return l; };
-  for (const target of [join(HOME, '.asdf'), HERE, HOME, '/usr/local']) {
+  const tool = homeToolDir();
+  for (const target of [tool, HERE, HOME, '/usr/local']) {
     assert.match(usageOf(() => validate(parseArgs(['--rw', lnk(target), '--', '/bin/true']))) ?? 'not refused', /^--rw .* is refused/, target);
   }
-  assert.match(usageOf(() => validate(parseArgs(['--rw', lnk(join(HOME, '.asdf')), '--', '/bin/true']))), TMPMSG);
+  assert.match(usageOf(() => validate(parseArgs(['--rw', lnk(tool), '--', '/bin/true']))), TMPMSG);
   assert.doesNotThrow(() => validate(parseArgs(['--rw', lnk(mk()), '--', '/bin/true'])));
 });
 
@@ -692,7 +695,8 @@ test('/tmp and /private/tmp count as the temp dir', () => {
   const d = mkdtempSync('/tmp/zt-test-'); // real /tmp, whatever TMPDIR says
   made.push(d);
   assert.doesNotThrow(() => validate(parseArgs(['--rw', d, '--', '/bin/true'])));
-  assert.doesNotThrow(() => validate(parseArgs(['--rw', join('/private/tmp', d.split('/').pop()), '--', '/bin/true'])));
+  // /private/tmp exists only on macOS (where /tmp links to it); elsewhere there is no such path to mount.
+  if (existsSync('/private/tmp')) assert.doesNotThrow(() => validate(parseArgs(['--rw', join('/private/tmp', d.split('/').pop()), '--', '/bin/true'])));
 });
 
 test('writableRoots: a TMPDIR the caller points into or over home (an agent can export it) is dropped; real temp dirs are kept', () => {

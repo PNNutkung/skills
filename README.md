@@ -51,6 +51,14 @@ Two standalone hooks that are not part of the plugin. Install steps are in each 
 - `paired-agent-tdd` needs the Workflow tool (per-node model, effort and agent type), git, Node 18+ and the sibling `zero-trust-review` skill (its mutation probe, `proofcheck.mjs` and, only with `plan.sandbox: true`, its sandbox runner; `ZT_DIR` points elsewhere).
 - `qa-sweep` needs Node 18+, Python 3, git and two sibling skills: `zero-trust-review` (its mutation probe, run folder and, only when asked, its sandbox runner; `ZT_DIR` points elsewhere) and `paired-agent-tdd` (its `direct-run.mjs`; `PTDD_DIR` points elsewhere). Its repo inventory, tier lists and test-file checks use `hooks/pr-test-tiers/pr-test-tiers.py` (`TIERS_PY` points at it; default `~/.claude/hooks/pr-test-tiers.py`). It runs tests directly, with your rights and network, and runs e2e tests only against a local app unless you confirm the exact URL in that run. The `qa-guard` hook comes with the plugin install.
 
+## Tests
+
+```bash
+git ls-files -z '*.test.mjs' | xargs -0 node --test
+```
+
+CI runs the same command on every pull request (Ubuntu with Node 20 and 22, macOS with Node 22). Sandbox tests skip where no backend is installed.
+
 ## Telemetry
 
 The skills CLI sends anonymous install telemetry, which is how skills.sh builds its leaderboard. Set `DISABLE_TELEMETRY=1` to opt out.
