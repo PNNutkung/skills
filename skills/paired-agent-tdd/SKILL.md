@@ -46,7 +46,7 @@ node $SK/tdd.mjs plan --plan plan.json > args.json    # validates, snapshots the
 node $SK/graph.mjs --plan <groups> <integration 0|1> <groups expected to get findings> [fast]
 ```
 
-`plan` refuses an invalid plan with every error at once and a runner that cannot run the repo's tests (**preflight**, [`probes.md`](./probes.md); `--skip-preflight` goes on unproven). The base is HEAD, or a snapshot of the dirty working tree; your repo's index, refs and files are never touched. Show the user the groups, the DoD (assumed items marked), the agent count and the ceiling `--plan` prints. **If the total exceeds 25, confirm before spending.**
+`plan` refuses an invalid plan with every error at once and a runner that cannot run the repo's tests (**preflight**, [`probes.md`](./probes.md); `--skip-preflight` goes on unproven). The base is HEAD, or a snapshot of the dirty working tree; your repo's index, refs and files are never touched. Show the user the groups, the DoD (assumed items marked), the agent count and the ceiling `--plan` prints. **Over 25: confirm first** ([cap](./probes.md#planjson)).
 
 ## Step 2 — Run
 

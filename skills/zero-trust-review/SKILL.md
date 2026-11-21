@@ -13,7 +13,7 @@ It runs as an **execution graph** ([`graph.mjs`](./graph.mjs)) executed by [`wor
 
 **Terms:** *change request (CR)* = a GitLab merge request (MR) or GitHub pull request (PR); *lead* = the coordinating session; *driver* = a finding agent (`reviewer`, `gap-reviewer`); *navigator* = a verifying agent (`verifier-*`); *finding* = one defect; *cluster* = findings merged by `dedupe`, the unit verified.
 
-Cost levers: disjoint groups, gated points, checklist by pointer, plain-code dedupe, tiered verification, changed tests run for real once in plain code, checkpoints, few agents (each costs ~45k tokens before it works; figures in [`runs.md`](./runs.md)). **Do not reach for `deep` or extra verifiers reflexively.**
+Cost levers ([`runs.md`](./runs.md)): disjoint groups, gated points, plain-code dedupe, tiered verification, checkpoints, few agents (~45k tokens each). **Do not reach for `deep` or extra verifiers reflexively.** Blue/red (opt-in): [`probes.md`](./probes.md#bluered).
 
 ## Progress checklist
 
@@ -40,7 +40,7 @@ Copy and tick off:
 
 ## Fast path (opt-in)
 
-`triage.py --mode fast`; run `testprobe.mjs --flake 1`, `mutate.mjs --max 20 --budget 240` and the lint concurrently, then the Workflow with `mode: "fast"` (recipe, trade-offs: [`probes.md`](./probes.md#fast-path)). You give up the critic, gap reviewers, test-auditor and integration-probe; one refuter checks a whole unit; tests fold into 3-8 groups. **Not for** auth, payments, migrations or any change where a miss is costly: use `deep`.
+`triage.py --mode fast`; run `testprobe.mjs --flake 1`, `mutate.mjs --max 20 --budget 240` and the lint concurrently, then the Workflow with `mode: "fast"` (recipe, trade-offs: [`probes.md`](./probes.md#fast-path)). **Not for** auth, payments, migrations or any change where a miss is costly: use `deep`.
 
 ## The graph
 
@@ -56,6 +56,7 @@ graph TD
   dedupe["dedupe<br/>code"]
   verifier-refute["verifier-refute<br/>sonnet/medium · per finding"]
   verifier-reproduce["verifier-reproduce<br/>sonnet/medium · per finding · gated"]
+  defender["defender<br/>sonnet/medium · per finding · gated"]
   adjudicator["adjudicator<br/>opus/high · per finding · gated"]
   critic["critic<br/>opus/high · gated"]
   gap-reviewer["gap-reviewer<br/>sonnet/high · per gap · gated"]
@@ -73,8 +74,11 @@ graph TD
   integration-probe --> dedupe
   dedupe --> verifier-refute
   dedupe --> verifier-reproduce
+  verifier-refute --> defender
+  verifier-reproduce --> defender
   verifier-refute --> adjudicator
   verifier-reproduce --> adjudicator
+  defender --> adjudicator
   adjudicator --> critic
   critic --> gap-reviewer
   gap-reviewer --> proofcheck
@@ -87,7 +91,7 @@ graph TD
 
 ## Lead-only rule
 
-The lead only coordinates (triage, facts, Workflow launch, report). It never reviews inline, reads the whole diff or re-verifies a finding itself; a one-line fix it fully understands is the only exception. Its context is re-billed every turn: use a fresh or compacted session, never paste raw agent output.
+The lead only coordinates (triage, facts, Workflow launch, report). It never reviews inline, reads the whole diff or re-verifies a finding itself; a one-line fix it fully understands is the only exception. Its context is re-billed each turn: use a fresh session; never paste raw agent output.
 
 ## The lead gathers deterministic facts
 
@@ -121,7 +125,7 @@ The reviewer is the **driver**: it files findings for its group's points, told a
 - A **null result is never "no issues"**: it lands in `notReviewed` or is marked `unverified`; a non-empty `notReviewed` rules out `APPROVE`.
 - **Resume** with `Workflow({ scriptPath, resumeFromRunId })`; completed agents come back cached only if their prompts are byte-identical, so keep `args` unchanged. Check the ck files first: half-done units hold findings.
 
-- **Escalate:** re-run `deep` when a critical/high you will block on survives, or `notReviewed` stays non-empty after a resume. Add a different-probe `verifier-reproduce` only for a critical you will BLOCK on.
+- **Escalate:** re-run `deep` when a critical/high you will block on survives, or `notReviewed` stays non-empty after a resume. A different-probe `verifier-reproduce` only for a critical you BLOCK on.
 
 ## Tiering and iteration
 
@@ -142,7 +146,7 @@ python3 $SK/triage.py --base "origin/$TARGET" --diff-dir "$RUN/diff" > "$CTX/tri
 node $SK/graph.mjs --plan <mode> <groups> 0 1 5 30   # args after mode: groups, expected critical, high, medium, low
 ```
 
-Show the user a short summary (mode, groups with lines, fired vs skipped points, drift) and the plan. **If the planned total exceeds 25 agents, confirm with the user before spending.** `--force-all` fires every gated point.
+Show the user a short summary (mode, groups with lines, fired vs skipped points, drift) and the plan. **Over 25 planned agents: confirm first** ([cap](./probes.md#agent-cap)). `--force-all` fires every gated point.
 
 ## Step 1 — Gather context
 
@@ -156,13 +160,13 @@ Only what agents cannot get themselves: the ticket (Jira, GitHub Issue, Linear, 
 Workflow({ scriptPath: "<skillDir>/workflow.js", args: { ...triageJson, repo, sha, scratch, runDir: RUN, skillDir, ticket, decisions, prior, mode } })
 ```
 
-Then write the return's `boardMd` and `postmortemMd` verbatim to `$RUN/board.md` and `$RUN/postmortem.md` (the postmortem tells the next run what to do and not do). **Step 2b, no guessing:** save the return as `$RUN/return.json`, run `node $SK/proofcheck.mjs --ret $RUN/return.json --repo . --head <sha> --run $RUN`, and report from its adjusted clusters; it writes `$RUN/evidence.md` and `verified.json`. When the review is done, `node $SK/note.mjs deactivate`.
+Then write the return's `boardMd` and `postmortemMd` verbatim to `$RUN/board.md` and `$RUN/postmortem.md` (the postmortem tells the next run what to do and not do). **Step 2b, no guessing:** save the return as `$RUN/return.json`, run `node $SK/proofcheck.mjs --ret $RUN/return.json --repo . --head <sha> --run $RUN`, and report from its adjusted clusters; it writes `$RUN/evidence.md` and `verified.json`. After Step 4 and any posting, `node $SK/note.mjs deactivate`.
 
 `scratch` = the session scratchpad; `sha` defaults to triage `head`; agents Read their points from `checklist.md`. Read the **compact return** only: `{mode, counts, stats, notReviewed, clusters[{id,status,severity,file,startLine,endLine,points,anchorable,title,hazard,failureScenario,suggestedFix,replacement?,verdicts}], notApplicable, questions, unverified}`. Confirmed critical/high -> Critical Blockers; refuted -> one line; out-of-scope -> refactor CR; unverified/disputed -> Grilling as questions, never as facts.
 
 ## Step 3 — Point out the code on the review host
 
-Cite each finding as `path:line` | permalink pinned to the reviewed SHA | finding. **Do not post** until the user asks to comment on the CR. Before citing or posting, Read [`posting.md`](./posting.md): permalink format per host, anchorable or not, one inline comment per finding, voice.
+Cite each finding as `path:line` | permalink pinned to the reviewed SHA | finding. **Do not post** until the user asks to comment on the CR. `ZT_POST_GUARD=1` enforces it ([`posting.md`](./posting.md)). Before citing or posting, Read [`posting.md`](./posting.md): permalink format per host, anchorable or not, one inline comment per finding, voice.
 
 ## Step 3b — Suggest the fix for a line range, do not describe it
 

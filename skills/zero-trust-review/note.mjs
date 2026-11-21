@@ -7,6 +7,8 @@
 //   node note.mjs dying --unit ID '<markdown>'                         RUN/dying/ID.md (cut to 1500), logs dying
 //   node note.mjs activate --name NAME                                 creates the run dir, RUN/.skilldir and the active marker, prints the run dir
 //   node note.mjs deactivate [--run DIR]                               removes the marker if it still points at that run
+//   node note.mjs allow-post [--run DIR]                               the USER approves posting to the review host for this run (RUN/.post-ok);
+//                                                                      with ZT_POST_GUARD=1 the plugin guard denies the agent running it
 // Run dir and marker rules live in runctx.mjs (--run, else $ZT_RUN_DIR, else the per-user marker; an untrusted or unapproved candidate is
 // skipped, never used). Every path touched must resolve (realpath of its nearest existing parent) inside the run dir and every write refuses
 // symlinks at the leaf; input is data, never executed or interpolated.
@@ -25,7 +27,7 @@ const MAX = { text: 200, ck: 4000, dying: 1500, unitLines: 3, tail: 15 };
 const DIR_MODE = 0o700;
 const CMDS = {
   begin: { args: 0, unit: 1, ck: 1 }, ck: { args: 1, ck: 1 }, env: { args: 1, unit: 1 }, notes: { args: 1, unit: 1 },
-  done: { args: 0, unit: 1 }, dying: { args: 1, unit: 1 }, activate: { args: 0, name: 1 }, deactivate: { args: 0 },
+  done: { args: 0, unit: 1 }, dying: { args: 1, unit: 1 }, activate: { args: 0, name: 1 }, deactivate: { args: 0 }, 'allow-post': { args: 0 },
 };
 const FLAGS = new Map([['--unit', 'unit'], ['--ck', 'ck'], ['--run', 'run'], ['--name', 'name']]);
 
@@ -150,6 +152,10 @@ function main() {
   }
   const run = resolveRun({ run: flagRun(o), env: process.env });
   if (!run) die(EXIT.runDir, 'no trusted run dir: pass --run DIR (absolute, yours, not writable by others), set ZT_RUN_DIR, or run `note.mjs activate --name NAME`');
+  if (o.cmd === 'allow-post') {
+    writeSafe(run, join(run, '.post-ok'), `approved ${new Date().toISOString()}\n`); // O_NOFOLLOW, 0600
+    return process.stdout.write(`posting approved for ${run}\n`);
+  }
   ACTIONS[o.cmd](makeGuard(run), o, o.pos[0]);
 }
 

@@ -74,7 +74,7 @@ It runs the tier inventory itself for the report, writes `<run>/report.md` and p
 
 ## 4. Never assume, ask
 
-A behavior with no written source, or unclear wording in a spec or a ticket, becomes a question. Ask all of them as one numbered batch (the format is in `requirements.md`), then wait. Save each answer word for word to `<run>/answers.md` as an `A<n>: <answer>` block. No answer means no test: the question is listed under Unconfirmed.
+Full rule: [`rules/ask-dont-assume.md`](../../rules/ask-dont-assume.md). A behavior with no written source, or unclear wording in a spec or a ticket, becomes a question. Ask all of them as one numbered batch (the format is in `requirements.md`), then wait. Save each answer word for word to `<run>/answers.md` as an `A<n>: <answer>` block. No answer means no test: the question is listed under Unconfirmed.
 
 ## 5. Add tests only
 

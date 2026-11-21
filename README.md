@@ -18,7 +18,7 @@ npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --ski
 mkdir -p ~/.claude/hooks && curl -fsSL -o ~/.claude/hooks/pr-test-tiers.py https://raw.githubusercontent.com/PNNutkung/skills/main/hooks/pr-test-tiers/pr-test-tiers.py   # qa-sweep reads test tiers through it ($TIERS_PY); registering it as a hook is optional
 ```
 
-Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook and the telemetry-capture hook (skills alone do not include hooks). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
+Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook, the telemetry-capture hook and the opt-in `paired-agent-tdd` file fence (`PTDD_GUARD=1`; skills alone do not include hooks). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
 
 ```sh
 /plugin marketplace add PNNutkung/skills
@@ -27,7 +27,7 @@ Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook
 
 Two standalone hooks that are not part of the plugin. Install steps are in each README.
 
-- [`hooks/test-name-guard`](hooks/test-name-guard) denies a `git commit` that adds a test not named `should ... when ...` (Python and TypeScript/JavaScript).
+- [`hooks/test-name-guard`](hooks/test-name-guard) keeps added tests named `should ... when ...` (Python and TypeScript/JavaScript): by default it warns at `git commit` and denies `gh pr create` / `glab mr create` until they are renamed.
 - [`hooks/pr-test-tiers`](hooks/pr-test-tiers) denies `gh pr create` / `glab mr create` unless the branch ships unit, integration and e2e tests, with real dependencies in containers and a stated reason for any mock. It also denies a change request that deletes a test, or adds a skip or an expected-failure marker, without a stated reason. It only warns at `git commit` and reminds when a test file is created.
 
 ## Skills

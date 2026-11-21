@@ -246,4 +246,55 @@ const MANY8 = Array.from({ length: 14 }, (_, i) => grp('g' + i, ['f' + i + '.py'
 r = await play({ mode: 'fast', groups: MANY8 }, () => REV(), 5);
 assert.equal(r.live.max, 8, 'fast pool never filled to 8 (or went past it)');
 assert.equal(r.out.stats.pool, 8);
-console.log('ok - workflow.js: 23 scenarios');
+// 24 agentCap (set by triage.py from ZT_AGENT_CAP) is a hard ceiling: no agent past it, the units it stops land in notReviewed, the stats say how many
+r = await play({ agentCap: 2 }, (l, p) => (l in canned ? canned[l] : verdicts(l, p)));
+assert.equal(r.calls.length, 2, 'spawned past the cap');
+assert.ok(r.out.notReviewed.length > 0 && r.out.stats.capped > 0, 'capped work must show as not reviewed');
+assert.equal(r.out.stats.agentCap, 2);
+for (const cap of [undefined, 0, -1, '2', 2.5, null]) {
+  r = await play({ agentCap: cap }, (l, p) => (l in canned ? canned[l] : verdicts(l, p)));
+  assert.deepEqual([r.out.stats.capped, r.out.stats.agentCap], [0, null], 'only a positive integer turns the cap on: ' + JSON.stringify(cap));
+}
+// 25 blue/red (args.blueRed, triage.py sets it from ZT_SELF_REVIEW_GUARD=1): a confirmed medium+ finding faces a blue defender that must bring evidence;
+// a red rebuttal answers each defense, at most 3 rounds; a defense red gives way to, or a standoff after 3 rounds, goes to the adjudicator;
+// judgment calls and changes with no convention go to the user as questions; everything else is settled without the user
+const BR_FIND = { src: REV(F('Estimator bypass on deep values', 'high', 'superset/a.py', 10, 12)), tests: REV(), docs: REV(), frontend: REV() };
+const BR_YES = byTitle({ 'refute:Estimator bypass on deep values': V('yes'), 'reproduce:Estimator bypass on deep values': V('yes') });
+const DEF = (o = {}) => ({ concede: false, argument: 'guarded at the caller', needsHuman: 'none', proof: { mode: 'read', ref: 'superset/b.py:3-5', quote: 'if depth > 9: raise' }, ...o });
+const brPlay = (blue, red = () => V('yes'), judge = () => V('yes'), extra = {}) => play({ blueRed: true, ...extra }, (l, p) => (l in BR_FIND ? BR_FIND[l] : /^defend:/.test(l) ? blue(l, p) : /^rebut:/.test(l) ? red(l, p) : /^adjudicator:/.test(l) ? judge(l, p) : BR_YES(l, p)));
+const kinds = calls => calls.map(c => c.o.label.split(':')[0]).filter(k => ['defend', 'rebut', 'adjudicator'].includes(k));
+// off: no defender, exactly as before
+r = await play({}, (l, p) => (l in BR_FIND ? BR_FIND[l] : BR_YES(l, p)));
+assert.deepEqual(kinds(r.calls), []);
+assert.equal(r.out.stats.blueRed, undefined);
+// the defender concedes: one defend call, the finding stands
+r = await brPlay(() => DEF({ concede: true }));
+assert.deepEqual(kinds(r.calls), ['defend']);
+assert.equal(r.out.clusters[0].status, 'confirmed');
+// a defense with no evidence does not count (zero trust in the author): no rebuttal, the finding stands
+r = await brPlay(() => DEF({ proof: { mode: 'inferred' } }));
+assert.deepEqual(kinds(r.calls), ['defend']);
+assert.equal(r.out.clusters[0].status, 'confirmed');
+// red holds against an evidenced defense for 3 rounds: standoff -> adjudicator decides (here: real)
+r = await brPlay(() => DEF());
+assert.deepEqual(kinds(r.calls), ['defend', 'rebut', 'defend', 'rebut', 'defend', 'rebut', 'adjudicator']);
+assert.equal(r.out.clusters[0].status, 'confirmed');
+assert.match(r.calls.find(c => c.o.label.startsWith('rebut:')).prompt, /guarded at the caller/, 'red sees the defense it must answer');
+assert.match(r.calls.filter(c => c.o.label.startsWith('defend:'))[1].prompt, /ROUND 2/, 'blue sees the earlier rounds');
+assert.match(r.calls.find(c => c.o.label.startsWith('adjudicator:')).prompt, /blue/i, 'the adjudicator sees the defense');
+// red gives way in round 1 -> adjudicator; it sides with blue -> refuted
+r = await brPlay(() => DEF(), () => V('no', 'none'), () => V('no', 'none'));
+assert.deepEqual(kinds(r.calls), ['defend', 'rebut', 'adjudicator']);
+assert.equal(r.out.clusters[0].status, 'refuted');
+// a judgment call goes to the user, unresolved by agents; so does a change with no convention
+for (const need of ['judgment', 'no-convention']) {
+  r = await brPlay(() => DEF({ needsHuman: need, humanReason: 'accepting this latency is a product call' }));
+  assert.deepEqual(kinds(r.calls), ['defend']);
+  assert.ok(r.out.questions.some(q => q.question.includes('[' + need + ']') && q.question.includes('Estimator bypass')), need);
+  assert.equal(r.out.stats.blueRed.toUser.length, 1);
+}
+// a dead defender is not a defense: the finding stands
+r = await brPlay(() => null);
+assert.equal(r.out.clusters[0].status, 'confirmed');
+assert.deepEqual(r.out.stats.blueRed.toUser, []);
+console.log('ok - workflow.js: 25 scenarios');

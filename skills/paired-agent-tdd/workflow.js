@@ -85,7 +85,12 @@ let repairsLeft = BUDGET
 const used = {}
 // One rolling pool for every agent of the run: never more than LIM.pool in flight, no wave barrier, a stalled agent holds one slot.
 const slot = { n: 0, q: [], take() { return this.n < LIM.pool ? (this.n++, null) : new Promise(r => this.q.push(r)) }, free() { const w = this.q.shift(); if (w) w(); else this.n-- } }
+// agentCap (a positive integer, written into args by code from an opt-in env var) is a hard ceiling on agents spawned: past it, run() returns null
+// without spawning, and the caller's null path (retry, then not reviewed / failed) reports the work as not done. Raising it means changing args: ask the user.
+const CAP = Number.isInteger(A.agentCap) && A.agentCap > 0 ? A.agentCap : null
+let capped = 0
 const run = async (node, prompt, o) => {
+  if (CAP !== null && Object.values(used).reduce((a, b) => a + b, 0) >= CAP) { capped++; return null }
   used[node] = (used[node] || 0) + 1
   await slot.take()
   try { return await agent(prompt, { model: NODE[node].model, effort: NODE[node].effort, agentType: NODE[node].agentType, ...o }) } finally { slot.free() }
@@ -540,7 +545,7 @@ const postmortemMd = ['# Postmortem ' + sha8, '', failed.length ? 'Failed jobs: 
 return {
   mode: FAST ? 'fast' : 'standard',
   counts: { groups: G.length, done: doneIds.length, findings: clusters.length, fixedGroups: Object.keys(fixes).length },
-  stats: { agentsByNode: used, total, pool: LIM.pool, rounds: ROUNDS, repairBudget: BUDGET, repairsLeft },
+  stats: { agentsByNode: used, total, pool: LIM.pool, rounds: ROUNDS, repairBudget: BUDGET, repairsLeft, agentCap: CAP, capped },
   groups: Object.fromEntries(G.map(g => { const s = state[g.id]; return [g.id, { state: s.state, reason: s.reason, red: s.red, green: s.green, matrix: s.matrix, files: s.files, retest: s.retest }] })),
   integration, reviewed: !!review, clusters, fixes, verified, notDone, failed, boardMd, postmortemMd,
 }

@@ -12,6 +12,12 @@
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/qa-guard.mjs\"", "timeout": 5 }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ptdd-guard.mjs\"", "timeout": 5 }
+        ]
       }
     ],
     "PostToolUse": [
@@ -19,6 +25,12 @@
         "matcher": "mcp__.*([Gg]rafana|[Ll]oki|[Pp]rometheus|[Tt]empo|[Pp]yroscope|[Ee]lasticsearch|[Dd]atadog|[Ss]entry|[Oo]pen[Ss]earch)",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/zt-capture.mjs\"", "timeout": 5 }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/zt-authors.mjs\"", "timeout": 5 }
         ]
       }
     ]
