@@ -24,6 +24,7 @@ jobs:
           - { os: ubuntu-latest, node: 20 }
           - { os: ubuntu-latest, node: 22 }
           - { os: macos-latest, node: 22 }
+          - { os: windows-latest, node: 22 }
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -33,7 +34,30 @@ jobs:
         with:
           python-version: '3.12'
       # Every *.test.mjs file in the repo. macOS runs the sandbox tests through its built-in sandbox-exec; Ubuntu runs them through bwrap,
-      # which the runner image ships.
+      # which the runner image ships. Windows has no sandbox backend, so those tests skip there.
       - name: Run tests
         shell: bash
         run: git ls-files -z '*.test.mjs' | xargs -0 node --test
+
+  # The same suite with node and python coming from asdf shims, the way a developer machine with a version manager has them.
+  asdf:
+    name: node 22 via asdf on ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install asdf, node and python
+        shell: bash
+        run: |
+          git clone --depth 1 --branch v0.14.1 https://github.com/asdf-vm/asdf.git ~/.asdf
+          . ~/.asdf/asdf.sh
+          asdf plugin add nodejs
+          asdf install nodejs 22.11.0
+          asdf global nodejs 22.11.0
+          echo "$HOME/.asdf/shims" >> "$GITHUB_PATH"
+          echo "$HOME/.asdf/bin" >> "$GITHUB_PATH"
+      - name: Run tests
+        shell: bash
+        run: |
+          command -v node | grep -q '/.asdf/shims/node'
+          git ls-files -z '*.test.mjs' | xargs -0 node --test
