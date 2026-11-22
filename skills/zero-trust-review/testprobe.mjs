@@ -5,16 +5,20 @@
 // Every test command is untrusted code and runs ONLY through the sandbox runner (exit 86 = no sandbox, 124 = timeout). REPO is only read.
 //   node testprobe.mjs --repo DIR --base REV --head REV --scratch DIR --cmd 'pytest -q {file}' [--tests a,b] [--flake 3] [--jobs 4]
 //     [--timeout 120] [--link NAME]... [--ro DIR]... [--env K=V]... [--runner PATH]   (--ro: extra read-only dirs, e.g. the interpreter install behind a venv)
+//     [--head-out FILE]   (writes each file's HEAD run, keyed to the tree and command, for mutate.mjs --baseline-from)
+// ZT_TEST_PROCESS_MAX caps how many test commands run at once (default unlimited).
 // Prints one JSON object and exits 0 (results are data); usage errors exit 2.
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { NO_SANDBOX, TEST, TIMEOUT, DOC, backendOf, changes, clear, editableRoots, extract, intOption, isSource, parseProbeArgs, pool, restore, runIn, shq } from './probelib.mjs';
+import { NO_SANDBOX, TEST, TIMEOUT, DOC, backendOf, changes, clear, editableRoots, extract, headRunDoc, intOption, isSource, parseProbeArgs, pool, restore, runIdentity, runIn, shq,
+  testProcessSlots, writeHeadRun } from './probelib.mjs';
 
 const MAX_LINES = 6;
 
 function parse() {
-  const { values, ...common } = parseProbeArgs({ flake: { type: 'string', default: '3' }, src: { type: 'string', default: '' } });
-  return { ...common, flake: intOption(values, 'flake', 0), src: new Set(values.src.split(',').filter(Boolean)) }; // --src: files the caller declares as source whatever their name (a config file the tests need)
+  const { values, ...common } = parseProbeArgs({ flake: { type: 'string', default: '3' }, src: { type: 'string', default: '' }, 'head-out': { type: 'string' } });
+  return { ...common, flake: intOption(values, 'flake', 0), src: new Set(values.src.split(',').filter(Boolean)), // --src: files the caller declares as source whatever their name (a config file the tests need)
+    headOut: values['head-out'], slots: testProcessSlots(process.env) };
 }
 
 const run = (o, copy, file) => runIn(o, copy, o.cmd.replaceAll('{file}', () => shq(file)));
@@ -68,6 +72,7 @@ async function main() {
     tests = await pool(files, o.jobs, f => probeOne(o, dirs, f));
   }
   if (tests.some(t => t.head.exit === NO_SANDBOX || t.base.exit === NO_SANDBOX)) backend = 'none';
+  if (o.headOut) writeHeadRun(o.headOut, headRunDoc(runIdentity(o), tests.map(t => ({ file: t.file, ...t.head }))));
   process.stdout.write(JSON.stringify({ backend, tests, summary: summarize(tests) }) + '\n');
 }
 

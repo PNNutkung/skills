@@ -294,3 +294,238 @@ test('without --files, --base is still required', () => {
   const r = runMutateRaw({ repo: '.', scratch: '/x', runner: process.execPath }, ['--head', 'HEAD', '--tests', 'tests/test_calc.py']);
   assert.match(r.stderr, /--base is required/);
 });
+
+// ---- ZT_MUTATION_BASELINE_REUSE_ENABLED, ZT_MUTATION_BUDGET_STRICT_ENABLED, ZT_TEST_PROCESS_MAX
+const TESTPROBE = join(HERE, 'testprobe.mjs');
+const FLAGS = { reuse: 'ZT_MUTATION_BASELINE_REUSE_ENABLED', strict: 'ZT_MUTATION_BUDGET_STRICT_ENABLED', max: 'ZT_TEST_PROCESS_MAX' };
+const ALL_OFF = { [FLAGS.reuse]: 'false', [FLAGS.strict]: 'false' };
+const SLEEP_SEC = 30;
+
+// Like the real runner: the command runs in a process group of its own, SIGTERM kills that group, and the ledger line closes the output (a fixed run id, so
+// output is comparable byte for byte). Each run leaves a marker in live/ while it lasts and logs how many markers it saw (peak.log) and its group (groups.log),
+// all in STUB_LOG_DIR: one runner path per fixture, as a real caller passes the same runner to testprobe.mjs and mutate.mjs.
+const PROC_STUB = `
+import { spawn } from 'node:child_process';
+import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const dir = process.env.STUB_LOG_DIR, a = process.argv.slice(2);
+if (a[0] === '--check') { console.log('stub'); process.exit(0); }
+appendFileSync(join(dir, 'calls.log'), JSON.stringify(a) + '\\n');
+const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
+const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
+const live = join(dir, 'live'), me = join(live, String(process.pid));
+mkdirSync(live, { recursive: true });
+writeFileSync(me, '');
+appendFileSync(join(dir, 'peak.log'), readdirSync(live).length + '\\n');
+const env = { ...process.env };
+for (const kv of vals('--env')) env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
+const child = spawn(cmd[0], cmd.slice(1), { cwd: vals('--cwd')[0], env, stdio: 'inherit', detached: true });
+appendFileSync(join(dir, 'groups.log'), child.pid + '\\n');
+process.on('SIGTERM', () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } });
+child.on('exit', code => { rmSync(me, { force: true }); process.stderr.write('ZT-RUN stub exit=' + (code ?? 1) + '\\n'); process.exit(code ?? 1); });
+`;
+
+function procStub(fx) {
+  const runner = join(fx.dir, 'proc-stub-runner.mjs'), sd = mkdtempSync(join(fx.dir, 'pstub-'));
+  if (!existsSync(runner)) writeFileSync(runner, PROC_STUB);
+  const lines = name => (existsSync(join(sd, name)) ? readFileSync(join(sd, name), 'utf8').trim().split('\n').filter(Boolean) : []);
+  return { runner, logs: sd, calls: () => lines('calls.log').map(l => JSON.parse(l)), peak: () => Math.max(0, ...lines('peak.log').map(Number)), groups: () => lines('groups.log').map(Number) };
+}
+const flagEnv = (flags, stub) => {
+  const env = { ...process.env };
+  for (const k of Object.values(FLAGS)) delete env[k];
+  return { ...env, ...flags, ...(stub && { STUB_LOG_DIR: stub.logs }) };
+};
+const common = (fx, stub, cmd) => ['--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--cmd', cmd, '--runner', stub.runner, '--jobs', '2'];
+function mutateProc(fx, { args = [], flags = {}, cmd = 'python3 {file}' } = {}) {
+  const stub = procStub(fx), t0 = performance.now();
+  const r = spawnSync(process.execPath, [MUTATE, ...common(fx, stub, cmd), '--scratch', mkdtempSync(join(fx.dir, 'scr-')), ...args], { encoding: 'utf8', env: flagEnv(flags, stub) });
+  let out = null;
+  try { out = JSON.parse(r.stdout); } catch { /* usage error */ }
+  return { ...r, out, ms: performance.now() - t0, stub };
+}
+function headRun(fx, { args = [], flags = {}, cmd = 'python3 {file}' } = {}) {
+  const stub = procStub(fx), file = join(mkdtempSync(join(fx.dir, 'ho-')), 'head.json');
+  const r = spawnSync(process.execPath, [TESTPROBE, ...common(fx, stub, cmd), '--scratch', mkdtempSync(join(fx.dir, 'scr-')), '--head-out', file, ...args], { encoding: 'utf8', env: flagEnv(flags, stub) });
+  assert.equal(r.status, 0, r.stderr);
+  return file;
+}
+// argv of every runner call, scratch paths made stable, sorted (runs are concurrent)
+const normalCalls = (fx, calls) => {
+  const roots = [realpathSync(fx.dir), fx.dir];
+  return calls.map(a => a.map(x => roots.reduce((s, root) => s.replaceAll(root, '<D>'), x).replace(/(mut|scr|pstub)-[A-Za-z0-9]{6}/g, '$1-X'))).map(a => JSON.stringify(a)).sort();
+};
+const baselineCalls = calls => calls.filter(a => !a.at(-1).includes('ZT-MUTANT'));
+
+// captured from mutate.mjs before the three flags existed
+const MUTATE_GOLDEN = {
+  stdout: "{\"backend\":\"stub\",\"available\":7,\"mutants\":[{\"id\":\"X-70051e88\",\"file\":\"src/calc.py\",\"line\":2,\"op\":\"const-inc\",\"before\":\"if n >= 10:\",\"after\":\"if n >= 11:\",\"result\":\"killed\",\"by\":\"tests/test_calc.py\",\"exit\":1,\"run\":\"stub\",\"quote\":\"ZT-MUTANT X-70051e88 src/calc.py:2 const-inc exit=1\"},{\"id\":\"X-9b3f726a\",\"file\":\"src/calc.py\",\"line\":2,\"op\":\"ge-gt\",\"before\":\"if n >= 10:\",\"after\":\"if n > 10:\",\"result\":\"killed\",\"by\":\"tests/test_calc.py\",\"exit\":1,\"run\":\"stub\",\"quote\":\"ZT-MUTANT X-9b3f726a src/calc.py:2 ge-gt exit=1\"},{\"id\":\"X-1e026ee2\",\"file\":\"src/calc.py\",\"line\":3,\"op\":\"return-none\",\"before\":\"return \\\"big\\\"\",\"after\":\"return None\",\"result\":\"killed\",\"by\":\"tests/test_calc.py\",\"exit\":1,\"run\":\"stub\",\"quote\":\"ZT-MUTANT X-1e026ee2 src/calc.py:3 return-none exit=1\"},{\"id\":\"X-84aedc46\",\"file\":\"src/calc.py\",\"line\":4,\"op\":\"return-none\",\"before\":\"return \\\"small\\\"\",\"after\":\"return None\",\"result\":\"killed\",\"by\":\"tests/test_calc.py\",\"exit\":1,\"run\":\"stub\",\"quote\":\"ZT-MUTANT X-84aedc46 src/calc.py:4 return-none exit=1\"},{\"id\":\"X-212b413e\",\"file\":\"src/calc.py\",\"line\":8,\"op\":\"const-inc\",\"before\":\"return n / 2\",\"after\":\"return n / 3\",\"result\":\"survived\",\"exit\":0,\"run\":\"stub\",\"quote\":\"ZT-MUTANT X-212b413e src/calc.py:8 const-inc exit=0\"},{\"id\":\"X-f05bb7a9\",\"file\":\"src/calc.py\",\"line\":8,\"op\":\"div-mul\",\"before\":\"return n / 2\",\"after\":\"return n * 2\",\"result\":\"survived\",\"exit\":0,\"run\":\"stub\",\"quote\":\"ZT-MUTANT X-f05bb7a9 src/calc.py:8 div-mul exit=0\"},{\"id\":\"X-7199f9de\",\"file\":\"src/calc.py\",\"line\":8,\"op\":\"return-none\",\"before\":\"return n / 2\",\"after\":\"return None\",\"result\":\"survived\",\"exit\":0,\"run\":\"stub\",\"quote\":\"ZT-MUTANT X-7199f9de src/calc.py:8 return-none exit=0\"}],\"tests\":{\"run\":[\"tests/test_calc.py\"],\"notUsable\":[]},\"score\":{\"total\":7,\"killed\":4,\"survived\":3,\"timeout\":0,\"inconclusive\":0,\"skipped\":0,\"unverifiable\":0},\"summary\":\"mutation: 7 of 7 mutants on changed lines: 4 killed, 3 survived\\nsurvived X-212b413e src/calc.py:8 const-inc: return n / 2 -> return n / 3 (run stub)\\nsurvived X-f05bb7a9 src/calc.py:8 div-mul: return n / 2 -> return n * 2 (run stub)\\nsurvived X-7199f9de src/calc.py:8 return-none: return n / 2 -> return None (run stub)\"}\n",
+  calls: [
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"cp src/calc.py src/calc.py.zt-orig && { head -n 1 src/calc.py; printf '%s\\\\n' '    if n > 10:'; tail -n +3 src/calc.py; } > src/calc.py.zt-new && cat src/calc.py.zt-new > src/calc.py || { rm -f src/calc.py.zt-orig src/calc.py.zt-new; exit 125; }; ( python3 tests/test_calc.py ); zt=$?; cat src/calc.py.zt-orig > src/calc.py; rm -f src/calc.py.zt-orig src/calc.py.zt-new; printf '%s%s\\\\n' 'ZT-MUTANT X-9b3f726a src/calc.py:2 ge-gt exit=' \\\"$zt\\\"; exit \\\"$zt\\\"\"]",
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"cp src/calc.py src/calc.py.zt-orig && { head -n 1 src/calc.py; printf '%s\\\\n' '    if n >= 11:'; tail -n +3 src/calc.py; } > src/calc.py.zt-new && cat src/calc.py.zt-new > src/calc.py || { rm -f src/calc.py.zt-orig src/calc.py.zt-new; exit 125; }; ( python3 tests/test_calc.py ); zt=$?; cat src/calc.py.zt-orig > src/calc.py; rm -f src/calc.py.zt-orig src/calc.py.zt-new; printf '%s%s\\\\n' 'ZT-MUTANT X-70051e88 src/calc.py:2 const-inc exit=' \\\"$zt\\\"; exit \\\"$zt\\\"\"]",
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"cp src/calc.py src/calc.py.zt-orig && { head -n 2 src/calc.py; printf '%s\\\\n' '        return None'; tail -n +4 src/calc.py; } > src/calc.py.zt-new && cat src/calc.py.zt-new > src/calc.py || { rm -f src/calc.py.zt-orig src/calc.py.zt-new; exit 125; }; ( python3 tests/test_calc.py ); zt=$?; cat src/calc.py.zt-orig > src/calc.py; rm -f src/calc.py.zt-orig src/calc.py.zt-new; printf '%s%s\\\\n' 'ZT-MUTANT X-1e026ee2 src/calc.py:3 return-none exit=' \\\"$zt\\\"; exit \\\"$zt\\\"\"]",
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"cp src/calc.py src/calc.py.zt-orig && { head -n 3 src/calc.py; printf '%s\\\\n' '    return None'; tail -n +5 src/calc.py; } > src/calc.py.zt-new && cat src/calc.py.zt-new > src/calc.py || { rm -f src/calc.py.zt-orig src/calc.py.zt-new; exit 125; }; ( python3 tests/test_calc.py ); zt=$?; cat src/calc.py.zt-orig > src/calc.py; rm -f src/calc.py.zt-orig src/calc.py.zt-new; printf '%s%s\\\\n' 'ZT-MUTANT X-84aedc46 src/calc.py:4 return-none exit=' \\\"$zt\\\"; exit \\\"$zt\\\"\"]",
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"cp src/calc.py src/calc.py.zt-orig && { head -n 7 src/calc.py; printf '%s\\\\n' '    return None'; tail -n +9 src/calc.py; } > src/calc.py.zt-new && cat src/calc.py.zt-new > src/calc.py || { rm -f src/calc.py.zt-orig src/calc.py.zt-new; exit 125; }; ( python3 tests/test_calc.py ); zt=$?; cat src/calc.py.zt-orig > src/calc.py; rm -f src/calc.py.zt-orig src/calc.py.zt-new; printf '%s%s\\\\n' 'ZT-MUTANT X-7199f9de src/calc.py:8 return-none exit=' \\\"$zt\\\"; exit \\\"$zt\\\"\"]",
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"cp src/calc.py src/calc.py.zt-orig && { head -n 7 src/calc.py; printf '%s\\\\n' '    return n * 2'; tail -n +9 src/calc.py; } > src/calc.py.zt-new && cat src/calc.py.zt-new > src/calc.py || { rm -f src/calc.py.zt-orig src/calc.py.zt-new; exit 125; }; ( python3 tests/test_calc.py ); zt=$?; cat src/calc.py.zt-orig > src/calc.py; rm -f src/calc.py.zt-orig src/calc.py.zt-new; printf '%s%s\\\\n' 'ZT-MUTANT X-f05bb7a9 src/calc.py:8 div-mul exit=' \\\"$zt\\\"; exit \\\"$zt\\\"\"]",
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"cp src/calc.py src/calc.py.zt-orig && { head -n 7 src/calc.py; printf '%s\\\\n' '    return n / 3'; tail -n +9 src/calc.py; } > src/calc.py.zt-new && cat src/calc.py.zt-new > src/calc.py || { rm -f src/calc.py.zt-orig src/calc.py.zt-new; exit 125; }; ( python3 tests/test_calc.py ); zt=$?; cat src/calc.py.zt-orig > src/calc.py; rm -f src/calc.py.zt-orig src/calc.py.zt-new; printf '%s%s\\\\n' 'ZT-MUTANT X-212b413e src/calc.py:8 const-inc exit=' \\\"$zt\\\"; exit \\\"$zt\\\"\"]",
+    "[\"--cwd\",\"<D>/scr-X/mut-X\",\"--rw\",\"<D>/scr-X/mut-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONDONTWRITEBYTECODE=1\",\"--env\",\"PYTHONPATH=<D>/scr-X/mut-X\",\"--\",\"sh\",\"-c\",\"python3 tests/test_calc.py\"]",
+  ],
+};
+
+test('should print byte-identical output and make the same runner calls as before when every new flag is off', { skip }, t => {
+  const fx = fixture(t);
+  const variants = [ALL_OFF, { ...ALL_OFF, [FLAGS.max]: 'unlimited' }, { ...ALL_OFF, [FLAGS.max]: '' }];
+  for (const flags of variants) {
+    const r = mutateProc(fx, { flags });
+    assert.equal(r.status, 0, r.stderr);
+    const got = { stdout: r.stdout, calls: normalCalls(fx, r.stub.calls()) };
+    assert.equal(got.stdout, MUTATE_GOLDEN.stdout, JSON.stringify(flags));
+    assert.deepEqual(got.calls, MUTATE_GOLDEN.calls, JSON.stringify(flags));
+  }
+});
+
+const goldenMutants = () => JSON.parse(MUTATE_GOLDEN.stdout).mutants;
+
+test('should take the baseline from testprobe --head-out when it ran on the same tree and command, and run no baseline of its own', { skip }, t => {
+  const fx = fixture(t);
+  const file = headRun(fx);
+  const r = mutateProc(fx, { args: ['--baseline-from', file] });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(baselineCalls(r.stub.calls()), [], 'no unmutated run');
+  assert.deepEqual(r.out.mutants, goldenMutants(), 'same verdicts as with its own baseline');
+  assert.deepEqual(r.out.baseline, { reused: true });
+});
+
+test('should trust a matching head run that says the test fails on HEAD, and run nothing', { skip }, t => {
+  const fx = fixture(t, { testText: 'assert False\n' });
+  const r = mutateProc(fx, { args: ['--baseline-from', headRun(fx)] });
+  assert.match(r.out.summary, /unverifiable: no changed test file passes on HEAD/);
+  assert.deepEqual(r.stub.calls(), []);
+});
+
+test('should run its own baseline when the head run is from another tree, another command or another environment', { skip }, t => {
+  const fx = fixture(t);
+  const oldTree = headRun(fx);
+  put(fx.repo, { 'tests/test_calc.py': `${TEST_CALC}# edited\n` });
+  git(fx.repo, 'add', '-A'); git(fx.repo, 'commit', '-qm', 'edit test');
+  const moved = { ...fx, head: git(fx.repo, 'rev-parse', 'HEAD') };
+  const cases = [
+    [moved, oldTree, {}],
+    [fx, headRun(fx, { cmd: 'python3 -B {file}' }), {}],
+    [fx, headRun(fx, { args: ['--env', 'A=1'] }), {}],
+    [fx, headRun(fx, { args: ['--timeout', '30'] }), {}],
+  ];
+  for (const [f, file, flags] of cases) {
+    const r = mutateProc(f, { args: ['--baseline-from', file], flags });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(baselineCalls(r.stub.calls()).length, 1, file);
+    assert.deepEqual(r.out.baseline, { reused: false, reason: 'the head run is from another tree, command or environment' });
+  }
+});
+
+test('should run its own baseline when the head run file is missing, unreadable or garbled', { skip }, t => {
+  const fx = fixture(t);
+  const good = readFileSync(headRun(fx), 'utf8');
+  const dir = mkdtempSync(join(fx.dir, 'bad-'));
+  const cases = [
+    [join(dir, 'missing.json'), null, 'no head run file'],
+    [dir, null, 'the head run file cannot be read'],
+    [join(dir, 'cut.json'), good.slice(0, good.length >> 1), 'the head run file is not JSON'],
+    [join(dir, 'schema.json'), good.replace('"schema":1', '"schema":2'), 'the head run file has another schema'],
+    [join(dir, 'tests.json'), good.replace('"tests/test_calc.py"', '"tests/other.py"'), 'the head run does not cover every test file'],
+  ];
+  for (const [file, text, reason] of cases) {
+    if (text !== null) writeFileSync(file, text);
+    const r = mutateProc(fx, { args: ['--baseline-from', file] });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(baselineCalls(r.stub.calls()).length, 1, reason);
+    assert.deepEqual(r.out.baseline, { reused: false, reason });
+    assert.deepEqual(r.out.mutants, goldenMutants());
+  }
+});
+
+test('should ignore --baseline-from and print exactly what it printed before when ZT_MUTATION_BASELINE_REUSE_ENABLED=false', { skip }, t => {
+  const fx = fixture(t);
+  const r = mutateProc(fx, { args: ['--baseline-from', headRun(fx)], flags: ALL_OFF });
+  assert.equal(r.stdout, MUTATE_GOLDEN.stdout);
+  assert.deepEqual(normalCalls(fx, r.stub.calls()), MUTATE_GOLDEN.calls);
+});
+
+// every changed line of classify() makes the test hang when mutated; half() is never tested, so its mutants survive at once
+const HANGS = `import time
+from src.calc import classify
+if classify(10) != "big" or classify(9) != "small":
+    time.sleep(${SLEEP_SEC})
+`;
+const groupAlive = g => { try { process.kill(-g, 0); return true; } catch { return false; } };
+const REAP_WAIT_MS = 3000;
+// killed processes are reaped asynchronously: poll until every group is gone or the wait is over
+async function survivors(groups) {
+  const until = performance.now() + REAP_WAIT_MS;
+  while (groups.some(groupAlive) && performance.now() < until) await new Promise(r => setTimeout(r, 50));
+  return groups.filter(groupAlive);
+}
+
+test('should stop mutants already running when the budget runs out, kill their process trees, and report them as skipped', { skip }, async t => {
+  const fx = fixture(t, { testText: HANGS });
+  const r = mutateProc(fx, { args: ['--budget', '1', '--timeout', String(SLEEP_SEC * 2)] });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.ms < SLEEP_SEC * 1000 / 2, `took ${Math.round(r.ms)} ms: running mutants were not stopped`);
+  const { score, mutants } = r.out;
+  assert.deepEqual([score.killed, score.timeout, score.inconclusive], [0, 0, 0]);
+  assert.ok(mutants.filter(m => m.line <= 4).every(m => m.result === 'skipped' && Object.keys(m).join() === 'id,file,line,op,before,after,result'), JSON.stringify(mutants));
+  assert.ok(mutants.filter(m => m.result === 'survived').every(m => m.line === 8));
+  assert.match(r.out.summary, new RegExp(`${score.skipped} skipped`));
+  assert.ok(score.skipped >= 1);
+  assert.deepEqual(await survivors(r.stub.groups()), [], 'a test process outlived the run');
+});
+
+test('should keep the budget check before a mutant starts only when ZT_MUTATION_BUDGET_STRICT_ENABLED=false', { skip }, t => {
+  const fx = fixture(t);
+  for (const flags of [{ [FLAGS.strict]: 'false' }, {}]) {
+    const r = mutateProc(fx, { args: ['--budget', '0'], flags });
+    assert.ok(r.out.mutants.every(m => m.result === 'skipped'), JSON.stringify(flags));
+    assert.equal(r.stub.calls().length, 1, 'only the baseline ran');
+  }
+});
+
+test('should never run more test processes at once than ZT_TEST_PROCESS_MAX, with the same verdicts', { skip }, t => {
+  const fx = fixture(t);
+  for (const max of ['1', '2']) {
+    const r = mutateProc(fx, { args: ['--jobs', '4'], flags: { [FLAGS.max]: max } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stub.peak() >= 1 && r.stub.peak() <= Number(max), `peak ${r.stub.peak()} with max ${max}`);
+    assert.deepEqual(r.out.mutants, goldenMutants());
+  }
+});
+
+test('should combine baseline reuse with the process cap without losing a verdict', { skip }, t => {
+  const fx = fixture(t);
+  const r = mutateProc(fx, { args: ['--jobs', '4', '--baseline-from', headRun(fx, { flags: { [FLAGS.max]: '1' } })], flags: { [FLAGS.max]: '1' } });
+  assert.equal(r.stub.peak(), 1);
+  assert.deepEqual(r.out.mutants, goldenMutants());
+  assert.deepEqual(r.out.baseline, { reused: true });
+});
+
+// a seeded generator, so a failing case can be replayed
+const rng = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+const PIECES = ['true', 'false', 'TRUE', 'False', ' ', '1', '0', 'yes', 'unlimited', 'x', '-', '.', '12', '00'];
+const word = rand => Array.from({ length: 1 + Math.floor(rand() * 3) }, () => PIECES[Math.floor(rand() * PIECES.length)]).join('');
+const validOnOff = v => ['', 'true', 'false'].includes(v.trim().toLowerCase());
+const validMax = v => { const s = v.trim(); return !s || s.toLowerCase() === 'unlimited' || (/^\d+$/.test(s) && Number(s) > 0); };
+
+test('should stop with exit 2 naming the fix for any invalid flag value, and accept every valid one (fuzz)', t => {
+  const rand = rng(1122);
+  const dir = mkdtempSync(join(tmpdir(), 'mut-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const args = ['--repo', join(dir, 'no-repo'), '--base', 'a', '--head', 'b', '--scratch', join(dir, 's'), '--cmd', 'x {file}', '--runner', MUTATE];
+  for (let i = 0; i < 30; i++) {
+    const flags = { [FLAGS.reuse]: word(rand), [FLAGS.strict]: word(rand), [FLAGS.max]: word(rand) };
+    const bad = [[FLAGS.reuse, validOnOff], [FLAGS.strict, validOnOff], [FLAGS.max, validMax]].filter(([k, ok]) => !ok(flags[k])).map(([k]) => k);
+    const r = spawnSync(process.execPath, [MUTATE, ...args], { encoding: 'utf8', env: flagEnv(flags) });
+    assert.equal(r.status, 2, JSON.stringify(flags));
+    assert.equal(r.stdout, '');
+    if (bad.length) assert.match(r.stderr, new RegExp(`^mutate: (${bad.join('|')})=.* is not valid: use `), JSON.stringify(flags));
+    else assert.doesNotMatch(r.stderr, /is not valid/, JSON.stringify(flags));
+  }
+});

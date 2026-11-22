@@ -44,6 +44,16 @@ test('buildRecord: a group stopped for lack of progress and the final courier ar
   assert.deepEqual([plain.data.stalled, plain.data.converge], [0, null]);
 });
 
+test('pnospec: logs how often a RED navigator passed the tests on the first try; carried, merged and unjudged groups do not count', () => {
+  const red = (verdict, reworks, o = {}) => ({ state: 'done', red: { verdict, reworks, ...o }, green: { reworks: 0 } });
+  const groups = { a: red('PASS', 0), b: red('PASS', 2), c: red('FAIL', 3), d: red('PASS', 0, { carried: true }), e: red('merged', 0, { merged: true }), f: { state: 'failed', red: { reworks: 0 }, green: {} } };
+  const { line, data } = buildRecord({ date: '2026-11-22', base: 'abc', ret: { groups, clusters: [] }, verify: null, greens: {}, measured });
+  assert.deepEqual(data.redFirstTry, { passed: 1, of: 3 });
+  assert.match(line, /\| findings none \| RED first try 1\/3 \|/);
+  const none = buildRecord({ date: '2026-11-22', base: 'abc', ret: { groups: { e: groups.e }, clusters: [] }, verify: null, greens: {}, measured });
+  assert.deepEqual([none.data.redFirstTry, /RED first try/.test(none.line)], [{ passed: 0, of: 0 }, false], 'no RED navigator judged anything: nothing to say');
+});
+
 function agent(dir, name, label, secs) {
   const row = (t, extra) => JSON.stringify({ timestamp: new Date(Date.UTC(2026, 9, 9, 10, 0, t)).toISOString(), message: { role: 'assistant', id: `${name}-${t}`, usage: { input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 2000 }, content: extra } });
   writeFileSync(join(dir, `agent-${name}.jsonl`), `${row(0, [{ type: 'tool_use', id: `${name}-t1` }])}\n${row(secs, [{ type: 'tool_use', id: `${name}-t2` }, { type: 'text', text: 'x' }])}\n`);

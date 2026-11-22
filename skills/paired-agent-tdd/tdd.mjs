@@ -4,13 +4,15 @@
 //                       plan.dodFile (an ADR of the definition-of-done skill) or, with neither dod[] nor dodFile, the ADR whose touches match the src files: see dodfile.mjs
 //   node tdd.mjs preflight --run RUN                       a test that already passes at the base must pass in the sandbox: the environment works before an agent is paid
 //   node tdd.mjs red    --run RUN --group G               the group's NEW tests must FAIL now (class: assertion | load error | passes already)
-//   node tdd.mjs green  --run RUN --group G [--retest]    the group's tests pass, exercise the change, did not change since RED, stay in scope; mutants; coverage
+//   node tdd.mjs green  --run RUN --group G [--retest] [--quick] [--reuse]   the group's tests pass, exercise the change, did not change since RED, stay in scope; mutants; coverage
+//                       --quick: no mutants (a driver's middle run); --reuse: the stored result of the last full run on byte-identical files (gatecache.mjs), flake check re-run
 //   node tdd.mjs dod    --run RUN --group G --stage red|green --row ID:kind:test:file ...   the group's DoD pairs from its gate file and the working tree (instant, no run)
 //   node tdd.mjs resume --run RUN [--ret return.json] [--group G] [--max-repairs N] [--retry G] [--hint G=text] [--escalate G]   where each group stands, from the gate files; writes RUN/continue.json (args.resume of the Workflow)
 //   node tdd.mjs final  --run RUN [--again]               every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch (--again: a re-run after fixes)
-//   node tdd.mjs verify --run RUN --ret return.json       DoD closure from the gate files, fixes still present, reviewer proofs (proofcheck.mjs)
+//   node tdd.mjs verify --run RUN --ret return.json       DoD closure from the gate files, fixes still present, reviewer proofs (proofcheck.mjs); final.json reused when unchanged (PTDD_GATE_REUSE_ENABLED)
 //   node tdd.mjs snap   --run RUN --on REV [--files a,b]  print the sha of REV + those working-tree files (no --files: the whole working tree)
-// plan.mode "fast" (opt-in; any other value or none = the default pipeline, byte for byte; only the exact string "fast" is read): a group with no `after` has ONE driver that holds
+// Fast mode (PTDD_PIPELINE_MODE=fast, the default, unless plan.mode is set; plan.mode "fast" selects it, any other value the default pipeline; `plan` writes the effective
+// "fast" into plan.json, and the speed flags (speed.mjs) into plan.json and the args as `speed`, only when one is on): a group with no `after` has ONE driver that holds
 // both the RED and the GREEN command, so `red` keeps the first RED snapshot (`firstSnapshot`) once the group's source exists or a GREEN gate exists, and `green` compares the tests
 // against it; `plan` says the effective mode, `resume` remembers which groups were one-driver groups, `verify` lists them and the navigator's notes about their RED tests.
 // A snapshot is a git commit of the working tree built with a temporary index: no ref, no index and no file of the user's repo changes (only loose objects are added).
@@ -38,11 +40,15 @@ const { createRunDir, markerDir, readMarker, resolveRun, writeSafe } = await imp
 const { FENCE_ENV, OLD_FENCE_ENV, clearFence, writeFence } = await import('./fence.mjs');
 const { FlagError, enabled, positiveInt } = await import('./flags.mjs');
 const { resolveDod } = await import('./dodfile.mjs');
+const { cacheName, gateKey, readEntry, writeEntry } = await import('./gatecache.mjs');
+const { mayStore, pipelineOf, readSpeed, speedForArgs, speedOf, verifyReuses } = await import('./speed.mjs');
 const { changedLines } = await imp('mutants.mjs');
 
 const COMMIT_ENV = { GIT_AUTHOR_NAME: 'pat', GIT_AUTHOR_EMAIL: 'pat@localhost', GIT_COMMITTER_NAME: 'pat', GIT_COMMITTER_EMAIL: 'pat@localhost' };
 const MUTATION = { max: 12, budget: 60 }; // per group, inside the navigator's own turn: small enough to stay well under the harness's ~180 s silence limit
 const SUMMARY_MAX = 2400, TAIL_SHOWN = 300, TAIL_KEPT = 1200;
+const FLAKE_RUNS = 2; // the GREEN probe's flake sample, and what a reused GREEN gate runs again
+const QUICK_REASON = 'skipped (--quick)';
 const short = sha => String(sha).slice(0, 8);
 
 function git(repo, args, env = {}) {
@@ -109,6 +115,10 @@ function load(o) {
 const gatePath = (ctx, name) => join(ctx.run, 'gates', name);
 const writeGate = (ctx, name, obj) => writeSafe(ctx.run, gatePath(ctx, name), `${JSON.stringify(obj)}\n`);
 const readGate = (ctx, name) => { try { return JSON.parse(readFileSync(gatePath(ctx, name), 'utf8')); } catch { return null; } };
+const storeGate = (ctx, gate, key, result) => writeEntry(gatePath(ctx, cacheName(gate)), key, result, (f, text) => writeSafe(ctx.run, f, text));
+const treeOf = (ctx, rev) => git(ctx.plan.repo, ['rev-parse', `${rev}^{tree}`]).trim();
+const bytesOf = (ctx, files) => files.map(f => { try { return [f, readFileSync(join(ctx.plan.repo, f))]; } catch { return [f, null]; } }); // a missing file is part of the key too
+const runArgs = ctx => JSON.stringify({ cmd: ctx.plan.cmd, base: ctx.plan.base, runner: ctx.probe.runner, env: ctx.probe.env, ro: ctx.probe.ro, link: ctx.plan.link ?? [], timeout: ctx.probe.timeout, jobs: ctx.jobs });
 const writeDiff = (ctx, name, args) => { const f = join(ctx.run, 'diff', name); writeSafe(ctx.run, f, git(ctx.plan.repo, args)); return f; };
 
 async function tree(ctx, rev, tag) {
@@ -202,7 +212,20 @@ async function red(ctx, gid) {
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.exit === undefined ? '' : ` exit ${t.exit}, ${t.sec}s, run ${t.run}`}${t.tail ? `\n    ...${t.tail}` : ''}`)]);
 }
 
-async function green(ctx, gid, retest) {
+/** A stored GREEN result on the same tree: only the flake sample is new (mutant sampling is deterministic), so each test file runs FLAKE_RUNS more times against its head exit. */
+async function reflake(ctx, snap, probe) {
+  const dir = await tree(ctx, snap, 'gf');
+  try {
+    const tests = await lib.pool(probe.tests ?? [], ctx.jobs, async t => {
+      const exits = [];
+      for (let i = 0; i < FLAKE_RUNS; i++) exits.push((await runFile(ctx, dir, t.file)).exit);
+      return { ...t, flake: { runs: exits, nondeterministic: exits.some(e => e !== t.head?.exit) } };
+    });
+    return { ...probe, tests };
+  } finally { discard(dir); }
+}
+
+async function green(ctx, gid, retest, { quick = false, reuse = false } = {}) {
   const { plan } = ctx, g = group(plan, gid), deps = needs(plan, g);
   const baseDeps = deps.length ? snapOf(ctx, filesOf(deps)) : plan.base; // the tests must need THIS group's code, with the groups it waits for already in place
   const snap = snapOf(ctx, [...g.tests, ...g.src], baseDeps); // a CHILD of baseDeps: the probes diff `base...head` (merge base), so it must hold exactly this group's files
@@ -211,11 +234,19 @@ async function green(ctx, gid, retest) {
   const stray = strayFiles(ctx); // shared tree: a stray file cannot be pinned on this group, so it is a note here and blocks only at `final`
   const patch = writeDiff(ctx, `${gid}.green.patch`, ['diff', '-U10', baseDeps, snap, '--', ...g.tests, ...g.src]);
   const mut = plan.mutation ?? {}, kill = plan.killExits ? ['--kill-exits', plan.killExits.join(',')] : [];
-  const [probe, mutants, cover] = await Promise.all([
-    child(ctx, 'testprobe.mjs', baseDeps, snap, g.tests, 'gp', ['--flake', '2', ...(g.src.some(f => !lib.isSource(f)) ? ['--src', g.src.join(',')] : [])]), // a config file the tests need is reverted too
-    mut.off ? { reason: 'switched off in the plan' } : child(ctx, 'mutate.mjs', baseDeps, snap, g.tests, 'gm', ['--max', String(mut.max ?? MUTATION.max), '--budget', String(mut.budget ?? MUTATION.budget), ...kill]),
+  // the gate cache (PTDD_GATE_REUSE_ENABLED or --reuse): a full run stores its child results; --reuse takes them back when the snapshot, the group's bytes and these arguments match
+  const store = mayStore(speedOf(plan.speed), reuse, quick), gate = `${gid}.green`;
+  const key = store || reuse ? gateKey({ snapshot: `${treeOf(ctx, baseDeps)}:${treeOf(ctx, snap)}`, files: bytesOf(ctx, [...g.tests, ...g.src]), args: ['green', retest ? '--retest' : '', runArgs(ctx), JSON.stringify({ mutation: plan.mutation ?? null, killExits: plan.killExits ?? null, cover: plan.cover ?? null, coverMin: plan.coverMin ?? null, flake: FLAKE_RUNS })] }) : null;
+  const hit = reuse ? readEntry(gatePath(ctx, cacheName(gate)), key) : null;
+  // with reuse on, the test probe leaves its HEAD run for the next run and the mutation probe reads the one the last run left: on the same tree it skips its baseline run.
+  // Read, not awaited: the two probes still start together, so the gate never waits longer than before (zero-trust-review checks that the file is from this exact tree).
+  const headRun = speedOf(plan.speed).gateReuse ? gatePath(ctx, `${gate}.head.json`) : null;
+  const [probe, mutants, cover] = hit ? [await reflake(ctx, snap, hit.probe), hit.mutants, hit.cover] : await Promise.all([
+    child(ctx, 'testprobe.mjs', baseDeps, snap, g.tests, 'gp', ['--flake', String(FLAKE_RUNS), ...(g.src.some(f => !lib.isSource(f)) ? ['--src', g.src.join(',')] : []), ...(headRun ? ['--head-out', headRun] : [])]), // a config file the tests need is reverted too
+    mut.off ? { reason: 'switched off in the plan' } : quick ? { reason: QUICK_REASON } : child(ctx, 'mutate.mjs', baseDeps, snap, g.tests, 'gm', ['--max', String(mut.max ?? MUTATION.max), '--budget', String(mut.budget ?? MUTATION.budget), ...kill, ...(headRun ? ['--baseline-from', headRun] : [])]),
     coverage(ctx, g, snap, baseDeps),
   ]);
+  if (store && !hit && !probe.error && !mutants.error) storeGate(ctx, gate, key, { probe, mutants, cover });
   const tests = (probe.tests ?? []).map(t => { const cannotStart = t.verdict === 'fails-on-head' && t.head?.exit === 127; return { file: t.file, verdict: cannotStart ? 'unverifiable' : t.verdict, reason: cannotStart ? 'the test command cannot start (exit 127)' : t.reason, head: t.head?.exit, base: t.base?.exit, nondeterministic: t.flake?.nondeterministic }; }); // 127 is the environment, as at RED
   const survivors = (mutants.mutants ?? []).filter(m => m.result === 'survived').map(m => ({ id: m.id, file: m.file, line: m.line, op: m.op, before: m.before, after: m.after, run: m.run, quote: m.quote }));
   const reasons = [];
@@ -226,9 +257,10 @@ async function green(ctx, gid, retest) {
   else if (frozen.changed.length && !retest) reasons.push(`tests changed since RED: ${frozen.changed.join(', ')}`);
   if (survivors.length) reasons.push(`${survivors.length} mutant(s) survived: the tests do not pin that code`);
   if (cover?.pct != null && cover.pct < cover.min) reasons.push(`changed-line coverage ${cover.pct}% < ${cover.min}%`);
-  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, retest: !!retest, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors }, coverage: cover };
+  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, retest: !!retest, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors, ...(mutants.baseline ? { baseline: mutants.baseline } : {}) }, coverage: cover, ...(quick ? { quick } : {}), ...(hit ? { reused: true } : {}) };
   writeGate(ctx, `${gid}.green.json`, out);
-  say([`GREEN ${gid} ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
+  say([`GREEN ${gid} ok=${out.ok}${quick ? ' (quick: no mutants; the last run and the navigator\'s run mutate)' : ''} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
+    ...(hit ? [`  reused: test probe, mutants and coverage of the last full run on these exact files; flake check re-run (${FLAKE_RUNS} run(s) per test file)`] : []),
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.reason ? ` (${t.reason})` : ''}, exit on HEAD ${t.head}, with the group's code reverted ${t.base}${t.nondeterministic ? ', FLAKY' : ''}`),
     stray.files.length ? `  note: files outside the plan exist in the shared tree: ${stray.files.slice(0, 5).join(', ')} (judge from the patch whether this group made them; \`final\` blocks on them)` : '',
     `  tests since RED: ${frozen ? (frozen.changed.length ? `CHANGED ${frozen.changed.join(', ')} (${frozen.removed} line(s) removed)${retest ? ' [--retest: sanctioned]' : ''}` : 'unchanged') : 'unknown'}`,
@@ -318,7 +350,7 @@ function resume(ctx, retPath, only, flags = {}) {
     else if (green.gate && !green.stale.length) {
       defects = merge(knownGreen, green.gate.ok ? [] : defectsFromGreen(green.gate).filter(d => !(retest && /^tests changed since RED/.test(d.what))));
       if (defects.length || !green.gate.ok) { next = 'green-fix'; why = knownGreen.length ? 'the last navigator reported defects the gate cannot see' : 'the GREEN gate is fresh and not ok'; }
-      else if (prev?.state === 'done' && matrix.length && dodCheck(ctx, g.id, 'green', matrix.filter(r => !r.late).map(rowText)).ok) { next = 'done'; why = 'judged PASS last run; gates fresh and ok; DoD pairs closed'; }
+      else if (prev?.state === 'done' && !green.gate.quick && matrix.length && dodCheck(ctx, g.id, 'green', matrix.filter(r => !r.late).map(rowText)).ok) { next = 'done'; why = 'judged PASS last run; gates fresh and ok; DoD pairs closed'; }
       else { next = 'green-check'; why = 'gates fresh and ok, not judged yet'; }
     } else if (!red.gate.ok) {
       if (staleRed) { next = staleRed; why = `tests edited since the RED gate: ${red.stale.join(', ')}`; } else { next = 'red-fix'; why = 'the RED gate is not ok'; defects = merge(knownRed, defectsFromRed(red.gate)); }
@@ -365,8 +397,30 @@ async function coverage(ctx, g, snap, base) {
   return cov;
 }
 
-async function final(ctx, quiet, again) {
+async function final(ctx, quiet, again, reuse = false) {
   const { plan } = ctx, own = new Set(plan.groups.flatMap(g => g.tests)), snap = snapOf(ctx, planFiles(plan));
+  // the gate cache (PTDD_GATE_REUSE_ENABLED): every final run stores what its tests said; verify takes it back when the snapshot and the plan's bytes are unchanged since
+  const key = speedOf(plan.speed).gateReuse ? gateKey({ snapshot: treeOf(ctx, snap), files: bytesOf(ctx, planFiles(plan)), args: ['final', runArgs(ctx)] }) : null;
+  const hit = reuse && key ? readEntry(gatePath(ctx, cacheName('final')), key) : null;
+  const { together, existing } = hit ?? await finalTests(ctx, snap, own);
+  if (key && !hit) storeGate(ctx, 'final', key, { together, existing });
+  const { regressions } = existing;
+  const stray = strayFiles(ctx), patch = writeDiff(ctx, 'final.patch', ['diff', '-U15', plan.base, snap]), reasons = []; // the scope scan reads the whole working tree: never reused
+  if (together.some(r => r.exit !== 0)) reasons.push(`group tests fail together: ${together.filter(r => r.exit !== 0).map(r => r.file).join(', ')}`);
+  if (regressions.length) reasons.push(`existing tests broken by the change: ${regressions.map(r => r.file).join(', ')}`);
+  if (stray.files.length) reasons.push(`files outside the plan changed: ${stray.files.slice(0, 5).join(', ')}`);
+  const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing, outOfScope: stray.files, strayScan: stray.error };
+  writeGate(ctx, 'final.json', out);
+  if (!quiet && !again && !readGate(ctx, 'reviewed.json')) writeGate(ctx, 'reviewed.json', out); // the FIRST final run is the reviewer's view: its proofs are checked against that tree, not the post-fix one (--again: a re-run after fixes never is)
+  if (!quiet) say([`FINAL ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
+    `  group tests together: ${together.filter(r => r.exit === 0).length}/${together.length} pass`,
+    `  existing tests that mention the changed modules: ${existing.ran.length} run${existing.more ? ` (+${existing.more} not run)` : ''}, ${regressions.length} broken by this change, ${existing.preexisting.length} already failing before`,
+    ...regressions.slice(0, 3).map(r => `    ${r.file} exit ${r.exit} run ${r.run}: ...${r.tail}`)]);
+  return { snap, reused: !!hit };
+}
+
+async function finalTests(ctx, snap, own) {
+  const { plan } = ctx;
   // the integration test needs its real dependency, which the sandbox has not: its agent runs it for real and reports the exit code (verify reads it)
   const skip = new Set([...own, ...(plan.integration?.file ? [plan.integration.file] : [])]);
   const listed = names(git(plan.repo, ['ls-tree', '-r', '--name-only', '-z', snap])).filter(f => lib.TEST.test(f) && !lib.DOC.test(f));
@@ -384,18 +438,7 @@ async function final(ctx, quiet, again) {
     preexisting = broken.filter((_, i) => before[i].exit !== 0).map(r => r.file);
   }
   discard(dir);
-  const stray = strayFiles(ctx), patch = writeDiff(ctx, 'final.patch', ['diff', '-U15', plan.base, snap]), reasons = [];
-  if (together.some(r => r.exit !== 0)) reasons.push(`group tests fail together: ${together.filter(r => r.exit !== 0).map(r => r.file).join(', ')}`);
-  if (regressions.length) reasons.push(`existing tests broken by the change: ${regressions.map(r => r.file).join(', ')}`);
-  if (stray.files.length) reasons.push(`files outside the plan changed: ${stray.files.slice(0, 5).join(', ')}`);
-  const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing: { ran: affected.run, more: affected.more, regressions, preexisting }, outOfScope: stray.files, strayScan: stray.error };
-  writeGate(ctx, 'final.json', out);
-  if (!quiet && !again && !readGate(ctx, 'reviewed.json')) writeGate(ctx, 'reviewed.json', out); // the FIRST final run is the reviewer's view: its proofs are checked against that tree, not the post-fix one (--again: a re-run after fixes never is)
-  if (!quiet) say([`FINAL ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
-    `  group tests together: ${together.filter(r => r.exit === 0).length}/${together.length} pass`,
-    `  existing tests that mention the changed modules: ${affected.run.length} run${affected.more ? ` (+${affected.more} not run)` : ''}, ${regressions.length} broken by this change, ${preexisting.length} already failing before`,
-    ...regressions.slice(0, 3).map(r => `    ${r.file} exit ${r.exit} run ${r.run}: ...${r.tail}`)]);
-  return snap;
+  return { together, existing: { ran: affected.run, more: affected.more, regressions, preexisting } };
 }
 
 /** fast plans -> { merged: the groups that had ONE driver (no RED navigator ever saw their tests first), redNotes: what the one navigator said about their RED tests, by group } */
@@ -416,7 +459,8 @@ async function verify(ctx, retPath) {
   for (const g of plan.groups) {
     rows[g.id] = (ret.groups?.[g.id]?.matrix ?? []).filter(r => named(r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
     redMap[g.id] = fileMap(g.id, 'red'); greenMap[g.id] = fileMap(g.id, 'green');
-    greenOk[g.id] = readGate(ctx, `${g.id}.green.json`)?.ok === true; // flaky, changed-since-RED or surviving-mutant groups credit nothing
+    const gate = readGate(ctx, `${g.id}.green.json`);
+    greenOk[g.id] = gate?.ok === true && !gate.quick; // flaky, changed-since-RED or surviving-mutant groups credit nothing, nor a run that skipped the mutants
   }
   const c = closure(plan, rows, redMap, greenMap, greenOk);
   writeSafe(ctx.run, join(ctx.run, 'dod-matrix.md'), `${closureMarkdown(c)}\n`);
@@ -426,7 +470,7 @@ async function verify(ctx, retPath) {
     return !gate ? [`${g.id}/${stage}: PASS with no gate on record`] : gate.ok ? [] : [`${g.id}/${stage}: PASS although the gate said not ok (${(gate.reasons ?? []).join('; ') || 'a test file did not fail'})`];
   }));
   const reviewed = readGate(ctx, 'reviewed.json')?.snapshot;
-  const snap = await final(ctx, true); // the post-fix state: tests together, regressions, scope
+  const { snap, reused: finalReused } = await final(ctx, true, false, verifyReuses(speedOf(plan.speed))); // the post-fix state: tests together, regressions, scope
   const squash = s => String(s ?? '').replace(/\s+/g, ' ').trim();
   const stillThere = cl => { const q = squash(cl.quote); return q !== '' && squash(showText(plan.repo, snap, cl.file)).includes(q); };
   const open = (ret.clusters ?? []).filter(cl => !/^(refuted|out-of-scope|unverified-nit)$/.test(cl.status)); // a nit is reported, never sent to a fixer
@@ -438,7 +482,7 @@ async function verify(ctx, retPath) {
   }
   const integration = plan.integration?.file ? (ret.integration ? (ret.integration.exit === 0 ? 'ok' : `${plan.integration.file} exited ${ret.integration.exit}`) : 'not run') : undefined;
   const fast = plan.mode === 'fast' ? fastReport(ret) : undefined; // fast plans only: the default output has no such key
-  const res = { integration, dod: { covered: c.covered, total: c.total, gaps: c.gaps, phantom }, final: readGate(ctx, 'final.json')?.ok, overridden, unfixed, notDone: Object.entries(ret.groups ?? {}).filter(([, v]) => v.state !== 'done').map(([k, v]) => `${k}: ${v.state}`).concat(integration && integration !== 'ok' ? [`integration: ${integration}`] : []), ...(fast ? { fast } : {}), proofcheck: proof, snapshot: snap, report: join(ctx.run, 'dod-matrix.md') };
+  const res = { integration, dod: { covered: c.covered, total: c.total, gaps: c.gaps, phantom }, final: readGate(ctx, 'final.json')?.ok, overridden, unfixed, notDone: Object.entries(ret.groups ?? {}).filter(([, v]) => v.state !== 'done').map(([k, v]) => `${k}: ${v.state}`).concat(integration && integration !== 'ok' ? [`integration: ${integration}`] : []), ...(fast ? { fast } : {}), ...(finalReused ? { finalReused } : {}), proofcheck: proof, snapshot: snap, report: join(ctx.run, 'dod-matrix.md') };
   writeGate(ctx, 'verify.json', res);
   process.stdout.write(`${JSON.stringify(res)}\n`);
 }
@@ -446,8 +490,9 @@ async function verify(ctx, retPath) {
 // ---------------------------------------------------------------- plan command
 async function cmdPlan(o) {
   // flags first: a value that is not valid, or an old name, stops the plan before any work
-  let fence, cap;
+  let fence, cap, speed;
   try {
+    speed = readSpeed(process.env); // ADR 0001: PTDD_PIPELINE_MODE and the four speed switches, read once here and carried in the args and plan.json
     fence = enabled(process.env, FENCE_ENV, false, { renamedFrom: OLD_FENCE_ENV }); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
     cap = positiveInt(process.env, 'PTDD_AGENT_MAX', { renamedFrom: 'PTDD_AGENT_CAP' }); // opt-in hard ceiling, enforced by workflow.js
   } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; }
@@ -480,7 +525,9 @@ async function cmdPlan(o) {
   let run;
   if (o.run) { run = trustedRun(o.run); if (!run) fail(3, '--run must be a run folder under the per-user zt-review base; omit it and plan creates one'); }
   else { try { run = createRunDir(`pat-${short(base)}-${Date.now().toString(36)}`); } catch (e) { fail(3, `cannot create the run folder: ${e.message}`); } }
-  const full = { ...plan, repo, scratch: real, base, run };
+  const { speed: _userSpeed, ...userPlan } = plan; // only the flags set the speed policy, never a key of the user's plan.json
+  const mode = pipelineOf(speed.pipeline, plan.mode), spArgs = speedForArgs(speed);
+  const full = { ...userPlan, ...(mode === 'fast' ? { mode } : {}), repo, scratch: real, base, run, ...(spArgs ? { speed: spArgs } : {}) };
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   writeSafe(run, join(run, 'plan.json'), `${JSON.stringify(full)}\n`);
   const pre = o['skip-preflight'] ? { ok: true, verdict: 'skipped', rows: ['PREFLIGHT skipped (--skip-preflight): a broken environment can look like a valid RED'] } : await preflight(load({ run, runner: o.runner }));
@@ -489,10 +536,10 @@ async function cmdPlan(o) {
   // `fast` is set here and nowhere else, and only for mode "fast" (it survives the Workflow's own mode: "plan", a dry run, replaces args.mode). A `fast` key of the user's plan.json is
   // dropped from the args: it would switch the one-driver pipeline on while the gates stay standard (no firstSnapshot). Without mode "fast" the args are what they always were.
   const { fast: _userFast, ...fullArgs } = full;
-  const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(plan.mode === 'fast' ? { fast: true } : {}), ...(cap ? { agentCap: cap } : {}) };
+  const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(mode === 'fast' ? { fast: true } : {}), ...(cap ? { agentCap: cap } : {}), ...(spArgs ? { speed: spArgs } : {}) };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
   if (fence) writeFence(run, full, markerDir(process.env));
-  process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${fromDod.note ?? `${plan.dod.length} DoD item(s)`}, base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${plan.mode === 'fast' ? 'fast' : 'standard'}; Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
+  process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${fromDod.note ?? `${plan.dod.length} DoD item(s)`}, base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${mode === 'fast' ? 'fast' : 'standard'};${spArgs ? ` speed flags ${Object.entries(spArgs).map(([k, v]) => `${k}=${v}`).join(' ')};` : ''} Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
   process.stdout.write(`${JSON.stringify(args)}\n`);
 }
 
@@ -506,7 +553,7 @@ function resumeFlags(v) {
 
 // ---------------------------------------------------------------- main
 try {
-  const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true },
+  const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, quick: { type: 'boolean' }, reuse: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true },
     'skip-preflight': { type: 'boolean' }, 'max-repairs': { type: 'string' }, retry: { type: 'string', multiple: true }, escalate: { type: 'string', multiple: true }, hint: { type: 'string', multiple: true } }, args: process.argv.slice(3), strict: true });
   const cmd = process.argv[2];
   if (cmd === 'plan') await cmdPlan(v);
@@ -519,6 +566,6 @@ try {
     else if (cmd === 'final') await final(ctx, false, v.again);
     else if (cmd === 'verify') await verify(ctx, v.ret ?? fail(2, 'verify needs --ret'));
     else if (cmd === 'red') await red(ctx, v.group ?? fail(2, 'red needs --group'));
-    else await green(ctx, v.group ?? fail(2, 'green needs --group'), v.retest);
+    else await green(ctx, v.group ?? fail(2, 'green needs --group'), v.retest, { quick: !!v.quick, reuse: !!v.reuse });
   } else fail(2, 'usage: tdd.mjs plan|preflight|red|green|dod|final|verify|resume|snap (see the header of tdd.mjs)');
 } catch (e) { fail(1, e.message); }

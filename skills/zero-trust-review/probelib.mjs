@@ -1,10 +1,11 @@
 // Shared plumbing for the real-execution probes (testprobe.mjs, mutate.mjs): the options every probe takes, read-only git access to the change, a symlink-safe
 // scratch copy of a tree, and THE way a command runs here: through the sandbox runner (exit 86 = no sandbox, 124 = timeout). The repo under review is only read.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { isDeepStrictEqual, parseArgs } from 'node:util';
+import { positiveInt } from './flags.mjs';
 
 export const NO_SANDBOX = 86, TIMEOUT = 124;
 const TAIL = 200, KILL_GRACE_SEC = 10;
@@ -112,7 +113,14 @@ export function restore(repo, copy, srcChanges) {
 }
 
 // Runs `command` (a shell line) in `dir` through the sandbox runner. -> { exit, sec, tail, run } where run = the id of the runner's ledger entry (ZT-RUN <id>)
+// o.slots (a limiter) caps how many commands run at once. o.signal (an AbortSignal) stops the command: SIGTERM makes the runner kill the command's process group;
+// a stopped or never-started command comes back with aborted: true and decides nothing.
 export function runIn(o, dir, command) {
+  return o.slots ? o.slots(() => spawnRun(o, dir, command)) : spawnRun(o, dir, command);
+}
+
+function spawnRun(o, dir, command) {
+  if (o.signal?.aborted) return Promise.resolve({ ...NOT_STARTED });
   const t0 = performance.now(), keep = o.tail ?? TAIL; // o.tail: trailing output chars the caller needs (the RED classifier reads more than the review probes)
   const env = o.env.some(e => e.startsWith('PYTHONPATH=')) ? o.env : [...o.env, `PYTHONPATH=${dir}`]; // editable installs would import the original tree
   const argv = [o.runner, '--cwd', dir, '--rw', dir, '--timeout', String(o.timeout), ...o.ro.flatMap(p => ['--ro', p]), ...env.flatMap(e => ['--env', e]),
@@ -120,12 +128,82 @@ export function runIn(o, dir, command) {
   return new Promise(done => {
     // the runner enforces --timeout itself (124); this is only a backstop against a hung runner
     const p = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'pipe'], timeout: (o.timeout + KILL_GRACE_SEC) * 1000, killSignal: 'SIGKILL' });
-    let tail = '';
+    let tail = '', aborted = false, backstop;
+    const stop = () => {
+      aborted = true;
+      p.kill('SIGTERM');
+      backstop = setTimeout(() => { p.kill('SIGKILL'); p.stdout.destroy(); p.stderr.destroy(); }, KILL_GRACE_SEC * 1000);
+      backstop.unref();
+    };
+    o.signal?.addEventListener('abort', stop, { once: true });
     for (const s of [p.stdout, p.stderr]) { s.setEncoding('utf8'); s.on('data', d => (tail = (tail + d).slice(-keep * 4))); }
-    const end = exit => done({ exit, sec: Math.round((performance.now() - t0) / 100) / 10, tail: tail.trim().slice(-keep), run: /ZT-RUN (\S+) exit=/.exec(tail)?.[1] });
+    const end = exit => {
+      o.signal?.removeEventListener('abort', stop);
+      clearTimeout(backstop);
+      done({ exit, sec: Math.round((performance.now() - t0) / 100) / 10, tail: tail.trim().slice(-keep), run: /ZT-RUN (\S+) exit=/.exec(tail)?.[1], ...(aborted && { aborted }) });
+    };
     p.on('error', e => { tail = e.message; end(1); });
     p.on('close', code => end(code ?? TIMEOUT));
   });
+}
+const NOT_STARTED = { exit: null, sec: 0, tail: '', run: undefined, aborted: true };
+
+// At most `max` calls of run(fn) at once, the rest wait in order; null when there is no limit. A finished call hands its slot straight to the next waiter.
+export function limiter(max) {
+  if (max === null) return null;
+  let active = 0;
+  const waiting = [];
+  return async fn => {
+    if (active < max) active++;
+    else await new Promise(r => waiting.push(r));
+    try { return await fn(); } finally { if (waiting.length) waiting.shift()(); else active--; }
+  };
+}
+export const TEST_PROCESS_MAX_FLAG = 'ZT_TEST_PROCESS_MAX';
+export const testProcessSlots = env => limiter(positiveInt(env, TEST_PROCESS_MAX_FLAG));
+
+// The head run file (testprobe.mjs --head-out, mutate.mjs --baseline-from): the unmutated HEAD run of each test file, keyed to everything that decides its result.
+// A file that does not match exactly is never trusted: the caller runs its own baseline.
+export const HEAD_RUN_SCHEMA = 1, HEAD_RUN_KIND = 'zt-head-run';
+const EXIT_MAX = 255;
+export const HEAD_RUN_REFUSED = {
+  missing: 'no head run file', unreadable: 'the head run file cannot be read', notJson: 'the head run file is not JSON', schema: 'the head run file has another schema',
+  identity: 'the head run is from another tree, command or environment', tests: 'the head run does not cover every test file',
+};
+
+export const runIdentity = o => ({ tree: gitOut(o.repo, ['rev-parse', '--verify', `${o.head}^{tree}`]).toString().trim(), cmd: o.cmd, env: [...o.env], link: [...o.link],
+  ro: [...o.extraRo], timeout: o.timeout, runner: o.runner });
+
+export const headRunDoc = (identity, results) => ({ schema: HEAD_RUN_SCHEMA, kind: HEAD_RUN_KIND, identity,
+  tests: results.map(({ file, exit, sec }) => ({ file, pass: exit === 0, exit, sec })) });
+
+export function writeHeadRun(path, doc) {
+  const part = `${path}.part`;
+  writeFileSync(part, `${JSON.stringify(doc)}\n`);
+  renameSync(part, path);
+}
+
+const isObject = x => typeof x === 'object' && x !== null && !Array.isArray(x);
+const wellFormed = r => isObject(r) && typeof r.file === 'string' && Number.isInteger(r.exit) && r.exit >= 0 && r.exit <= EXIT_MAX && r.pass === (r.exit === 0)
+  && typeof r.sec === 'number' && Number.isFinite(r.sec) && r.sec >= 0;
+
+// -> { exits } (one per file, in order) or { reason }: the head run in `text` (undefined = no file), only if it is exactly this identity and covers every file
+export function baselineFrom(text, identity, files) {
+  if (text === undefined) return { reason: HEAD_RUN_REFUSED.missing };
+  let doc;
+  try { doc = JSON.parse(text); } catch { return { reason: HEAD_RUN_REFUSED.notJson }; }
+  if (!isObject(doc) || doc.schema !== HEAD_RUN_SCHEMA || doc.kind !== HEAD_RUN_KIND) return { reason: HEAD_RUN_REFUSED.schema };
+  if (!isDeepStrictEqual(doc.identity, identity)) return { reason: HEAD_RUN_REFUSED.identity };
+  if (!Array.isArray(doc.tests) || !doc.tests.every(wellFormed) || new Set(doc.tests.map(r => r.file)).size !== doc.tests.length) return { reason: HEAD_RUN_REFUSED.tests };
+  const byFile = new Map(doc.tests.map(r => [r.file, r.exit]));
+  if (!files.every(f => byFile.has(f))) return { reason: HEAD_RUN_REFUSED.tests };
+  return { exits: files.map(f => byFile.get(f)) };
+}
+
+export function readBaseline(path, identity, files) {
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch (e) { return { reason: e.code === 'ENOENT' ? HEAD_RUN_REFUSED.missing : HEAD_RUN_REFUSED.unreadable }; }
+  return baselineFrom(text, identity, files);
 }
 
 export async function pool(items, n, fn) {

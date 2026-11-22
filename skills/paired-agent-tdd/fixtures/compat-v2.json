@@ -1,0 +1,308 @@
+{
+ "dry run": {
+  "labels": [],
+  "calls": [],
+  "logs": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "ret": "a52f9784fe7564767b7c6308b61ee495bfb0b5041ae76332f9149954657c8555"
+ },
+ "dry run fast": {
+  "labels": [],
+  "calls": [],
+  "logs": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "ret": "d0c2fe888e3bf27baa4619c27481df31b5bb49962659c3c6da8382683ce89528"
+ },
+ "happy path": {
+  "labels": [
+   "red-driver:a",
+   "red-driver:b",
+   "red-driver:c",
+   "red-navigator:a",
+   "red-navigator:b",
+   "red-navigator:c",
+   "green-driver:a",
+   "green-driver:c",
+   "green-navigator:a",
+   "green-navigator:c",
+   "green-driver:b",
+   "green-navigator:b",
+   "reviewer"
+  ],
+  "calls": [
+   "44c0b584d136cfd84bc8d4553560060fd49326bac9719bc8a08a572fc57e4405",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "f0ad3bcdce9e95fc7271c052e8fd0bc9ba8011aaaa7ae338042bab8a23d87c96",
+   "339be3ea6da87068c991e5a3d2188a2b6c5e0f34208ff4877ed421ddc9a66ff0",
+   "46db8c3ce33331ac24db5b4557e1f7a748d7e6ef9d7956685bece61dc583cefa",
+   "093466272e152b664ba65573b40de456836825472008871f9046bd4ff402803e",
+   "73829a6ddc41a43eb93af5266b69e8670165e67dfaa8cec57bd718acae8f5d1a",
+   "f45768885d31555c7c12d2500d2d99744d84395590a3480a1df906fc458b8624",
+   "d2fccfe86d9168b09b45d5e0391ffc2e1f688519c2ecdfc07edc3f165577af1a",
+   "b02f8bc802bfa1f6a2b4330752d2fae84314f183cf24ca52098562a637abd124",
+   "a24b7aeb422905dfb48c6302bf530f07ca37e4723c34189c7a2e81ddd0d41906",
+   "636b8f0d574ba99362af973bdb1912e4465cddf5ce81b7feb8c5cdc49e07ff3d",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb"
+  ],
+  "logs": "9f2891d0c5c4eedd728d8efd0f37be60f327426c7325728c48139cd55b5532b4",
+  "ret": "6467068c11d86e1c58abbe1babb153c40250f4ee86bdbd2ba3cb9bf031561b2a"
+ },
+ "fast plan": {
+  "labels": [
+   "tdd-driver:a",
+   "red-driver:b",
+   "tdd-driver:c",
+   "green-navigator:a",
+   "red-navigator:b",
+   "green-navigator:c",
+   "green-driver:b",
+   "green-navigator:b",
+   "reviewer"
+  ],
+  "calls": [
+   "2a4e5a5eae10cbd453324a0563ddcee20f3c08cbca1c7fbc417b9bb254b1c375",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "6e183f9eca0d518a747e8c591255206b7d8165ac2cbe3e24f624ea2a368d0676",
+   "908da43b9346d5cf305669c4ce32a8e836f34b35aee22c7e63bee251edd610fc",
+   "46db8c3ce33331ac24db5b4557e1f7a748d7e6ef9d7956685bece61dc583cefa",
+   "17de20b1deb552ae2805f71afb05652191787abf9f9662cabe75483fa84f06f6",
+   "a24b7aeb422905dfb48c6302bf530f07ca37e4723c34189c7a2e81ddd0d41906",
+   "636b8f0d574ba99362af973bdb1912e4465cddf5ce81b7feb8c5cdc49e07ff3d",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb"
+  ],
+  "logs": "457079b9ff3bf80363f5b958acc7418b6da090c909491701a709eed06b0eaa3c",
+  "ret": "d313f30a2bd8452ee2e994ad64f2a54d80697488cde3c882059e5792c3e8a87c"
+ },
+ "repairs": {
+  "labels": [
+   "red-driver:a",
+   "red-driver:b",
+   "red-driver:c",
+   "red-navigator:a",
+   "red-navigator:b",
+   "red-navigator:c",
+   "red-driver:a:rework",
+   "green-driver:c",
+   "red-navigator:a:recheck",
+   "green-navigator:c",
+   "green-driver:c:rework",
+   "red-driver:c:strengthen",
+   "green-driver:a",
+   "green-navigator:a",
+   "green-navigator:c:recheck",
+   "green-driver:b",
+   "green-navigator:b",
+   "reviewer"
+  ],
+  "calls": [
+   "44c0b584d136cfd84bc8d4553560060fd49326bac9719bc8a08a572fc57e4405",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "f0ad3bcdce9e95fc7271c052e8fd0bc9ba8011aaaa7ae338042bab8a23d87c96",
+   "339be3ea6da87068c991e5a3d2188a2b6c5e0f34208ff4877ed421ddc9a66ff0",
+   "46db8c3ce33331ac24db5b4557e1f7a748d7e6ef9d7956685bece61dc583cefa",
+   "093466272e152b664ba65573b40de456836825472008871f9046bd4ff402803e",
+   "55f7358af22152cdc6ff5b4ff26a051daca8af4097552b14e24a72c1a4725984",
+   "f45768885d31555c7c12d2500d2d99744d84395590a3480a1df906fc458b8624",
+   "8d530b7b3a9049c22b742fb94505213860c628418947cb6025f7b06eacbd8672",
+   "b02f8bc802bfa1f6a2b4330752d2fae84314f183cf24ca52098562a637abd124",
+   "77a6dd961925a0d843a6006b27dab43b16a81e80c61441273609ca8c7bb04576",
+   "2008720bbdc9d36294f0ef885c48f1a0d881e688d82a3a58d82ba7edcc368147",
+   "73829a6ddc41a43eb93af5266b69e8670165e67dfaa8cec57bd718acae8f5d1a",
+   "d2fccfe86d9168b09b45d5e0391ffc2e1f688519c2ecdfc07edc3f165577af1a",
+   "efeb828276bd227e3daebae9c24d6c10cd17850174824eff1143b0bc254ee5cd",
+   "a24b7aeb422905dfb48c6302bf530f07ca37e4723c34189c7a2e81ddd0d41906",
+   "636b8f0d574ba99362af973bdb1912e4465cddf5ce81b7feb8c5cdc49e07ff3d",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb"
+  ],
+  "logs": "9f2891d0c5c4eedd728d8efd0f37be60f327426c7325728c48139cd55b5532b4",
+  "ret": "65ca966704b88eaad03d7a61870ed669a24656016f214aa863b384996740c00a"
+ },
+ "findings and converge": {
+  "labels": [
+   "red-driver:a",
+   "red-driver:b",
+   "red-driver:c",
+   "red-navigator:a",
+   "red-navigator:b",
+   "red-navigator:c",
+   "green-driver:a",
+   "green-driver:c",
+   "green-navigator:a",
+   "green-navigator:c",
+   "green-driver:b",
+   "green-navigator:b",
+   "reviewer",
+   "fixer:a",
+   "fixer:c",
+   "final-verifier",
+   "fixer:a:final",
+   "final-verifier:2"
+  ],
+  "calls": [
+   "44c0b584d136cfd84bc8d4553560060fd49326bac9719bc8a08a572fc57e4405",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "f0ad3bcdce9e95fc7271c052e8fd0bc9ba8011aaaa7ae338042bab8a23d87c96",
+   "339be3ea6da87068c991e5a3d2188a2b6c5e0f34208ff4877ed421ddc9a66ff0",
+   "46db8c3ce33331ac24db5b4557e1f7a748d7e6ef9d7956685bece61dc583cefa",
+   "093466272e152b664ba65573b40de456836825472008871f9046bd4ff402803e",
+   "73829a6ddc41a43eb93af5266b69e8670165e67dfaa8cec57bd718acae8f5d1a",
+   "f45768885d31555c7c12d2500d2d99744d84395590a3480a1df906fc458b8624",
+   "d2fccfe86d9168b09b45d5e0391ffc2e1f688519c2ecdfc07edc3f165577af1a",
+   "b02f8bc802bfa1f6a2b4330752d2fae84314f183cf24ca52098562a637abd124",
+   "a24b7aeb422905dfb48c6302bf530f07ca37e4723c34189c7a2e81ddd0d41906",
+   "636b8f0d574ba99362af973bdb1912e4465cddf5ce81b7feb8c5cdc49e07ff3d",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb",
+   "f890fc3a815cf4bea28fa120ce50229c0d8f0aca7f93a8a4246993d9a2e9c8f5",
+   "ed45260df818b847c121989e6ded3cffd0a75a56e96c0d2f375e3d2d14bb8ac2",
+   "152b628ffe6ddf52736efa428ba56fe233d603f812b6ee23af2d6a6790e96f58",
+   "994cbaf3ebd69eb5f17a3532c97eebc57d36b6b73c4c2bbe816ab5ad6c0b600d",
+   "281373bf4859051a90e6a026b78e78156b1ec18bea20869ea2a5b758fa3c0c61"
+  ],
+  "logs": "4f33f5611a402e142d121aa1fa25f17fb8bc0591c084ed786e671b827d09081b",
+  "ret": "baf903eb9c5d0af35d2d2086724d5a3b8a67ed9ec81b2e42db7c583b7db68b8c"
+ },
+ "fixer not ok": {
+  "labels": [
+   "red-driver:a",
+   "red-driver:b",
+   "red-driver:c",
+   "red-navigator:a",
+   "red-navigator:b",
+   "red-navigator:c",
+   "green-driver:a",
+   "green-driver:c",
+   "green-navigator:a",
+   "green-navigator:c",
+   "green-driver:b",
+   "green-navigator:b",
+   "reviewer",
+   "fixer:a",
+   "final-verifier"
+  ],
+  "calls": [
+   "44c0b584d136cfd84bc8d4553560060fd49326bac9719bc8a08a572fc57e4405",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "f0ad3bcdce9e95fc7271c052e8fd0bc9ba8011aaaa7ae338042bab8a23d87c96",
+   "339be3ea6da87068c991e5a3d2188a2b6c5e0f34208ff4877ed421ddc9a66ff0",
+   "46db8c3ce33331ac24db5b4557e1f7a748d7e6ef9d7956685bece61dc583cefa",
+   "093466272e152b664ba65573b40de456836825472008871f9046bd4ff402803e",
+   "73829a6ddc41a43eb93af5266b69e8670165e67dfaa8cec57bd718acae8f5d1a",
+   "f45768885d31555c7c12d2500d2d99744d84395590a3480a1df906fc458b8624",
+   "d2fccfe86d9168b09b45d5e0391ffc2e1f688519c2ecdfc07edc3f165577af1a",
+   "b02f8bc802bfa1f6a2b4330752d2fae84314f183cf24ca52098562a637abd124",
+   "a24b7aeb422905dfb48c6302bf530f07ca37e4723c34189c7a2e81ddd0d41906",
+   "636b8f0d574ba99362af973bdb1912e4465cddf5ce81b7feb8c5cdc49e07ff3d",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb",
+   "f890fc3a815cf4bea28fa120ce50229c0d8f0aca7f93a8a4246993d9a2e9c8f5",
+   "152b628ffe6ddf52736efa428ba56fe233d603f812b6ee23af2d6a6790e96f58"
+  ],
+  "logs": "9f2891d0c5c4eedd728d8efd0f37be60f327426c7325728c48139cd55b5532b4",
+  "ret": "7bfeafbffa72daeed23480a1dd4eebdef46aeeeadbf56a0d97f17d3d2b2201df"
+ },
+ "integration": {
+  "labels": [
+   "red-driver:a",
+   "red-driver:b",
+   "red-driver:c",
+   "red-navigator:a",
+   "red-navigator:b",
+   "red-navigator:c",
+   "green-driver:a",
+   "green-driver:c",
+   "green-navigator:a",
+   "green-navigator:c",
+   "green-driver:b",
+   "green-navigator:b",
+   "integration-tester",
+   "reviewer",
+   "fixer:b",
+   "final-verifier"
+  ],
+  "calls": [
+   "44c0b584d136cfd84bc8d4553560060fd49326bac9719bc8a08a572fc57e4405",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "f0ad3bcdce9e95fc7271c052e8fd0bc9ba8011aaaa7ae338042bab8a23d87c96",
+   "339be3ea6da87068c991e5a3d2188a2b6c5e0f34208ff4877ed421ddc9a66ff0",
+   "46db8c3ce33331ac24db5b4557e1f7a748d7e6ef9d7956685bece61dc583cefa",
+   "093466272e152b664ba65573b40de456836825472008871f9046bd4ff402803e",
+   "73829a6ddc41a43eb93af5266b69e8670165e67dfaa8cec57bd718acae8f5d1a",
+   "f45768885d31555c7c12d2500d2d99744d84395590a3480a1df906fc458b8624",
+   "d2fccfe86d9168b09b45d5e0391ffc2e1f688519c2ecdfc07edc3f165577af1a",
+   "b02f8bc802bfa1f6a2b4330752d2fae84314f183cf24ca52098562a637abd124",
+   "a24b7aeb422905dfb48c6302bf530f07ca37e4723c34189c7a2e81ddd0d41906",
+   "636b8f0d574ba99362af973bdb1912e4465cddf5ce81b7feb8c5cdc49e07ff3d",
+   "cc6b0b69bb898fa44bc57a0461793a7647fe45f6d19088e9272fd203b15678cb",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb",
+   "aac4875c34cd3c3f9e4a9e4bef73eb978b36b892e8077ea50243627e8c0179f9",
+   "152b628ffe6ddf52736efa428ba56fe233d603f812b6ee23af2d6a6790e96f58"
+  ],
+  "logs": "9f2891d0c5c4eedd728d8efd0f37be60f327426c7325728c48139cd55b5532b4",
+  "ret": "8381d64df27c388f9e0d444c886f557fbd94fa68554c8430befce6a97c0d5b69"
+ },
+ "fast with findings and integration": {
+  "labels": [
+   "tdd-driver:a",
+   "red-driver:b",
+   "tdd-driver:c",
+   "green-navigator:a",
+   "red-navigator:b",
+   "green-navigator:c",
+   "green-driver:b",
+   "green-navigator:b",
+   "integration-tester",
+   "reviewer",
+   "fixer:a",
+   "final-verifier"
+  ],
+  "calls": [
+   "2a4e5a5eae10cbd453324a0563ddcee20f3c08cbca1c7fbc417b9bb254b1c375",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "6e183f9eca0d518a747e8c591255206b7d8165ac2cbe3e24f624ea2a368d0676",
+   "908da43b9346d5cf305669c4ce32a8e836f34b35aee22c7e63bee251edd610fc",
+   "46db8c3ce33331ac24db5b4557e1f7a748d7e6ef9d7956685bece61dc583cefa",
+   "17de20b1deb552ae2805f71afb05652191787abf9f9662cabe75483fa84f06f6",
+   "a24b7aeb422905dfb48c6302bf530f07ca37e4723c34189c7a2e81ddd0d41906",
+   "636b8f0d574ba99362af973bdb1912e4465cddf5ce81b7feb8c5cdc49e07ff3d",
+   "cc6b0b69bb898fa44bc57a0461793a7647fe45f6d19088e9272fd203b15678cb",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb",
+   "f890fc3a815cf4bea28fa120ce50229c0d8f0aca7f93a8a4246993d9a2e9c8f5",
+   "152b628ffe6ddf52736efa428ba56fe233d603f812b6ee23af2d6a6790e96f58"
+  ],
+  "logs": "457079b9ff3bf80363f5b958acc7418b6da090c909491701a709eed06b0eaa3c",
+  "ret": "436bec47b2e5e3a87004e9c821e94a2bd339dd7b842d396a7b2867c1da59fbee"
+ },
+ "v2.0.0 continue.json": {
+  "labels": [
+   "red-navigator:c",
+   "green-driver:b:rework",
+   "green-driver:c",
+   "green-navigator:b:recheck",
+   "green-navigator:c",
+   "reviewer"
+  ],
+  "calls": [
+   "093466272e152b664ba65573b40de456836825472008871f9046bd4ff402803e",
+   "df1961a108ad4ff554140a339845acbc76a1815b7bb0018158e98009c58078cf",
+   "f45768885d31555c7c12d2500d2d99744d84395590a3480a1df906fc458b8624",
+   "5f6378743f8380f20e6441ef910ada0ab6fedf813649545363f9f57958aaba29",
+   "b02f8bc802bfa1f6a2b4330752d2fae84314f183cf24ca52098562a637abd124",
+   "d47f14daa84c9e2d5a4ee818e4e41bd0bb6b638a9614e2884b28d2a68c7877eb"
+  ],
+  "logs": "08ffbdf02b55da52d38aa2a7a85eaff1fff99096f69ec67246caccf8826b89a0",
+  "ret": "9502baa5f606c4f8afcb3cf66c84b96edc3fb3fd21258e27939251b0c9412950"
+ },
+ "agent cap": {
+  "labels": [
+   "red-driver:a",
+   "red-driver:b",
+   "red-driver:c",
+   "red-navigator:a"
+  ],
+  "calls": [
+   "44c0b584d136cfd84bc8d4553560060fd49326bac9719bc8a08a572fc57e4405",
+   "80e55341246659567f03ac6a42b32dd12317076207868d389b36d6f04ca7fd52",
+   "f0ad3bcdce9e95fc7271c052e8fd0bc9ba8011aaaa7ae338042bab8a23d87c96",
+   "339be3ea6da87068c991e5a3d2188a2b6c5e0f34208ff4877ed421ddc9a66ff0"
+  ],
+  "logs": "6808b372bd203a4d41b5066f0bd3b274c898052ab3d7bb4e290f7de3eb586782",
+  "ret": "c9f1210a7bdfc0e21719c1277d9263d8604c940fda8c0329b8a3d1ff1d37500d"
+ }
+}

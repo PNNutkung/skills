@@ -56,10 +56,18 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `PTDD_GUARD_ENABLED` | `true` \| `false` | `false` | paired-agent-tdd file fence (`hooks/ptdd-guard.mjs`): each subagent edits only its group's files |
 | `PTDD_ADR_AUTO_FIND_ENABLED` | `true` \| `false` | `true` | with neither `dod[]` nor `dodFile` in `plan.json`, use the ADR whose `touches` cover the groups' `src` |
 | `PTDD_AGENT_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most agents one paired-agent-tdd run may start |
+| `PTDD_PIPELINE_MODE` | `fast` \| `paired` | `fast` | `fast`: a group with no `after` gets one tdd-driver and one navigator; `paired`: separate RED and GREEN pairs (the v2.0.0 pipeline); `plan.mode` overrides it |
+| `PTDD_QUICK_DRIVER_GATE_ENABLED` | `true` \| `false` | `true` | a driver's middle GREEN gate run skips mutation; its first and last runs and the navigator's run keep it |
+| `PTDD_GATE_REUSE_ENABLED` | `true` \| `false` | `true` | a navigator, and `verify`, reuse a gate result when a sha256 of the snapshot, the group's files and the gate's arguments matches (the flake check still re-runs) |
+| `PTDD_COURIER_SKIP_ENABLED` | `true` \| `false` | `true` | no final courier when every fixer reports its gate ok; `tdd.mjs verify` is the check |
+| `PTDD_PARALLEL_REVIEW_ENABLED` | `true` \| `false` | `true` | the integration-tester and the reviewer run at the same time; the integration test is still gated but not read by the reviewer |
 | `QA_ADR_AUTO_FIND_ENABLED` | `true` \| `false` | `true` | with neither `requirements` nor `dodFile` in `findings.json`, use the ADR whose `touches` cover the files the findings name |
 | `ZT_POST_GUARD_ENABLED` | `true` \| `false` | `false` | zero-trust-review posts nothing to the review host until the user approves |
 | `ZT_SELF_REVIEW_GUARD_ENABLED` | `true` \| `false` | `false` | the author of a change never posts its review verdict, and a defender answers each confirmed finding (blue/red) |
 | `ZT_AGENT_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most agents one zero-trust-review run may start |
+| `ZT_MUTATION_BASELINE_REUSE_ENABLED` | `true` \| `false` | `true` | `mutate.mjs --baseline-from` reuses the unmutated HEAD run that `testprobe.mjs --head-out` wrote, only when it is from the same tree, command and environment, instead of running its own baseline |
+| `ZT_MUTATION_BUDGET_STRICT_ENABLED` | `true` \| `false` | `true` | when the `mutate.mjs` budget runs out, mutants already running are stopped too (process trees killed, reported `skipped`), not only those not yet started |
+| `ZT_TEST_PROCESS_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most test commands `testprobe.mjs` or `mutate.mjs` runs at once |
 | `ZT_SANDBOX_MODE` | `auto` \| `none` \| `seatbelt` \| `bwrap` \| `docker` | `auto` | which sandbox `sandbox-run.mjs` uses: `auto` takes the first that works, a name forces that one (or exit 86), `none` pretends there is none |
 
 `true`, `false`, `unlimited` and mode names are read in any case. Old names stop the tool until they are unset: `DOD_GUARD`, `PTDD_GUARD`, `PTDD_AGENT_CAP`, `ZT_POST_GUARD`, `ZT_SELF_REVIEW_GUARD`, `ZT_AGENT_CAP`, `ZT_SANDBOX_FORCE`.
