@@ -189,6 +189,11 @@ def main():
     ap.add_argument('--no-merge', action='store_true'); ap.add_argument('--min-group', type=int, default=MIN_GROUP)
     ap.add_argument('--diff-dir')
     a = ap.parse_args()
+    try:  # flags first: a value that is not valid, or an old name, stops the run before any work
+        cap, bluered = agent_max(os.environ), blue_red(os.environ)
+    except FlagError as e:
+        print(f'triage: {e}', file=sys.stderr)
+        sys.exit(2)
     if a.self_test: return self_test()
     head, tip = git('rev-parse', a.head, a.base).split()
     mb = git('merge-base', a.base, head).strip()
@@ -230,22 +235,44 @@ def main():
     out = {'base': a.base, 'head': head, 'mergeBase': mb, 'baseTip': tip, 'filesChanged': len(files),
            'linesChanged': sum(f['lines'] for f in files.values()), 'sourceLines': src_lines, 'mode': mode, 'groups': groups,
            'points': {'always': ALWAYS, 'fired': fired, 'skipped': skipped}, 'facts': facts}
-    cap = agent_cap(os.environ.get('ZT_AGENT_CAP', ''))
     if cap:
         out['agentCap'] = cap  # workflow.js never spawns past it; raising it is the user's call
-    if blue_red(os.environ.get('ZT_SELF_REVIEW_GUARD', '')):
+    if bluered:
         out['blueRed'] = True  # a defender answers each confirmed medium+ finding before it reaches the report (probes.md#bluered)
     print(json.dumps(out, separators=(',', ':')))
 
 
-def agent_cap(raw):
-    """ZT_AGENT_CAP as a positive int, or None (unset, empty or invalid: no cap, as before)."""
-    return int(raw) if raw.strip().isdigit() and int(raw) > 0 else None
+class FlagError(Exception):
+    """A flag that is not valid, or an old flag name still set: the run stops with the fix (same rules as flags.mjs)."""
 
 
-def blue_red(raw):
-    """ZT_SELF_REVIEW_GUARD turns on the blue/red exchange only when it is exactly '1', like the hooks; anything else: off, as before."""
-    return raw == '1'
+def _old(env, old, use):
+    if env.get(old, '').strip():
+        raise FlagError(f'{old} was renamed: use {use}, and unset {old}')
+
+
+def agent_max(env):
+    """ZT_AGENT_MAX: a whole number above 0; None (no limit) when unset or unlimited."""
+    _old(env, 'ZT_AGENT_CAP', 'ZT_AGENT_MAX=<number> or ZT_AGENT_MAX=unlimited')
+    raw = env.get('ZT_AGENT_MAX', '')
+    v = raw.strip()
+    if not v or v.lower() == 'unlimited':
+        return None
+    if v.isascii() and v.isdigit() and int(v) > 0:
+        return int(v)
+    raise FlagError(f'ZT_AGENT_MAX={raw} is not valid: use a whole number above 0, or unlimited')
+
+
+def blue_red(env):
+    """ZT_SELF_REVIEW_GUARD_ENABLED=true turns on the blue/red exchange; false or unset: off."""
+    _old(env, 'ZT_SELF_REVIEW_GUARD', 'ZT_SELF_REVIEW_GUARD_ENABLED=true or ZT_SELF_REVIEW_GUARD_ENABLED=false')
+    raw = env.get('ZT_SELF_REVIEW_GUARD_ENABLED', '')
+    v = raw.strip().lower()
+    if v in ('', 'false'):
+        return False
+    if v == 'true':
+        return True
+    raise FlagError(f'ZT_SELF_REVIEW_GUARD_ENABLED={raw} is not valid: use true or false')
 
 
 if __name__ == '__main__':

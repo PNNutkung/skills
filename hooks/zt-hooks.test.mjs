@@ -437,7 +437,7 @@ const BYPASS_ALLOW = [
 for (const c of BYPASS_ALLOW) test(`guard allows after the allow-lists: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'allow'));
 
 // environment switches must not steer the sandbox runner, the run folder or the loaders: prefix, `env`, and `export` forms
-const STEERING = ['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RUN_DIR', 'ZT_MARKER_DIR', 'ZT_LEDGER', 'XDG_RUNTIME_DIR', 'HOME', 'TMPDIR',
+const STEERING = ['ZT_SANDBOX_MODE', 'ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RUN_DIR', 'ZT_MARKER_DIR', 'ZT_LEDGER', 'XDG_RUNTIME_DIR', 'HOME', 'TMPDIR',
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'NODE_OPTIONS', 'PYTHONSTARTUP', 'BASH_ENV',
   'PATH', 'ZT_SANDBOX_IMAGE', 'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
   'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_EXTERNAL_DIFF', 'GIT_PAGER', 'GIT_EDITOR',

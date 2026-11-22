@@ -13,7 +13,8 @@
 // it is a regular file owned by root or us with nothing group/world-writable on the way up to /. They run with PATH=/usr/bin:/bin (docker also gets the
 // host's DOCKER_* vars); the caller's PATH and --env PATH= reach only the program inside.
 // The tool refuses to start (exit 64, before anything else) if its own env has LD_*/DYLD_* loader vars, NODE_OPTIONS and friends: see checkToolEnv.
-// Env vars read: ZT_SANDBOX_FORCE (none|seatbelt|bwrap|docker: only ever forces a REAL backend or exit 86), ZT_SANDBOX_IMAGE (docker image),
+// Env vars read: ZT_SANDBOX_MODE (auto (default)|none|seatbelt|bwrap|docker: only ever forces a REAL backend or exit 86; any other value, or the old
+// ZT_SANDBOX_FORCE, exits 64), ZT_SANDBOX_IMAGE (docker image),
 // LANG LC_ALL TERM TZ and PATH (all forwarded to the program inside only), DOCKER_* (docker CLI only), TMPDIR (runner temp dir), and via runctx.mjs
 // ZT_RUN_DIR, ZT_MARKER_DIR, XDG_RUNTIME_DIR, HOME (ledger location).
 // Mounts: --rw (a writable --cwd is one too) is an ALLOW-LIST: strictly below the system temp dir (os.tmpdir(), /tmp, /private/tmp, by realpath) and not over a
@@ -29,6 +30,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { appendSafe, markerDir, readMarker, resolveRun } from './runctx.mjs';
+import { FlagError, oneOf } from './flags.mjs';
 
 const EXIT = { usage: 64, noBackend: 86, timeout: 124, cannotStart: 127 };
 const KILL_GRACE_MS = 2000;
@@ -258,11 +260,16 @@ const BACKENDS = {
   docker: { plan: dockerPlan, ok: () => !!process.env.ZT_SANDBOX_IMAGE && !!launcherBin('docker') && probe(launcherBin('docker'), ['version', '--format', '{{.Server.Version}}'], dockerEnv()) },
 };
 
-// ZT_SANDBOX_FORCE: none = pretend no backend; a backend name = consider only that one; anything else matches no backend. Never skips confinement.
+// ZT_SANDBOX_MODE: auto (default) = the first backend that works; none = pretend no backend; a backend name = consider only that one.
+// Any other value, or the old ZT_SANDBOX_FORCE, is a usage error (exit 64). Never skips confinement.
+export const SANDBOX_MODES = ['auto', 'none', 'seatbelt', 'bwrap', 'docker'];
+function sandboxMode() {
+  try { return oneOf(process.env, 'ZT_SANDBOX_MODE', SANDBOX_MODES, 'auto', { renamedFrom: 'ZT_SANDBOX_FORCE' }); } catch (e) { if (e instanceof FlagError) usage(e.message); throw e; }
+}
 function detect() {
-  const force = process.env.ZT_SANDBOX_FORCE;
-  if (force === 'none') return null;
-  return ['seatbelt', 'bwrap', 'docker'].find(n => (!force || force === n) && BACKENDS[n].ok()) ?? null;
+  const mode = sandboxMode();
+  if (mode === 'none') return null;
+  return ['seatbelt', 'bwrap', 'docker'].find(n => (mode === 'auto' || mode === n) && BACKENDS[n].ok()) ?? null;
 }
 
 // null = no ledger. The path is fixed: nothing the caller passes can redirect these lines to another file.
@@ -302,7 +309,7 @@ export function buildEnv(userEnv, tmp, host = process.env) {
 export const buildPlan = (backend, c) => BACKENDS[backend].plan(c);
 
 function main() {
-  try { checkToolEnv(); start(); } catch (e) { if (e instanceof Usage) die(EXIT.usage, e.message); else throw e; }
+  try { checkToolEnv(); sandboxMode(); start(); } catch (e) { if (e instanceof Usage) die(EXIT.usage, e.message); else throw e; }
 }
 
 function start() {

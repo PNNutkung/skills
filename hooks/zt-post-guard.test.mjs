@@ -1,4 +1,4 @@
-// Tests for the zero-trust-review post guard (opt-in with ZT_POST_GUARD=1). Run: node --test hooks/zt-post-guard.test.mjs
+// Tests for the zero-trust-review post guard (opt-in with ZT_POST_GUARD_ENABLED=true). Run: node --test hooks/zt-post-guard.test.mjs
 // postVerdict is tested directly; the wiring is tested through zt-guard.mjs as a child process with a private TMPDIR and ZT_MARKER_DIR,
 // so a real marker on this host never takes part.
 import { after, test } from 'node:test';
@@ -112,27 +112,35 @@ test('should deny posting commands when they are wrapped in random prefixes, spa
 // ---------- wiring through zt-guard.mjs ----------
 const lead = (command, fx, env = {}) => spawnSync(process.execPath, [GUARD], {
   input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: '/work/repo', tool_input: { command } }),
-  env: { ...process.env, TMPDIR: fx.tmp, ZT_MARKER_DIR: fx.md, [POST_GUARD_ENV]: '', ...env }, encoding: 'utf8',
+  env: { ...process.env, TMPDIR: fx.tmp, ZT_MARKER_DIR: fx.md, ZT_POST_GUARD: '', ZT_SELF_REVIEW_GUARD: '', ZT_SELF_REVIEW_GUARD_ENABLED: '', [POST_GUARD_ENV]: '', ...env }, encoding: 'utf8',
 });
 const decision = r => { assert.equal(r.status, 0, r.stderr); return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.permissionDecision : 'allow'; };
 
-test('should deny a lead-session post when ZT_POST_GUARD=1 and a review run is active', () => {
-  assert.equal(decision(lead('gh pr comment 1 -b x', fixture(), { [POST_GUARD_ENV]: '1' })), 'deny');
+test('should deny a lead-session post when ZT_POST_GUARD_ENABLED=true and a review run is active', () => {
+  assert.equal(decision(lead('gh pr comment 1 -b x', fixture(), { [POST_GUARD_ENV]: 'true' })), 'deny');
 });
 
 test('should allow a lead-session post when the flag is off, so current installs keep their behavior', () => {
   assert.equal(decision(lead('gh pr comment 1 -b x', fixture())), 'allow');
-  assert.equal(decision(lead('gh pr comment 1 -b x', fixture(), { [POST_GUARD_ENV]: '0' })), 'allow');
+  assert.equal(decision(lead('gh pr comment 1 -b x', fixture(), { [POST_GUARD_ENV]: 'false' })), 'allow');
+});
+
+test('should deny every Bash command, naming the fix, when ZT_POST_GUARD_ENABLED is not true or false or the old ZT_POST_GUARD is set', () => {
+  for (const [env, re] of [[{ [POST_GUARD_ENV]: '1' }, /ZT_POST_GUARD_ENABLED=1 is not valid: use true or false/], [{ ZT_POST_GUARD: '1' }, /ZT_POST_GUARD was renamed: use ZT_POST_GUARD_ENABLED=true/]]) {
+    const r = lead('ls', fixture(), env);
+    assert.equal(decision(r), 'deny', JSON.stringify(env));
+    assert.match(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason, re);
+  }
 });
 
 test('should allow a lead-session post when no review run is active', () => {
   const fx = fixture();
   rmSync(join(fx.md, '.active'));
-  assert.equal(decision(lead('gh pr comment 1 -b x', fx, { [POST_GUARD_ENV]: '1' })), 'allow');
+  assert.equal(decision(lead('gh pr comment 1 -b x', fx, { [POST_GUARD_ENV]: 'true' })), 'allow');
 });
 
 test('should allow a lead-session post when the user approved posting', () => {
-  assert.equal(decision(lead('gh pr comment 1 -b x', fixture({ approved: true }), { [POST_GUARD_ENV]: '1' })), 'allow');
+  assert.equal(decision(lead('gh pr comment 1 -b x', fixture({ approved: true }), { [POST_GUARD_ENV]: 'true' })), 'allow');
 });
 
 test('should write the approval file when the user runs note.mjs allow-post, and refuse with no active run', () => {

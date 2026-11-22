@@ -1,4 +1,4 @@
-// Self-review guard (opt-in: ZT_SELF_REVIEW_GUARD=1). An author never reviews its own code (ai-code-delivery: "Fresh reviewer").
+// Self-review guard (opt-in: ZT_SELF_REVIEW_GUARD_ENABLED=true). An author never reviews its own code (ai-code-delivery: "Fresh reviewer").
 // zt-authors.mjs (PostToolUse Edit|Write|MultiEdit) records who edited which file in <markerDir>/authors.jsonl. zt-guard.mjs calls selfReviewVerdict
 // for every Bash command, and it denies a review verdict (gh pr review, glab mr approve) when the actor edited any file the branch changes.
 // The actor is the subagent (agent_id) when there is one, else the session. A fresh subagent started by the authoring session is NOT the author:
@@ -10,7 +10,8 @@ import { spawnSync } from 'node:child_process';
 import { basename, isAbsolute, join } from 'node:path';
 import { commandSegments, stripPrefix, tokenize } from './zt-post-guard.mjs';
 
-export const SELF_REVIEW_ENV = 'ZT_SELF_REVIEW_GUARD';
+export const SELF_REVIEW_ENV = 'ZT_SELF_REVIEW_GUARD_ENABLED';
+export const OLD_SELF_REVIEW_ENV = 'ZT_SELF_REVIEW_GUARD';
 export const LEDGER = 'authors.jsonl';
 const GIT_TIMEOUT_MS = 3000;
 const MAX_LEDGER_BYTES = 4 * 1024 * 1024; // read at most the last 4 MB: old rows age out of the check
