@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FlagError } from './flags.mjs';
-import { FULL, QUICK, SPEED_DEFAULT, SPEED_ENV, SPEED_OFF, SPEED_OFF_ENV, driverGateRuns, groupMode, mayStore, navigatorReuses, pipelineOf, readSpeed, reviewInParallel, skipCourier, speedForArgs, speedOf, verifyReuses } from './speed.mjs';
+import { FULL, QUICK, SPEED_DEFAULT, SPEED_ENV, SPEED_OFF, SPEED_OFF_ENV, driverGateRuns, groupMode, mayStore, navigatorReuses, pipelineOf, processShares, readSpeed, reviewInParallel, skipCourier, speedForArgs, speedOf, untrustedByFinal, verifyReuses } from './speed.mjs';
 
 const BOOLS = ['quickDriverGate', 'gateReuse', 'courierSkip', 'parallelReview'];
 const COMBOS = ['fast', 'paired'].flatMap(pipeline => Array.from({ length: 16 }, (_, i) => ({ pipeline, ...Object.fromEntries(BOOLS.map((k, b) => [k, !!(i & (1 << b))])) })));
@@ -119,4 +119,31 @@ test('fcompat: every decision with every flag off is the v2.0.0 one', () => {
     assert.equal(skipCourier(off, { a: { gateOk: true } }), false);
     assert.equal(reviewInParallel(off, true), false);
   }
+});
+
+test('zproc: processShares never lets one GREEN gate run more than ZT_TEST_PROCESS_MAX test commands at once; unlimited runs every part together, uncapped (fuzz)', () => {
+  assert.deepEqual(processShares(null, { mutate: true, cover: true }), { together: true, probe: null, mutate: null, cover: null });
+  assert.deepEqual(processShares(1, { mutate: true, cover: true }), { together: false, probe: 1, mutate: 1, cover: 1 });
+  assert.deepEqual(processShares(5, { mutate: true, cover: true }), { together: true, probe: 2, mutate: 2, cover: 1 });
+  for (let max = 1; max <= 40; max++) for (const mutate of [true, false]) for (const cover of [true, false]) {
+    const s = processShares(max, { mutate, cover }), parts = [s.probe, mutate ? s.mutate : 0, cover ? s.cover : 0];
+    assert.ok(parts.every(p => p === 0 || (Number.isInteger(p) && p >= 1 && p <= max)), JSON.stringify([max, mutate, cover, s]));
+    const peak = s.together ? parts.reduce((a, b) => a + b, 0) : Math.max(...parts);
+    assert.ok(peak <= max, `peak ${peak} > ${max}: ${JSON.stringify(s)}`);
+    if (max >= 3) assert.equal(s.together, true, `a cap of ${max} still runs the parts together`);
+  }
+});
+
+test('pcourier: untrustedByFinal: a passing final, or the courier on, trusts every gate; a failing final under the courier skip blames the groups whose tests fail, or the run', () => {
+  const plan = { groups: [{ id: 'a', tests: ['ta'] }, { id: 'b', tests: ['tb'] }] };
+  const fin = (together, o = {}) => ({ ok: false, reasons: ['r1'], together, existing: { regressions: [] }, outOfScope: [], ...o });
+  const on = { courierSkip: true }, off = SPEED_OFF;
+  assert.equal(untrustedByFinal(plan, on, false, { ok: true }), null);
+  assert.equal(untrustedByFinal(plan, off, false, fin([{ file: 'tb', exit: 1 }])), null, 'flags off and no courier skipped: v2.0.0');
+  assert.equal(untrustedByFinal(plan, on, false, null), null);
+  assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'ta', exit: 0 }, { file: 'tb', exit: 1 }])), { groups: ['b'], run: false });
+  assert.deepEqual(untrustedByFinal(plan, off, true, fin([{ file: 'tb', exit: 1 }])), { groups: ['b'], run: false }, 'the return says the courier was skipped');
+  assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'ta', exit: 0 }], { outOfScope: ['x'] })), { groups: ['a', 'b'], run: true });
+  assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'tb', exit: 1 }], { existing: { regressions: [{ file: 'old' }] } })), { groups: ['a', 'b'], run: true });
+  assert.deepEqual(untrustedByFinal(plan, on, false, fin([])), { groups: ['a', 'b'], run: true }, 'a failure no group owns');
 });

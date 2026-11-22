@@ -1253,3 +1253,156 @@ test('preuse: with gate reuse on, the mutation probe takes its baseline from the
   off.tdd('green', ['--group', 'a']); off.tdd('green', ['--group', 'a']);
   assert.deepEqual(['baseline' in off.gate('a.green.json').mutation, existsSync(join(off.run, 'gates', 'a.green.head.json'))], [false, false]);
 });
+
+// ---------------------------------------------------------------- review fixes (PR #22): zero-trust-review flags at the gates, the process cap per gate, cross-group regressions at verify
+const ZT_OFF_ENV = { ZT_MUTATION_BASELINE_REUSE_ENABLED: 'false', ZT_MUTATION_BUDGET_STRICT_ENABLED: 'false', ZT_TEST_PROCESS_MAX: '' };
+const ALL_OFF_ENV = { ...SPEED_OFF_ENV, ...ZT_OFF_ENV };
+const BAD_ZT = [['ZT_MUTATION_BUDGET_STRICT_ENABLED', 'yes', /ZT_MUTATION_BUDGET_STRICT_ENABLED=yes is not valid: use true or false/],
+  ['ZT_MUTATION_BASELINE_REUSE_ENABLED', '1', /ZT_MUTATION_BASELINE_REUSE_ENABLED=1 is not valid: use true or false/],
+  ['ZT_TEST_PROCESS_MAX', '0', /ZT_TEST_PROCESS_MAX=0 is not valid: use a whole number above 0, or unlimited/]];
+
+test('fstrict: plan validates the zero-trust-review flags up front: a value that is not valid stops it (exit 2) with the zero-trust-review fix', t => {
+  for (const [k, v, re] of BAD_ZT) {
+    const fx = fixture(t), r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { [k]: v });
+    assert.equal(r.status, 2, `${k}=${v}: ${r.err}`);
+    assert.match(r.err, re);
+    assert.equal(r.out, '', 'no Workflow args');
+  }
+});
+
+test('fstrict: a zero-trust-review flag that is not valid at gate time never gives a GREEN: green (and red, final) stop with the fix', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  for (const [k, v, re] of BAD_ZT) {
+    for (const cmd of [['green', '--group', 'a'], ['red', '--group', 'a'], ['final']]) {
+      const r = fx.tdd(cmd[0], cmd.slice(1), { [k]: v });
+      assert.equal(r.status, 2, `${cmd[0]} ${k}=${v}: ${r.out}`);
+      assert.match(r.err, re);
+      assert.doesNotMatch(r.out, /ok=true/);
+    }
+  }
+});
+
+// a copy of zero-trust-review whose mutation probe crashes (exit 2, no JSON): what an invalid flag did to it before the gates validated the flags themselves
+function crashingZt(fx) {
+  const zt = join(fx.dir, 'zt');
+  execFileSync('cp', ['-R', join(HERE, '..', 'zero-trust-review'), zt]);
+  writeFileSync(join(zt, 'mutate.mjs'), "console.error('mutate: boom'); process.exit(2);\n");
+  return zt;
+}
+
+test('green: a mutation probe that errors makes the gate not ok whenever mutation should have run; with every flag off it is ignored as in v2.0.0; off in the plan or --quick it never runs', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  const ZT_DIR = crashingZt(fx);
+  const r = fx.tdd('green', ['--group', 'a'], { ZT_DIR });
+  assert.match(r.out, /^GREEN a ok=false/, r.out + r.err);
+  assert.match(r.out, /not ok: .*mutation probe: mutate\.mjs exited 2: mutate: boom/);
+  assert.equal(existsSync(join(fx.run, 'gates', 'a.green.cache.json')), false, 'an errored run is never stored for reuse');
+  assert.match(fx.tdd('green', ['--group', 'a', '--quick'], { ZT_DIR }).out, /^GREEN a ok=true/, 'a quick run does not mutate');
+  const off = plannedWith(t, ALL_OFF_ENV).fx;
+  redThenCode(off);
+  assert.match(off.tdd('green', ['--group', 'a'], { ...ZT_OFF_ENV, ZT_DIR: crashingZt(off) }).out, /^GREEN a ok=true/, 'every flag off: v2.0.0 ignored a mutation probe error');
+  const planOff = plannedWith(t, ON_ENV, { plan: { mutation: { off: true } } }).fx;
+  redThenCode(planOff);
+  assert.match(planOff.tdd('green', ['--group', 'a'], { ZT_DIR: crashingZt(planOff) }).out, /^GREEN a ok=true/, 'mutation off in the plan');
+});
+
+test('preuse: the gate cache key holds the resolved mutation policy: another ZT_MUTATION_BUDGET_STRICT_ENABLED, ZT_MUTATION_BASELINE_REUSE_ENABLED, ZT_TEST_PROCESS_MAX or ZT_SANDBOX_IMAGE runs in full', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  assert.match(fx.tdd('green', ['--group', 'a']).out, /^GREEN a ok=true/);
+  for (const env of [{ ZT_MUTATION_BUDGET_STRICT_ENABLED: 'false' }, { ZT_MUTATION_BASELINE_REUSE_ENABLED: 'false' }, { ZT_TEST_PROCESS_MAX: '3' }, { ZT_SANDBOX_IMAGE: 'other:1' }]) {
+    assert.doesNotMatch(fx.tdd('green', ['--group', 'a', '--reuse'], env).out, /reused:/, JSON.stringify(env));
+    fx.tdd('green', ['--group', 'a']); // back to the stored default
+  }
+  assert.match(fx.tdd('green', ['--group', 'a', '--reuse'], { ZT_MUTATION_BUDGET_STRICT_ENABLED: 'TRUE', ZT_TEST_PROCESS_MAX: 'unlimited' }).out, /reused:/, 'the same resolved values are the same key');
+});
+
+test('pquick: dod --stage green does not accept a quick GREEN gate: it ran no mutants and is not the final word', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  fx.tdd('green', ['--group', 'a', '--quick']);
+  const q = dod(fx, 'green');
+  assert.match(q.out, /^DOD a stage=green ok=false/, q.out);
+  assert.match(q.out, /the GREEN gate is quick \(--quick: no mutants\), not final: run it without --quick/);
+  fx.tdd('green', ['--group', 'a']);
+  assert.match(dod(fx, 'green').out, /^DOD a stage=green ok=true/);
+});
+
+// Like the real runner: each command leaves a marker in live/ while it lasts and logs how many it saw (peak.log), next to the runner file, shared by every process of a gate.
+const PEAK_STUB = `
+import { spawn } from 'node:child_process';
+import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const dir = dirname(fileURLToPath(import.meta.url)), a = process.argv.slice(2);
+if (a[0] === '--check') { console.log('stub'); process.exit(0); }
+const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
+const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
+const live = join(dir, 'live'), me = join(live, String(process.pid));
+mkdirSync(live, { recursive: true });
+writeFileSync(me, '');
+appendFileSync(join(dir, 'peak.log'), readdirSync(live).length + '\\n');
+const env = { ...process.env };
+for (const kv of vals('--env')) env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
+const child = spawn(cmd[0], cmd.slice(1), { cwd: vals('--cwd')[0], env, stdio: 'inherit', detached: true });
+process.on('SIGTERM', () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } });
+child.on('exit', code => { rmSync(me, { force: true }); process.stderr.write('ZT-RUN stub exit=' + (code ?? 1) + '\\n'); process.exit(code ?? 1); });
+`;
+const peakRunner = fx => {
+  const d = mkdtempSync(join(fx.dir, 'peak-')), runner = join(d, 'peak-runner.mjs');
+  writeFileSync(runner, PEAK_STUB);
+  fx.runner = runner;
+  return { reset: () => rmSync(join(d, 'peak.log'), { force: true }), peak: () => { try { return Math.max(0, ...readFileSync(join(d, 'peak.log'), 'utf8').split('\n').filter(Boolean).map(Number)); } catch { return 0; } } };
+};
+const CALC = repo => ({ cover: 'sleep 0.2; : > {out}', dod: [{ id: 'AC1', text: 'f gives 2 and g gives 3', source: 'assumed', kinds: ['happy'] }],
+  groups: [{ id: 'a', tests: ['tests/test_calc.sh', 'tests/test_calc2.sh'], src: ['src/calc.mjs'], dod: ['AC1'], after: [] }] });
+const calcTest = (name, fn, want) => `# ${name}\nsleep 0.2\n${process.execPath} -e "import('./src/calc.mjs').then(m => process.exit(m.${fn}() === ${want} ? 0 : 1))"\n`;
+
+test('zproc: ZT_TEST_PROCESS_MAX caps the test commands ONE gate runs at once (red; green with its test probe, mutation probe and coverage; reflake; final); unset runs as before', { timeout: 240000 }, t => {
+  const { fx } = plannedWith(t, { ...ON_ENV, ZT_TEST_PROCESS_MAX: '' }, { plan: CALC });
+  const stub = peakRunner(fx);
+  put(fx.repo, { 'tests/test_calc.sh': calcTest('test_ac1_happy', 'f', 2), 'tests/test_calc2.sh': calcTest('test_ac1_happy_g', 'g', 3) });
+  const peakOf = (cmd, env) => { stub.reset(); const r = fx.tdd(cmd[0], cmd.slice(1), env); assert.equal(r.status, 0, r.err); return { peak: stub.peak(), out: r.out }; };
+  assert.ok(peakOf(['red', '--group', 'a'], {}).peak >= 2, 'unset: red runs its files together');
+  put(fx.repo, { 'src/calc.mjs': 'export const f = () => 1 + 1;\nexport const g = () => 1 + 2;\n' });
+  const free = peakOf(['green', '--group', 'a'], {});
+  assert.match(free.out, /^GREEN a ok=true/, free.out);
+  assert.ok(free.peak > 3, `unset: the probes and coverage overlap (peak ${free.peak})`);
+  for (const max of [1, 2, 3, 5]) {
+    const env = { ZT_TEST_PROCESS_MAX: String(max) };
+    for (const cmd of [['red', '--group', 'a'], ['green', '--group', 'a'], ['green', '--group', 'a', '--reuse'], ['final', '--again']]) {
+      const { peak, out } = peakOf(cmd, env);
+      assert.ok(peak >= 1 && peak <= max, `${cmd.join(' ')} with ZT_TEST_PROCESS_MAX=${max}: peak ${peak}`);
+      if (cmd[0] === 'green') assert.match(out, /^GREEN a ok=true/, `${cmd.join(' ')} ${max}: ${out}`);
+    }
+  }
+});
+
+test('pcourier: with the courier skip on, a failing final at verify puts the groups it breaks (or the run) into notDone and their stale GREEN gates close no DoD pair; flags off, v2.0.0 output', t => {
+  const strict = { 'tests/test_alpha.sh': '# test_ac1_happy\ngrep -q new src/alpha.txt\n', 'tests/test_beta.sh': '# test_ac2_happy\ngrep -qx new src/alpha.txt && grep -q beta src/beta.txt\n' };
+  const run = env => {
+    const { fx } = plannedWith(t, env);
+    put(fx.repo, strict);
+    fx.tdd('red', ['--group', 'a']); fx.tdd('red', ['--group', 'b']);
+    put(fx.repo, { 'src/alpha.txt': 'new\n' }); fx.tdd('green', ['--group', 'a']);
+    put(fx.repo, { 'src/beta.txt': 'beta\n' }); fx.tdd('green', ['--group', 'b']);
+    assert.ok(fx.gate('a.green.json').ok && fx.gate('b.green.json').ok);
+    put(fx.repo, { 'src/alpha.txt': 'new stuff\n' }); // a fixer of group a: its own tests still pass, group b's do not
+    assert.match(fx.tdd('green', ['--group', 'a']).out, /^GREEN a ok=true/, 'the fixer\'s own-group gate is ok');
+    return fx;
+  };
+  const on = run(ON_ENV), v = verify(on, { ...RET(BETA_ROW), courierSkipped: true });
+  assert.equal(v.final, false);
+  assert.ok(v.notDone.some(n => /^b: final gate not ok/.test(n)), JSON.stringify(v.notDone));
+  assert.ok(!v.notDone.some(n => /^a:/.test(n)), 'a group whose tests still pass together is not blamed');
+  assert.deepEqual([v.dod.covered, v.dod.total, v.dod.gaps], [1, 2, ['AC2/happy: unproven']], 'group b\'s GREEN gate is stale: it covers nothing');
+  put(on.repo, { 'notes.txt': 'stray\n', 'src/alpha.txt': 'new\n' });
+  const v2 = verify(on, { ...RET(BETA_ROW), courierSkipped: true });
+  assert.equal(v2.final, false);
+  assert.ok(v2.notDone.some(n => /^run: final gate not ok: files outside the plan changed: notes\.txt/.test(n)), JSON.stringify(v2.notDone));
+  assert.deepEqual([v2.dod.covered, v2.dod.total], [0, 2], 'a failure no group owns: no GREEN gate is trusted');
+  const off = run(SPEED_OFF_ENV), v3 = verify(off, RET(BETA_ROW));
+  assert.deepEqual([v3.final, v3.notDone, v3.dod.covered, v3.dod.total], [false, [], 2, 2], 'flags off: what v2.0.0 reported');
+});

@@ -55,7 +55,7 @@ const GROUPS = {
 const INTEG = 'tests/integration/test_flow.mjs';
 
 /** One whole run in its own fixture repo: plan with `env`, the Workflow with scripted agents, then verify. -> what happened and what it cost */
-async function runWith(env) {
+async function runWith(env, tweak = () => ({})) { // tweak(tools) -> scripted agents that replace the default ones
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pat-e2e-speed-'))), repo = join(dir, 'repo'), tmp = join(dir, 'tmp');
   for (const d of [repo, tmp]) mkdirSync(d);
   const ENV = { ...process.env, TMPDIR: tmp, ZT_MARKER_DIR: join(dir, 'marker'), ...env };
@@ -117,6 +117,7 @@ async function runWith(env) {
         return { fixed: [/^(R-\S+) \[/m.exec(p)[1]], notFixed: [], gateOk: ok(exec(cmdOf(p, GREEN_ANY), 'green')), gateRuns: 1 };
       },
       'final-verifier': (gid, p) => ({ ok: ok(exec(cmdOf(p, FINAL), 'final')), problems: [] }),
+      ...tweak({ put, repo, exec, ok, cmdOf, GREEN_ANY }),
     };
     const agent = async (prompt, o) => {
       calls.push({ label: o.label, prompt });
@@ -208,4 +209,32 @@ test('vmeasure: all flags on against all off: fewer agents and hops; prints agen
   console.log(`# VMeasure (2 groups, b after a, integration test, 1 finding; same scripted agents)\n# ${row('all off', off)}\n# ${row('all on', on)}`);
   assert.ok(on.agents < off.agents, `${on.agents} < ${off.agents}`);
   assert.ok(on.hops < off.hops, `${on.hops} < ${off.hops}`);
+});
+
+// every flag of both skills off: PTDD_* as above, and zero-trust-review's probe flags off with no process cap
+const ALL_OFF_ENV = { ...SPEED_OFF_ENV, ZT_MUTATION_BASELINE_REUSE_ENABLED: 'false', ZT_MUTATION_BUDGET_STRICT_ENABLED: 'false', ZT_TEST_PROCESS_MAX: '' };
+
+test('fcompat: with truly every flag off (PTDD and ZT) the whole run is the v2.0.0 path end to end: same agents, no speed key, no head run, no baseline reuse, no courier skip', async () => {
+  const r = await runWith(ALL_OFF_ENV);
+  done(r);
+  assert.equal('speed' in r.ARGS, false);
+  assert.deepEqual(r.labels, ['red-driver:a', 'red-driver:b', 'red-navigator:a', 'red-navigator:b', 'green-driver:a', 'green-navigator:a', 'green-driver:b', 'green-navigator:b', 'integration-tester', 'reviewer', 'fixer:a', 'final-verifier']);
+  assert.ok(r.calls.every(c => !/--quick|--reuse|being written now/.test(c.prompt)));
+  assert.deepEqual(['courierSkipped' in r.out, 'finalReused' in r.verify, r.outputs.some(([, , o]) => /reused:|mutation probe:/.test(o))], [false, false, false]);
+  assert.ok(r.outputs.filter(([k]) => k === 'green-nav').every(([, , o]) => /mutation: \d+ of \d+ mutants/.test(o)), 'every navigator GREEN gate mutated, as in v2.0.0');
+});
+
+test('pcourier: a fixer of group a that breaks group b and still reports its own gate ok: the courier is skipped and verify reports the run not done', async () => {
+  const BREAKS_B = `export function slugify(text, { maxLength = 40 } = {}) {\n  if (typeof text !== 'string') throw new TypeError('text must be a string');\n  if (text === 'hello, world') return 'hello_world';\n  const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');\n  return slug.slice(0, maxLength).replace(/-+$/, '');\n}\n`;
+  const r = await runWith(only(SPEED_ENV.courierSkip), ({ put, exec, cmdOf, GREEN_ANY }) => ({
+    fixer: (gid, p) => {
+      put(GROUPS.a.src, BREAKS_B); // the TODO is gone, and title('hello, world') no longer gives 'Hello World'; group a's own tests still pass
+      exec(cmdOf(p, GREEN_ANY), 'green');
+      return { fixed: [/^(R-\S+) \[/m.exec(p)[1]], notFixed: [], gateOk: true, gateRuns: 1 }; // what a fixer reports from its own-group gate
+    },
+  }));
+  assert.deepEqual([r.labels.filter(l => /^final-verifier/.test(l)), r.out.courierSkipped, r.out.groups.b.state], [[], true, 'done']);
+  assert.equal(r.verify.final, false, JSON.stringify(r.verify));
+  assert.ok(r.verify.notDone.some(n => /^b: final gate not ok \(its tests fail with the whole change: tests\/test_title\.mjs\)/.test(n)), JSON.stringify(r.verify.notDone));
+  assert.deepEqual([r.verify.dod.covered, r.verify.dod.total], [5, 8], 'group b\'s stale GREEN gate covers none of its 3 pairs');
 });

@@ -67,7 +67,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `ZT_AGENT_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most agents one zero-trust-review run may start |
 | `ZT_MUTATION_BASELINE_REUSE_ENABLED` | `true` \| `false` | `true` | `mutate.mjs --baseline-from` reuses the unmutated HEAD run that `testprobe.mjs --head-out` wrote, only when it is from the same tree, command and environment, instead of running its own baseline |
 | `ZT_MUTATION_BUDGET_STRICT_ENABLED` | `true` \| `false` | `true` | when the `mutate.mjs` budget runs out, mutants already running are stopped too (process trees killed, reported `skipped`), not only those not yet started |
-| `ZT_TEST_PROCESS_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most test commands `testprobe.mjs` or `mutate.mjs` runs at once |
+| `ZT_TEST_PROCESS_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most test commands one gate runs at once: a `testprobe.mjs` or `mutate.mjs` run, or one paired-agent-tdd gate as a whole (`red`, `green` with its test probe, mutation probe and coverage, `final`); `green` splits the cap between its probes, or runs them one after the other when it is too small to split |
 | `ZT_SANDBOX_MODE` | `auto` \| `none` \| `seatbelt` \| `bwrap` \| `docker` | `auto` | which sandbox `sandbox-run.mjs` uses: `auto` takes the first that works, a name forces that one (or exit 86), `none` pretends there is none |
 
 `true`, `false`, `unlimited` and mode names are read in any case. Old names stop the tool until they are unset: `DOD_GUARD`, `PTDD_GUARD`, `PTDD_AGENT_CAP`, `ZT_POST_GUARD`, `ZT_SELF_REVIEW_GUARD`, `ZT_AGENT_CAP`, `ZT_SANDBOX_FORCE`.

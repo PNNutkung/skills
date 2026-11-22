@@ -35,3 +35,10 @@ export function oneOf(env, name, modes, dflt, { renamedFrom } = {}) {
   if (modes.includes(v)) return v;
   throw new FlagError(`${name}=${env[name]} is not valid: use one of ${modes.join(', ')}`);
 }
+
+// The probes' flags (mutate.mjs, testprobe.mjs), resolved in one place: a caller that runs the probes (paired-agent-tdd) validates them up front and keys its gate cache on them.
+export const PROBE_FLAGS = { baselineReuse: 'ZT_MUTATION_BASELINE_REUSE_ENABLED', budgetStrict: 'ZT_MUTATION_BUDGET_STRICT_ENABLED', testProcessMax: 'ZT_TEST_PROCESS_MAX' };
+/** -> { baselineReuse, budgetStrict, testProcessMax (null = unlimited) }; a value that is not valid throws a FlagError naming the fix. */
+export function probeFlags(env) {
+  return { baselineReuse: enabled(env, PROBE_FLAGS.baselineReuse, true), budgetStrict: enabled(env, PROBE_FLAGS.budgetStrict, true), testProcessMax: positiveInt(env, PROBE_FLAGS.testProcessMax) };
+}

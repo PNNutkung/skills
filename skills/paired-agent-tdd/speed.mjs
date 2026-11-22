@@ -70,3 +70,24 @@ export function verifyReuses(sp) {
 export function mayStore(sp, asked, quick) {
   return !quick && (sp.gateReuse === true || asked === true);
 }
+/**
+ * ZT_TEST_PROCESS_MAX caps ONE gate, not each process it starts: how the GREEN gate's test probe, mutation probe and coverage command share `max`.
+ * null (unlimited): all together, uncapped, as before. Room for each part: together, the cap split (coverage runs one command). Too little: one part after the other, each with the whole cap.
+ */
+export function processShares(max, { mutate, cover }) {
+  if (max === null || max === undefined) return { together: true, probe: null, mutate: null, cover: null };
+  const coverShare = cover ? 1 : 0, rest = max - coverShare;
+  if (mutate ? rest >= 2 : rest >= 1) return { together: true, probe: mutate ? Math.ceil(rest / 2) : rest, mutate: mutate ? Math.floor(rest / 2) : null, cover: cover ? 1 : null };
+  return { together: false, probe: max, mutate: max, cover: 1 };
+}
+/**
+ * `tdd.mjs verify` after a run whose courier was skipped (the flag on, or the return says so): the fixers' own-group gates were the only check, so a failing final makes
+ * the GREEN gates it contradicts stale. -> null (nothing to distrust), or { groups: ids whose GREEN gate no longer counts, run: true when no group owns the failure }.
+ */
+export function untrustedByFinal(plan, sp, courierSkipped, fin) {
+  if (!(sp.courierSkip === true || courierSkipped === true) || !fin || fin.ok !== false) return null;
+  const failing = new Set((fin.together ?? []).filter(r => r.exit !== 0).map(r => r.file)), groups = plan.groups ?? [];
+  const owners = groups.filter(g => (g.tests ?? []).some(f => failing.has(f))).map(g => g.id);
+  const run = !owners.length || !!(fin.existing?.regressions ?? []).length || !!(fin.outOfScope ?? []).length;
+  return { groups: run ? groups.map(g => g.id) : owners, run };
+}
