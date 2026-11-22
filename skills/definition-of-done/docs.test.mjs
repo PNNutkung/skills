@@ -31,8 +31,8 @@ test('should list the skill and its guardrail when the repo docs describe them',
   assert.match(readFileSync(join(ROOT, 'README.md'), 'utf8'), /\[`definition-of-done`\]\(skills\/definition-of-done\)/);
   const rules = readFileSync(join(ROOT, 'rules', 'README.md'), 'utf8');
   assert.match(rules, /hooks\/dod-guard\.mjs[^\n]*DOD_GUARD=1/);
-  assert.match(rules, /hooks\/dod-adr-sync\.mjs[^\n]*DOD_ADR_SYNC=0/);
-  assert.match(rules, /pre-commit[^\n]*DOD_ADR_HOOK=0/);
+  assert.match(rules, /hooks\/dod-adr-sync\.mjs[^\n]*DOD_ADR_TOUCHES_SYNC_ENABLED=false/);
+  assert.match(rules, /pre-commit[^\n]*DOD_ADR_PRECOMMIT_HOOK_ENABLED=false/);
   assert.match(rules, /ask-dont-assume\.md[^\n]*definition-of-done/);
   assert.match(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'), /definition-of-done/);
 });
@@ -43,5 +43,5 @@ test('should have an eval for each behavior the user cares most about when the e
 });
 
 test('should explain the ADR path when SKILL.md describes the grill and the hand-off', () => {
-  for (const re of [/questions\.md/, /one pro and one con/, /touches/, /<run>\/dod\.json/, /DOD_ADR_HOOK=0/, /dodFile/, /do not edit/i]) assert.match(skill, re, String(re));
+  for (const re of [/questions\.md/, /one pro and one con/, /touches/, /<run>\/dod\.json/, /DOD_ADR_PRECOMMIT_HOOK_ENABLED=false/, /dodFile/, /do not edit/i]) assert.match(skill, re, String(re));
 });

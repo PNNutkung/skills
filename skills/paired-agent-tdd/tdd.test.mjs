@@ -119,8 +119,8 @@ test('plan: should read the DoD from plan.dodFile (an ADR) and record which file
   assert.deepEqual(args.dod.map(d => d.id), ['AC1', 'AC2']);
   assert.equal(JSON.parse(readFileSync(join(fx.run, 'plan.json'), 'utf8')).dodFile, 'docs/adr/0001-alpha.md', 'resume reads the same DoD from the run folder');
   const noAuto = fixture(t, { files: { 'docs/adr/0001-alpha.md': adr }, plan: repo => ({ ...PLAN(repo), dod: undefined }) });
-  assert.equal(noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { DOD_AUTO: '' }).status, 0, 'found by touches');
-  const off = noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { DOD_AUTO: '0' });
+  assert.equal(noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { DOD_ADR_AUTO_FIND_ENABLED: '' }).status, 0, 'found by touches');
+  const off = noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { DOD_ADR_AUTO_FIND_ENABLED: 'false' });
   assert.equal(off.status, 2);
   assert.match(off.err, /at least one DoD item is required/);
 });

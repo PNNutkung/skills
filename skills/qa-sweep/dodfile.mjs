@@ -1,13 +1,14 @@
 // findings.json can take its requirements from an ADR that the definition-of-done skill wrote, instead of a requirements[] list:
 //   "dodFile": "docs/adr/NNNN-<slug>.md"  the ADR at --head (unchanged in the working tree when --head is HEAD), checked by that skill's checkAdr
-//   neither requirements[] nor dodFile    the one active ADR whose touches match the files the findings and tests name ($DOD_AUTO=0 turns this off);
+//   neither requirements[] nor dodFile    the one active ADR whose touches match the files the findings and tests name ($DOD_ADR_AUTO_FIND_ENABLED=false turns this off);
 //                                         none: no requirements, as before; several: a warning, and no requirements
 // The definition-of-done skill is found next to this one, or at $DOD_DIR. Findings with requirements[] are returned untouched, the same object.
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { enabled } from './flags.mjs';
 
-export const AUTO_ENV = 'DOD_AUTO';
+export const AUTO_ENV = 'DOD_ADR_AUTO_FIND_ENABLED';
 const CODE_REF = /^(.+):\d+$/;
 
 async function dodSkill(env, here) {
@@ -28,7 +29,7 @@ function namedFiles(data) {
 export async function requirementsFromDod(data, { repo, head, env = process.env, here }) {
   const has = k => data?.[k] !== undefined;
   if (has('dodFile') && has('requirements')) return { error: 'use dodFile or requirements[], not both' };
-  const auto = !has('dodFile') && !has('requirements') && env[AUTO_ENV] !== '0';
+  const auto = !has('dodFile') && !has('requirements') && enabled(env, AUTO_ENV, true);
   if (!has('dodFile') && !auto) return { data };
   const { dir, lib } = await dodSkill(env, here);
   if (!lib) return auto ? { data } : { error: `dodFile needs the definition-of-done skill, not found at ${dir} (set DOD_DIR)` };

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PostToolUse hook (Bash) for the definition-of-done skill. On by default; DOD_ADR_SYNC=0 turns it off.
+// PostToolUse hook (Bash) for the definition-of-done skill. On by default; DOD_ADR_TOUCHES_SYNC_ENABLED=false turns it off.
 // After the agent moves files with `mv` or `git mv`, it rewrites the `touches` globs of the repo's ADRs (and their index) so they follow the
 // move, and tells the agent what it changed or what it could not decide. Only frontmatter and the index change; never a DoD section.
 // The git pre-commit hook that `dod.mjs adr` installs does the same for moves a person makes. Fail open: always exits 0.
@@ -7,9 +7,10 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const SYNC_ENV = 'DOD_ADR_SYNC';
+export const SYNC_ENV = 'DOD_ADR_TOUCHES_SYNC_ENABLED';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ADRIO = join(HERE, '..', 'skills', 'definition-of-done', 'adrio.mjs');
+const FLAGS = join(HERE, '..', 'skills', 'definition-of-done', 'flags.mjs');
 const SEGMENT_SPLIT_RE = /&&|\|\||[;|&\n()`]|\$\(/;
 const WRAPPERS = new Set(['env', 'command', 'sudo', 'time', 'nohup', 'exec', 'builtin']);
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
@@ -66,7 +67,9 @@ function renamesOf(moves, cwd, repo, files) {
 }
 
 async function decide(input) {
-  if (process.env[SYNC_ENV] === '0' || input?.tool_name !== 'Bash') return null;
+  if (input?.tool_name !== 'Bash') return null;
+  const { enabled } = await import(FLAGS);
+  if (!enabled(process.env, SYNC_ENV, true)) return null;
   const command = String(input?.tool_input?.command ?? '');
   if (!/\bmv\b/.test(command)) return null;
   const moves = movesOf(command);
@@ -78,7 +81,7 @@ async function decide(input) {
   const files = io.repoFiles(repo).filter(f => existsSync(join(repo, f)));
   const r = io.syncRepo({ repo, renames: renamesOf(moves, realpathSync(cwd), repo, files), files });
   const lines = [...r.changes.map(c => `dod-adr: ${c.adr}: ${c.from !== undefined ? `${c.from} -> ${c.to}` : `added ${c.added} next to ${c.next}`}`), ...r.warnings.map(w => `dod-adr: warning: ${w}`)];
-  return lines.length ? `${lines.join('\n')}\n(the ADRs' touches followed the move; commit them with it. ${SYNC_ENV}=0 turns this off)` : null;
+  return lines.length ? `${lines.join('\n')}\n(the ADRs' touches followed the move; commit them with it. ${SYNC_ENV}=false turns this off)` : null;
 }
 
 async function main() {

@@ -25,11 +25,11 @@ const repo = join(tmp, 'repo');
 const put = (p, t) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), t); };
 put('src/reports/export.js', 'export const cap = 10000;\n');
 put('docs/spec.md', '# Reports\nReports list sales and stock.\n');
-const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', ...a], { encoding: 'utf8', env: { ...process.env, DOD_ADR_HOOK: '' } });
+const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', ...a], { encoding: 'utf8', env: { ...process.env, DOD_ADR_PRECOMMIT_HOOK_ENABLED: '' } });
 git('init', '-q'); git('add', '.'); git('commit', '-qm', 'base');
 
 const SESSION = 'adr-e2e-session';
-const env = { ...process.env, DOD_MARKER_DIR: join(tmp, 'm'), DOD_RUN_BASE: join(tmp, 'r'), DOD_CONFIG_DIR: join(tmp, 'c'), DOD_GUARD: '1', DOD_ADR_HOOK: '', DOD_ADR_SYNC: '', DOD_AUTO: '', CLAUDE_CODE_SESSION_ID: SESSION };
+const env = { ...process.env, DOD_MARKER_DIR: join(tmp, 'm'), DOD_RUN_BASE: join(tmp, 'r'), DOD_CONFIG_DIR: join(tmp, 'c'), DOD_GUARD: '1', DOD_ADR_PRECOMMIT_HOOK_ENABLED: '', DOD_ADR_TOUCHES_SYNC_ENABLED: '', DOD_ADR_AUTO_FIND_ENABLED: '', CLAUDE_CODE_SESSION_ID: SESSION };
 function cli(...args) {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });
   return { code: r.status, out: r.stdout, err: r.stderr, json: (() => { try { return JSON.parse(r.stdout); } catch { return null; } })() };

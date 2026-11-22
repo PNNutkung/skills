@@ -33,7 +33,7 @@ function fixture(extra = {}) {
   const tmp = mk('qa-dod-tmp-');
   return { repo, tmp, run: createRunDir('qa-dod-' + Math.random().toString(36).slice(2), { tmp }) };
 }
-const env = (over = {}) => ({ DOD_AUTO: '', ...over });
+const env = (over = {}) => ({ DOD_ADR_AUTO_FIND_ENABLED: '', ...over });
 
 test('should leave findings with requirements[] exactly as they are', async () => {
   const data = { requirements: [{ id: 'R1' }], findings: [] };
@@ -67,7 +67,7 @@ test('should find the ADR by the files the findings name when there is no requir
   const found = await requirementsFromDod(data, { repo, head: 'HEAD', env: env(), here: HERE });
   assert.equal(found.data.requirements.length, 2);
   assert.match(found.note, /found by touches/);
-  const off = await requirementsFromDod(data, { repo, head: 'HEAD', env: env({ DOD_AUTO: '0' }), here: HERE });
+  const off = await requirementsFromDod(data, { repo, head: 'HEAD', env: env({ DOD_ADR_AUTO_FIND_ENABLED: 'false' }), here: HERE });
   assert.equal(off.data, data);
   const none = await requirementsFromDod({ findings: [{ proofs: [{ mode: 'code', ref: 'elsewhere.py:1' }] }] }, { repo, head: 'HEAD', env: env(), here: HERE });
   assert.equal(none.data.requirements, undefined, 'no ADR: as today, no requirements');
@@ -85,7 +85,7 @@ test('the CLI reads requirements from dodFile and writes dod refs in the report'
   const { repo, run, tmp } = fixture();
   const file = join(mk('qa-dod-in-'), 'findings.json');
   writeFileSync(file, JSON.stringify({ dodFile: FILE, findings: [] }));
-  const r = spawnSync(process.execPath, [join(HERE, 'findings.mjs'), '--run', run, '--repo', repo, '--head', 'HEAD', '--findings', file], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp, DOD_AUTO: '' } });
+  const r = spawnSync(process.execPath, [join(HERE, 'findings.mjs'), '--run', run, '--repo', repo, '--head', 'HEAD', '--findings', file], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp, DOD_ADR_AUTO_FIND_ENABLED: '' } });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(r.stdout).verified, 2);
   assert.match(readFileSync(join(run, 'report.md'), 'utf8'), /dod:S1/);

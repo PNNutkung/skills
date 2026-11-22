@@ -10,7 +10,7 @@
 //   export --dod FILE --to ptdd|qa --out DIR
 //                                        ptdd: DIR/dod.json (plan.json dod[]) + DIR/dod-source.md (plan.json ticket); qa: DIR/requirements.json, answers.md, ticket.md
 //   adr --dod FILE                       write the ADR draft (English) from the DoD, answers.md, questions.md and ticket.md: the repo's ADR folder,
-//                                        the next number or this slug's existing file; refresh the index; install the pre-commit hook ($DOD_ADR_HOOK=0: no)
+//                                        the next number or this slug's existing file; refresh the index; install the pre-commit hook ($DOD_ADR_PRECOMMIT_HOOK_ENABLED=false: no)
 //   adr-check --dod FILE                 after you reorganized the draft: every quote, question, option, pro, con and answer kept; DoD section untouched
 //   adrs [--repo DIR] --touches FILE...  the active ADRs whose touches match these files (no session needed)
 //   adrs [--repo DIR] --sync [--staged]  follow staged renames in every ADR's touches and the index (--staged: git add them; the pre-commit hook)
@@ -26,6 +26,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { checkAdrSources, renderAdr } from './adr.mjs';
+import { enabled } from './flags.mjs';
 import { HOOK_ENV, adrTarget, findAdrsFor, installHook, repoFiles, stagedRenames, syncRepo, topLevel, writeIndex } from './adrio.mjs';
 import { checkDod, exportPtdd, exportQa, renderMarkdown, renderTicket, ticketCheck } from './dodcheck.mjs';
 import { RENDERED_FILE, approve, close, open, readActive, recordAdr, toolFor, touch, trust } from './session.mjs';
@@ -129,7 +130,7 @@ function writeAdr(dod, ctx, active, session, env) {
   writeFileSync(file, r.text);
   const index = join(active.repo, writeIndex(active.repo).file);
   recordAdr({ session, env, files: [file, index] }); // DOD_GUARD lets the agent edit these two files, no other ADR
-  const hook = env[HOOK_ENV] === '0' ? { skipped: `${HOOK_ENV}=0` } : installHook({ repo: active.repo, dodMjs: DOD_MJS });
+  const hook = !enabled(env, HOOK_ENV, true) ? { skipped: `${HOOK_ENV}=false` } : installHook({ repo: active.repo, dodMjs: DOD_MJS });
   return { ok: true, adr: file, index, rewritten: target.existing, hook };
 }
 
@@ -139,7 +140,7 @@ function adrs(v, env) {
   if (!repo) throw new Usage('adrs needs a git repository (--repo DIR)');
   if (v['install-hook']) return { ok: true, ...installHook({ repo, dodMjs: DOD_MJS }) };
   if (v.sync) {
-    if (env[HOOK_ENV] === '0') return { ok: true, skipped: `${HOOK_ENV}=0` };
+    if (!enabled(env, HOOK_ENV, true)) return { ok: true, skipped: `${HOOK_ENV}=false` };
     const r = syncRepo({ repo, renames: stagedRenames(repo), files: repoFiles(repo, { staged: true }), stage: !!v.staged });
     for (const c of r.changes) say(`${c.adr}: ${c.from !== undefined ? `${c.from} -> ${c.to}` : `added ${c.added} next to ${c.next}`}`);
     for (const w of r.warnings) say(`warning: ${w}`);

@@ -7,7 +7,7 @@ import { checkAdr, matchGlob, nextNumber, parseAdr, parseFrontmatter, syncTouche
 
 export const ADR_DIRS = ['docs/adr', 'docs/decisions', 'doc/adr', 'docs/architecture/decisions'];
 export const DEFAULT_ADR_DIR = 'docs/adr';
-export const HOOK_ENV = 'DOD_ADR_HOOK';
+export const HOOK_ENV = 'DOD_ADR_PRECOMMIT_HOOK_ENABLED';
 const HOOK_TAG = 'dod-adr-sync (definition-of-done)';
 const ADR_FILE = /^\d{4}-.+\.md$/;
 const INACTIVE = /superseded|deprecated|rejected/i;
@@ -129,7 +129,7 @@ export function syncRepo({ repo, renames, files, stage = false }) {
 
 /** The pre-commit hook script; dodMjs is this skill's dod.mjs, absolute. */
 export const hookLine = dodMjs => `node "${dodMjs}" adrs --sync --staged >/dev/null || true`; // the dod-adr: lines on stderr stay
-export const hookScript = dodMjs => `#!/bin/sh\n# ${HOOK_TAG}: follows file moves in the ADRs' touches. ${HOOK_ENV}=0 skips it.\n[ "$${HOOK_ENV}" = "0" ] && exit 0\ncommand -v node >/dev/null 2>&1 || exit 0\n[ -f "${dodMjs}" ] || exit 0\n${hookLine(dodMjs)}\n`;
+export const hookScript = dodMjs => `#!/bin/sh\n# ${HOOK_TAG}: follows file moves in the ADRs' touches. ${HOOK_ENV}=false skips it.\n[ "$${HOOK_ENV}" = "false" ] && exit 0\ncommand -v node >/dev/null 2>&1 || exit 0\n[ -f "${dodMjs}" ] || exit 0\n${hookLine(dodMjs)}\n`;
 
 /**
  * Install the pre-commit hook. Never overwrites a hook it did not write, and leaves a hook manager (core.hooksPath: husky, lefthook...) alone:

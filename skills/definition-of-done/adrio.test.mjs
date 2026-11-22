@@ -120,7 +120,7 @@ test('should install the pre-commit hook once, update its own hook, and leave a 
   const r = installHook({ repo, dodMjs: DOD_MJS });
   assert.ok(r.installed && existsSync(r.installed));
   assert.ok(statSync(r.installed).mode & 0o100, 'executable');
-  assert.match(readFileSync(r.installed, 'utf8'), /DOD_ADR_HOOK" = "0" \] && exit 0/);
+  assert.match(readFileSync(r.installed, 'utf8'), /DOD_ADR_PRECOMMIT_HOOK_ENABLED" = "false" \] && exit 0/);
   assert.ok(installHook({ repo, dodMjs: DOD_MJS }).installed, 'rewrites its own hook');
   writeFileSync(r.installed, '#!/bin/sh\nnpm test\n');
   const foreign = installHook({ repo, dodMjs: DOD_MJS });
@@ -137,14 +137,14 @@ test('should follow a folder move through a real commit when the hook is install
   put(file, adrText(1)); put('src/reports/a.ts', 'a\n'); commit();
   installHook({ repo, dodMjs: DOD_MJS });
   g('mv', 'src/reports', 'src/export');
-  const out = spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'move'], { encoding: 'utf8', env: { ...process.env, DOD_ADR_HOOK: '' } });
+  const out = spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'move'], { encoding: 'utf8', env: { ...process.env, DOD_ADR_PRECOMMIT_HOOK_ENABLED: '' } });
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stderr, /dod-adr: docs\/adr\/0001-report-export\.md: src\/reports\/\*\* -> src\/export\/\*\*/);
   assert.match(g('show', `HEAD:${file}`), /- "src\/export\/\*\*"/, 'the fix is in the same commit as the move');
   g('mv', 'src/export', 'src/x');
-  const off = spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'move2'], { encoding: 'utf8', env: { ...process.env, DOD_ADR_HOOK: '0' } });
+  const off = spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'move2'], { encoding: 'utf8', env: { ...process.env, DOD_ADR_PRECOMMIT_HOOK_ENABLED: 'false' } });
   assert.equal(off.status, 0);
-  assert.match(g('show', `HEAD:${file}`), /- "src\/export\/\*\*"/, 'DOD_ADR_HOOK=0 skips the hook');
+  assert.match(g('show', `HEAD:${file}`), /- "src\/export\/\*\*"/, 'DOD_ADR_PRECOMMIT_HOOK_ENABLED=false skips the hook');
   renameSync(join(repo, 'src/x'), join(repo, 'src/y'));
 });
 

@@ -22,7 +22,7 @@ function fixture() {
   return { repo, g, adr: () => readFileSync(join(repo, 'docs/adr/0001-x.md'), 'utf8') };
 }
 function hook(fx, command, env = {}) {
-  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, cwd: fx.repo }), env: { ...process.env, DOD_ADR_SYNC: '', ...env }, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, cwd: fx.repo }), env: { ...process.env, DOD_ADR_TOUCHES_SYNC_ENABLED: '', ...env }, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.additionalContext : '';
 }
@@ -53,10 +53,10 @@ test('should follow a file moved into an existing folder with git mv', () => {
   assert.match(fx.adr(), /- "lib\/util\.ts"/);
 });
 
-test('should do nothing when DOD_ADR_SYNC is 0, the tool is not Bash, or nothing an ADR touches moved', () => {
+test('should do nothing when DOD_ADR_TOUCHES_SYNC_ENABLED is false, the tool is not Bash, or nothing an ADR touches moved', () => {
   const fx = fixture();
   execFileSync('mv', [join(fx.repo, 'src/reports'), join(fx.repo, 'src/export')]);
-  assert.equal(hook(fx, 'mv src/reports src/export', { DOD_ADR_SYNC: '0' }), '');
+  assert.equal(hook(fx, 'mv src/reports src/export', { DOD_ADR_TOUCHES_SYNC_ENABLED: 'false' }), '');
   assert.equal(fx.adr(), ADR);
   const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ tool_name: 'Edit', tool_input: {}, cwd: fx.repo }), encoding: 'utf8' });
   assert.equal(r.stdout, '');
