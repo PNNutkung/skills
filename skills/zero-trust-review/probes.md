@@ -66,11 +66,11 @@ What `fast` gives up, plainly:
 
 ## Agent cap
 
-`ZT_AGENT_CAP=N` (opt-in) makes triage.py write `agentCap: N` into its JSON, and `workflow.js` never spawns agent N+1: past the cap, units land in `notReviewed` and clusters stay unverified, and `stats.capped` counts what was stopped. Pass the triage JSON through unchanged. To go past the cap, ask the user and re-run with a higher one; never edit `agentCap` on your own. Unset, empty or not a positive integer: no cap, as before.
+`ZT_AGENT_MAX=N` (a whole number above 0; default `unlimited`) makes triage.py write `agentCap: N` into its JSON, and `workflow.js` never spawns agent N+1: past the cap, units land in `notReviewed` and clusters stay unverified, and `stats.capped` counts what was stopped. Pass the triage JSON through unchanged. To go past the cap, ask the user and re-run with a higher one; never edit `agentCap` on your own. Unset or `unlimited`: no cap. Any other value, or the old `ZT_AGENT_CAP`, stops triage.py with exit 2.
 
 ## Blue/red
 
-`ZT_SELF_REVIEW_GUARD=1` (opt-in) makes triage.py write `blueRed: true`, and `workflow.js` grills every finding that verification confirmed at medium or above before it reaches the report. Nobody trusts the author:
+`ZT_SELF_REVIEW_GUARD_ENABLED=true` (default `false`) makes triage.py write `blueRed: true`, and `workflow.js` grills every finding that verification confirmed at medium or above before it reaches the report. Nobody trusts the author:
 
 - **Blue (`defender`, a fresh agent)** argues the finding is wrong. It concedes when it cannot defend; a defense without a proof that was read or ran ends the exchange and the finding stands.
 - **Red (`verifier-refute`, rebuttal)** re-reads the defender's proof itself and answers. If red gives way, or after 3 rounds of standoff, the **adjudicator** decides from every verdict and defense.

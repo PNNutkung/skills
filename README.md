@@ -19,7 +19,7 @@ npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --ski
 mkdir -p ~/.claude/hooks && curl -fsSL -o ~/.claude/hooks/pr-test-tiers.py https://raw.githubusercontent.com/PNNutkung/skills/main/hooks/pr-test-tiers/pr-test-tiers.py   # qa-sweep reads test tiers through it ($TIERS_PY); registering it as a hook is optional
 ```
 
-Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook, the telemetry-capture hook, the opt-in `paired-agent-tdd` file fence (`PTDD_GUARD=1`) the opt-in `definition-of-done` guard (`DOD_GUARD=1`) and its `dod-adr-sync` hook (`DOD_ADR_TOUCHES_SYNC_ENABLED=false` turns it off; skills alone do not include hooks). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
+Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook, the telemetry-capture hook, the opt-in `paired-agent-tdd` file fence, the opt-in `definition-of-done` guard and its `dod-adr-sync` hook (skills alone do not include hooks; every switch is in [Flags](#flags)). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
 
 ```sh
 /plugin marketplace add PNNutkung/skills
@@ -35,7 +35,7 @@ Two standalone hooks that are not part of the plugin. Install steps are in each 
 
 | Skill | What it does |
 | --- | --- |
-| [`definition-of-done`](skills/definition-of-done) | Step 1, before any code: grills the user in rounds (every question has a recommended answer) until nothing is left to assume, and writes `docs/dod/<slug>.json` + `.md` where every item quotes its source (a spec, the ticket or the user's answer). `dod.mjs check` refuses an unquoted item, an unaccepted assumption or an open question. Rewrites the linked ticket's description with the DoD as a checklist (official CLI first, then MCP, else a file to paste), only after the user approves the exact text, and records it as an ADR in the repo's ADR folder (each decision with its options, pros, cons and the trade-off accepted; only the ADR is committed) that `paired-agent-tdd` and `qa-sweep` read directly through `"dodFile"` or find by its `touches`, or exports it for them as before. ADR `touches` follow file moves through a pre-commit hook (`DOD_ADR_PRECOMMIT_HOOK_ENABLED=false`) and the `dod-adr-sync` hook (`DOD_ADR_TOUCHES_SYNC_ENABLED=false`). The opt-in `dod-guard` hook (`DOD_GUARD=1`) keeps product code untouched during the session. |
+| [`definition-of-done`](skills/definition-of-done) | Step 1, before any code: grills the user in rounds (every question has a recommended answer) until nothing is left to assume, and writes `docs/dod/<slug>.json` + `.md` where every item quotes its source (a spec, the ticket or the user's answer). `dod.mjs check` refuses an unquoted item, an unaccepted assumption or an open question. Rewrites the linked ticket's description with the DoD as a checklist (official CLI first, then MCP, else a file to paste), only after the user approves the exact text, and records it as an ADR in the repo's ADR folder (each decision with its options, pros, cons and the trade-off accepted; only the ADR is committed) that `paired-agent-tdd` and `qa-sweep` read directly through `"dodFile"` or find by its `touches`, or exports it for them as before. ADR `touches` follow file moves through a pre-commit hook (`DOD_ADR_PRECOMMIT_HOOK_ENABLED=false`) and the `dod-adr-sync` hook (`DOD_ADR_TOUCHES_SYNC_ENABLED=false`). The opt-in `dod-guard` hook (`DOD_GUARD_ENABLED=true`) keeps product code untouched during the session. |
 | [`paired-agent-tdd`](skills/paired-agent-tdd) | TDD as driver/navigator pairs, one pipeline per file group on a Workflow script (`graph.mjs`, `workflow.js`). Plain-code gates (`tdd.mjs`) run the tests (directly by default, in the sandbox with `plan.sandbox: true`), mutate the new code and check that tests cover the definition of done, so agents judge facts instead of claims. Every stage is a repair loop, not one shot: makers edit and re-run the real gate, navigators re-check on fresh facts, and the loop ends on a pass, on no progress, or at a round cap. `plan` proves the runner runs the repo's tests before an agent is paid (a broken environment never passes for a valid RED). One run-wide repair budget caps the spend; a group still failing is paused, and `tdd.mjs resume` writes a continue file from the gate files (no agent, no tokens) that holds a stalled group, stops a broken environment and sets the next budget, so the next run restarts only what is left. |
 | [`zero-trust-review`](skills/zero-trust-review) | Strict review of a branch diff against a 30-point production-hazard checklist, tiered and cost-capped (`quick` / `standard` / `deep`, plus an opt-in `fast` for diffs that are not security-critical). Cites findings as permalinks on the review host (GitLab, GitHub, or git-only). |
 | [`ai-code-delivery`](skills/ai-code-delivery) | Delivery runbook for agent-written code: feature-flag gating, trunk/leaf review depth, PR proof template, fresh-context review, 80/20 readiness gate, canary rollout. Hands the diff review to `zero-trust-review`. |
@@ -43,6 +43,26 @@ Two standalone hooks that are not part of the plugin. Install steps are in each 
 | [`branch-summary`](skills/branch-summary) | Summarizes every change on the current branch against its base (auto-detected, or passed as the argument): per-file analysis scaled to the branch size, test coverage and gaps, breaking changes, workaround detection and mermaid diagrams. Writes a self-contained HTML report to the OS temp directory, never into the repo. |
 
 `zero-trust-review` and `paired-agent-tdd` use the same model and effort tiering policy. See `skills/zero-trust-review/tiering.md` and the tiering section of `skills/paired-agent-tdd/SKILL.md`. `qa-sweep` follows it in one session: judgment stays in the session, mechanical steps may go to a low-tier subagent.
+
+## Flags
+
+Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill reads only its own flags. A flag means what it says, or nothing runs: a value outside the allowed list, or an old name that is still set, stops the tool with a message that names the fix. A hook denies every tool call it guards, a CLI exits 2 (the sandbox runner 64), and the pre-commit hook stops the commit. Unset or empty means the default.
+
+| Flag | Values | Default | What it does |
+|---|---|---|---|
+| `DOD_GUARD_ENABLED` | `true` \| `false` | `false` | definition-of-done guard (`hooks/dod-guard.mjs`): no product code and no unapproved ticket write while a DoD session is open |
+| `DOD_ADR_PRECOMMIT_HOOK_ENABLED` | `true` \| `false` | `true` | `dod.mjs adr` installs the git pre-commit hook, and the hook makes ADR `touches` follow committed file moves |
+| `DOD_ADR_TOUCHES_SYNC_ENABLED` | `true` \| `false` | `true` | `hooks/dod-adr-sync.mjs`: ADR `touches` follow the agent's `mv` and `git mv` |
+| `PTDD_GUARD_ENABLED` | `true` \| `false` | `false` | paired-agent-tdd file fence (`hooks/ptdd-guard.mjs`): each subagent edits only its group's files |
+| `PTDD_ADR_AUTO_FIND_ENABLED` | `true` \| `false` | `true` | with neither `dod[]` nor `dodFile` in `plan.json`, use the ADR whose `touches` cover the groups' `src` |
+| `PTDD_AGENT_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most agents one paired-agent-tdd run may start |
+| `QA_ADR_AUTO_FIND_ENABLED` | `true` \| `false` | `true` | with neither `requirements` nor `dodFile` in `findings.json`, use the ADR whose `touches` cover the files the findings name |
+| `ZT_POST_GUARD_ENABLED` | `true` \| `false` | `false` | zero-trust-review posts nothing to the review host until the user approves |
+| `ZT_SELF_REVIEW_GUARD_ENABLED` | `true` \| `false` | `false` | the author of a change never posts its review verdict, and a defender answers each confirmed finding (blue/red) |
+| `ZT_AGENT_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most agents one zero-trust-review run may start |
+| `ZT_SANDBOX_MODE` | `auto` \| `none` \| `seatbelt` \| `bwrap` \| `docker` | `auto` | which sandbox `sandbox-run.mjs` uses: `auto` takes the first that works, a name forces that one (or exit 86), `none` pretends there is none |
+
+`true`, `false`, `unlimited` and mode names are read in any case. Old names stop the tool until they are unset: `DOD_GUARD`, `PTDD_GUARD`, `PTDD_AGENT_CAP`, `ZT_POST_GUARD`, `ZT_SELF_REVIEW_GUARD`, `ZT_AGENT_CAP`, `ZT_SANDBOX_FORCE`.
 
 ## Requirements
 

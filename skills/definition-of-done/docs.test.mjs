@@ -30,7 +30,7 @@ test('should link files that exist when SKILL.md links a relative path', () => {
 test('should list the skill and its guardrail when the repo docs describe them', () => {
   assert.match(readFileSync(join(ROOT, 'README.md'), 'utf8'), /\[`definition-of-done`\]\(skills\/definition-of-done\)/);
   const rules = readFileSync(join(ROOT, 'rules', 'README.md'), 'utf8');
-  assert.match(rules, /hooks\/dod-guard\.mjs[^\n]*DOD_GUARD=1/);
+  assert.match(rules, /hooks\/dod-guard\.mjs[^\n]*DOD_GUARD_ENABLED=true/);
   assert.match(rules, /hooks\/dod-adr-sync\.mjs[^\n]*DOD_ADR_TOUCHES_SYNC_ENABLED=false/);
   assert.match(rules, /pre-commit[^\n]*DOD_ADR_PRECOMMIT_HOOK_ENABLED=false/);
   assert.match(rules, /ask-dont-assume\.md[^\n]*definition-of-done/);

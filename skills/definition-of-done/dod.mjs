@@ -129,7 +129,7 @@ function writeAdr(dod, ctx, active, session, env) {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, r.text);
   const index = join(active.repo, writeIndex(active.repo).file);
-  recordAdr({ session, env, files: [file, index] }); // DOD_GUARD lets the agent edit these two files, no other ADR
+  recordAdr({ session, env, files: [file, index] }); // DOD_GUARD_ENABLED lets the agent edit these two files, no other ADR
   const hook = !enabled(env, HOOK_ENV, true) ? { skipped: `${HOOK_ENV}=false` } : installHook({ repo: active.repo, dodMjs: DOD_MJS });
   return { ok: true, adr: file, index, rewritten: target.existing, hook };
 }
