@@ -32,6 +32,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      # The retro ratchet's integration tests run the real linters; with CI=true a missing one fails them.
+      - name: Install ESLint and ruff
+        shell: bash
+        run: npm install -g eslint@9 && python -m pip install ruff
       - name: Run tests
         shell: bash
         run: git ls-files -z '*.test.mjs' | xargs -0 node --test
@@ -53,6 +57,11 @@ jobs:
           asdf global nodejs latest:24
           echo "$HOME/.asdf/shims" >> "$GITHUB_PATH"
           echo "$HOME/.asdf/bin" >> "$GITHUB_PATH"
+      - name: Install ESLint and ruff
+        shell: bash
+        run: |
+          npm install -g eslint@9 && asdf reshim nodejs
+          python3 -m pip install --user ruff && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Run tests
         shell: bash
         run: |
@@ -71,13 +80,16 @@ jobs:
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
-          additional-packages: git python3 curl xz-utils bubblewrap
+          additional-packages: git python3 python3-pip curl xz-utils bubblewrap
       - name: Run tests
         shell: wsl-bash {0}
         run: |
           set -euo pipefail
           v=$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | grep -o 'node-v[0-9.]*-linux-x64.tar.xz' | head -1)
           mkdir -p /opt/node && curl -fsSL "https://nodejs.org/dist/latest-v24.x/$v" | tar -xJ -C /opt/node --strip-components=1
+          # ESLint and ruff for the retro ratchet's integration tests (CI=true makes a missing one fail).
+          PATH=/opt/node/bin:$PATH npm install -g eslint@9
+          python3 -m pip install --break-system-packages --target /opt/ruff ruff && ln -sf /opt/ruff/bin/ruff /usr/local/bin/ruff
           # WSL logs in as root, which ignores file modes; run as a plain user, the way a developer does.
           id dev >/dev/null 2>&1 || useradd -m dev
           rm -rf /home/dev/skills && cp -r . /home/dev/skills && chown -R dev:dev /home/dev/skills

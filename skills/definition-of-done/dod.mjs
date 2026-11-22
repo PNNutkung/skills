@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // CLI of the definition-of-done skill. Every command prints one JSON line on stdout.
 //   open --repo DIR --slug SLUG          open a DoD session: run folder + marker (hooks/dod-guard.mjs reads it when DOD_GUARD_ENABLED=true)
-//   check --dod FILE                     the gate: every item and required section quoted, no open question; on pass writes docs/dod/<slug>.md
+//   questions                            questions.md as adr will read it: every question has two options or more, each with a pro and a con (run it after each save)
+//   check --dod FILE                     the gate: every item and required section quoted, no open question, questions.md as `questions` checks it
+//                                        ($DOD_QUESTIONS_CHECK_ENABLED=false: not questions.md); on pass writes docs/dod/<slug>.md
 //                                        (<slug>.md next to FILE when FILE is in the run folder: the ADR path, nothing of the DoD in the repo)
 //   render --dod FILE [--lang en|th] [--fallback]
 //                                        write <run>/ticket-new.md (the whole new ticket description); --fallback also writes docs/dod/<slug>.ticket.md
@@ -25,15 +27,16 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { checkAdrSources, renderAdr } from './adr.mjs';
+import { checkAdrSources, checkQuestions, renderAdr } from './adr.mjs';
 import { FlagError, enabled } from './flags.mjs';
 import { HOOK_ENV, adrTarget, findAdrsFor, installHook, repoFiles, stagedRenames, syncRepo, topLevel, writeIndex } from './adrio.mjs';
 import { checkDod, exportPtdd, exportQa, renderMarkdown, renderTicket, ticketCheck } from './dodcheck.mjs';
 import { RENDERED_FILE, approve, close, open, readActive, recordAdr, toolFor, touch, trust } from './session.mjs';
 
-const COMMANDS = ['open', 'check', 'render', 'ticket-check', 'tools', 'export', 'adr', 'adr-check', 'adrs', 'approve', 'trust', 'close'];
-const NEEDS_RUN = new Set(['check', 'render', 'ticket-check', 'export', 'adr', 'adr-check', 'approve']);
+const COMMANDS = ['open', 'questions', 'check', 'render', 'ticket-check', 'tools', 'export', 'adr', 'adr-check', 'adrs', 'approve', 'trust', 'close'];
+const NEEDS_RUN = new Set(['questions', 'check', 'render', 'ticket-check', 'export', 'adr', 'adr-check', 'approve']);
 const DOD_MJS = fileURLToPath(import.meta.url);
+const QUESTIONS_ENV = 'DOD_QUESTIONS_CHECK_ENABLED';
 const USAGE = `usage: dod.mjs ${COMMANDS.join(' | ')} [--session ID]; see the header of dod.mjs`;
 const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -63,6 +66,12 @@ export function run(cmd, v, env = process.env) {
   if (cmd === 'open') { if (!v.repo || !v.slug) throw new Usage('open needs --repo DIR --slug SLUG'); return open({ repo: v.repo, slug: v.slug, session, env }); }
   if (cmd === 'close') return close({ session, env });
   if (cmd === 'export' && (!['ptdd', 'qa'].includes(v.to) || !v.out)) throw new Usage('export needs --to ptdd|qa and --out DIR');
+  if (cmd === 'questions') {
+    const active = readActive({ session, env });
+    if (!active) throw new Usage('no active run: dod.mjs open first');
+    const errors = checkQuestions(readOr(join(active.run, 'questions.md')));
+    return errors.length ? { ok: false, errors } : { ok: true, questions: join(active.run, 'questions.md') };
+  }
   if (cmd !== 'approve' && !v.dod) throw new Usage(`${cmd} needs --dod FILE`);
   const active = NEEDS_RUN.has(cmd) ? readActive({ session, env }) : null;
   if (!active) throw new Usage('no active run: dod.mjs open first');
@@ -71,6 +80,7 @@ export function run(cmd, v, env = process.env) {
 
   const dod = loadDod(v.dod), ctx = context(active);
   const errors = checkDod(dod, ctx);
+  if (cmd === 'check' && enabled(env, QUESTIONS_ENV, true)) errors.push(...checkQuestions(ctx.questions));
   if (cmd === 'check') {
     if (errors.length) return { ok: false, errors };
     // a DoD JSON kept in the run folder (the ADR path) keeps its .md there; otherwise docs/dod/<slug>.md in the repo, as before

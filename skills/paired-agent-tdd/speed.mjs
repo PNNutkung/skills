@@ -1,4 +1,4 @@
-// Speed policy of paired-agent-tdd (docs/adr/0001-ptdd-speed.md): pure functions, no I/O. In: the resolved speed flags and the state at hand; out: one decision each.
+// Speed policy of paired-agent-tdd (docs/adr/0002-ptdd-speed.md): pure functions, no I/O. In: the resolved speed flags and the state at hand; out: one decision each.
 // tdd.mjs reads the flags once at `plan` and writes them into the Workflow args (args.speed) and plan.json (plan.speed), so a resumed run decides with the same values.
 // A missing args.speed is every flag off: the v2.0.0 pipeline, byte for byte. workflow.js embeds the functions marked EMBEDDED (graph.mjs --write: a Workflow script cannot import).
 import { enabled, oneOf } from './flags.mjs';

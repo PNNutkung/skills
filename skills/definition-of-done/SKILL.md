@@ -65,6 +65,7 @@ Map the request as a design tree. The **frontier** is every question whose prere
   recommended: B, a long request would time out
   time: <ISO time>
   ```
+  Then run `node "$SK/dod.mjs" questions`: it lists any question with fewer than two options or an option with no pro or no con, the same check `adr` and `check` make. Fix it before you send the round.
 - Save each answer word for word with the Write tool, `A<n>` answering `Q<n>`, in qa-sweep's format: `A4: B` then `time: <ISO time>`.
 - Ask which paths the change covers; the confirmed globs go in the DoD's `touches` (`["src/reports/**"]`). They let later work find this ADR by file.
 - An answer that opens new questions moves the frontier: ask the next round. Stop only when the frontier is empty, then ask the user to confirm the shared understanding.

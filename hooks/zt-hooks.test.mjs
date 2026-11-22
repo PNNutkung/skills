@@ -811,7 +811,7 @@ test('marketplace.json: one entry for this plugin with source ./', () => {
 });
 test('hooks.json: wrapped in "hooks", every referenced script exists, timeouts 5', () => {
   const { hooks } = json('hooks/hooks.json');
-  assert.deepEqual(Object.keys(hooks).sort(), ['PostToolUse', 'PreToolUse']);
+  assert.deepEqual(Object.keys(hooks).sort(), ['PostToolUse', 'PreToolUse', 'SessionEnd']);
   for (const group of Object.values(hooks).flat()) for (const h of group.hooks) {
     assert.equal(h.type, 'command');
     assert.equal(h.timeout, 5);

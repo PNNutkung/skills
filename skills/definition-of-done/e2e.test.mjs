@@ -141,3 +141,29 @@ test('should exit 2 when no DoD session is open for a command that needs one', (
   assert.equal(r.code, 2);
   assert.match(r.err, /no active run/);
 });
+
+test('should refuse questions.md with a missing pro, con or second option when the agent saves it, and in check unless the flag is off (P1 of the retro)', () => {
+  const env2 = { ...env, CLAUDE_CODE_SESSION_ID: 'e2e-questions', DOD_GUARD_ENABLED: 'false' };
+  const cli2 = (extra, ...args) => {
+    const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env: { ...env2, ...extra }, encoding: 'utf8' });
+    return { code: r.status, json: (() => { try { return JSON.parse(r.stdout); } catch { return null; } })() };
+  };
+  const run = cli2({}, 'open', '--repo', repo, '--slug', 'questions-check').json.run;
+  writeFileSync(join(run, 'questions.md'), 'Q1: Which pages?\n(A) both\n  + consistent\n(B) sales\n  + small\nrecommended: A\ntime: t\n\nQ2: Flag?\n(A) yes\n  + safe\n  - one more flag\nrecommended: A\ntime: t\n');
+  const saved = cli2({}, 'questions');
+  assert.equal(saved.code, 1);
+  assert.deepEqual(saved.json.errors, ['Q1 (A) needs at least one pro and one con', 'Q1 (B) needs at least one pro and one con', 'Q2 needs at least two options']);
+
+  writeFileSync(join(run, 'ticket.md'), TICKET);
+  writeFileSync(join(run, 'answers.md'), 'A1: A\ntime: t\nA2: REPORT_CSV_EXPORT\ntime: t\nA3: no API change\ntime: t\nA4: xlsx\ntime: t\nA5: staging\ntime: t\nA6: unit, e2e\ntime: t\n');
+  writeDod();
+  const gate = cli2({}, 'check', '--dod', dodFile);
+  assert.equal(gate.code, 1);
+  assert.ok(gate.json.errors.includes('Q2 needs at least two options'));
+  assert.equal(cli2({ DOD_QUESTIONS_CHECK_ENABLED: 'false' }, 'check', '--dod', dodFile).code, 0, 'the flag turns the new check off');
+  assert.equal(cli2({ DOD_QUESTIONS_CHECK_ENABLED: 'no' }, 'check', '--dod', dodFile).code, 2, 'a value outside true|false stops the tool');
+
+  writeFileSync(join(run, 'questions.md'), 'Q1: Which pages?\n(A) both\n  + consistent\n  - more work\n(B) sales\n  + small\n  - stock waits\nrecommended: A\ntime: t\n');
+  assert.equal(cli2({}, 'questions').code, 0);
+  cli2({}, 'close');
+});

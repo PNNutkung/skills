@@ -10,7 +10,7 @@ touches:
   - ".claude-plugin/*.json"
 dod: ptdd-speed
 ---
-# 1. Speed up paired-agent-tdd
+# 2. Speed up paired-agent-tdd
 
 Date: 2026-11-22
 Status: Accepted

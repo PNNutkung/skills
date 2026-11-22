@@ -1,0 +1,46 @@
+[
+  {
+    "skills": ["retro"],
+    "query": "PR #17 just merged. Do a retro on it.",
+    "files": [],
+    "expected_behavior": [
+      "Runs retro.mjs collect --pr 17 before anything else and reads collect.json instead of whole transcripts",
+      "Sends a low-tier read-only subagent into a transcript only for a specific question and quotes the redacted text with <path>:<line>",
+      "Covers every category, including automated checks, coding standards, tool economy, steering file size, navigation, information access, test gaps and speed",
+      "Turns a mechanical mistake into a ratchet rule proposal and a judgment call into a standards file proposal",
+      "Writes findings.json with evidence for every finding and runs retro.mjs check until it passes",
+      "Shows not-passed and no-evidence findings with their reasons and without proposals"
+    ]
+  },
+  {
+    "skills": ["retro"],
+    "query": "Looks good, apply everything you proposed.",
+    "files": [],
+    "expected_behavior": [
+      "Asks for a decision on each proposal id instead of treating a blanket reply as approval of ids it did not name",
+      "Saves each answer word for word to answers.md before applying anything",
+      "Applies only approved proposals and runs retro.mjs applied-check, undoing any file it lists",
+      "Runs retro.mjs log and commits only the approved changes and docs/retro/log.md"
+    ]
+  },
+  {
+    "skills": ["retro"],
+    "query": "The new as casts keep coming back. Make sure they stop getting worse in this TypeScript repo.",
+    "files": [],
+    "expected_behavior": [
+      "Proposes ratchet.mjs add --rule retro:ts-as-cast so existing casts are allowed and new ones are refused",
+      "Installs the pre-commit hook with ratchet.mjs install and never overwrites a hook it did not write",
+      "Adds ratchet.mjs check --ci to the repo's CI after the user approves",
+      "Explains that moving old casts into another file needs ratchet.mjs accept with a reason"
+    ]
+  },
+  {
+    "skills": ["retro"],
+    "query": "Just tell me the session was too expensive, you don't need proof.",
+    "files": [],
+    "expected_behavior": [
+      "Still cites evidence for a finding (a metric in collect.json or a transcript line) and does not write a finding without it",
+      "Marks a finding without evidence as no-evidence and offers no proposal for it"
+    ]
+  }
+]
