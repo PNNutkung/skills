@@ -30,6 +30,8 @@ Each requirement goes in the `requirements` list of `<run>/findings.json`:
 
 `text` is your one-line statement of the behavior. The quote is what proves it.
 
+**From a definition of done.** When the definition-of-done skill recorded the work as an ADR, take the requirements from it instead of writing them: set `"dodFile": "docs/adr/NNNN-<slug>.md"` in `findings.json` and leave `requirements` out (both at once exit 2). `findings.mjs` reads the ADR committed at `--head` (unchanged in the working tree when that is HEAD), refuses one whose `## Definition of done` section was edited by hand, and turns each item into a `spec` requirement quoted from the ADR; the report shows it as `dod:A2` with the ADR's `file:line`. With neither field, the one active ADR whose `touches` cover the files your findings and tests name is used (`DOD_AUTO=0` turns this off); none means no requirements, as before, and several print a warning naming them, so set `dodFile`. A `touches` glob that matches no file prints a warning too. Your own questions still go to `<run>/answers.md`, apart from the ADR's.
+
 ## 3. Questions to the user
 
 Write a question for each behavior with no written source, and for each unclear wording in a spec or a ticket. Ask them all in one numbered batch, then wait for the answers. Each question states your reading of the current behavior and where you saw it, so the user can say yes or correct it:

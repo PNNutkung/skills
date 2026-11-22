@@ -11,7 +11,7 @@ import { bashVerdict, mcpVerdict } from './dod-guard.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, 'dod-guard.mjs');
-const { approve, open, trust } = await import(join(HERE, '..', 'skills', 'definition-of-done', 'session.mjs'));
+const { approve, open, recordAdr, trust } = await import(join(HERE, '..', 'skills', 'definition-of-done', 'session.mjs'));
 
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'dod-guard-')));
 let n = 0;
@@ -60,6 +60,19 @@ test('should allow writing under docs/dod and the run folder when a DoD session 
   const fx = fixture();
   assert.equal(decision(fx, 'Write', { file_path: join(fx.repo, 'docs', 'dod', 'csv.json'), content: '{}' }), 'allow');
   assert.equal(decision(fx, 'Write', { file_path: join(fx.run, 'answers.md'), content: 'A1: x' }), 'allow');
+});
+
+test('should allow editing the ADR and index that dod.mjs adr wrote, and no other ADR or product file', () => {
+  const fx = fixture();
+  const adr = join(fx.repo, 'docs', 'adr', '0002-csv.md'), index = join(fx.repo, 'docs', 'adr', 'README.md');
+  mkdirSync(dirname(adr), { recursive: true });
+  assert.equal(decision(fx, 'Edit', { file_path: adr }), 'deny', 'not recorded yet');
+  recordAdr({ session: fx.session, env: fx.env, files: [adr, index] });
+  assert.equal(decision(fx, 'Edit', { file_path: adr }), 'allow');
+  assert.equal(decision(fx, 'Write', { file_path: index, content: '' }), 'allow');
+  assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'docs', 'adr', '0001-other.md') }), 'deny');
+  assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'src', 'app.js') }), 'deny');
+  assert.equal(decision(fx, 'Bash', { command: `echo x >> ${adr}` }), 'allow');
 });
 
 test('should deny a path that only looks like docs/dod when it escapes with ..', () => {

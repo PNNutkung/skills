@@ -70,7 +70,7 @@ Every requirement, finding and written test goes into `<run>/findings.json` with
 node "$SK/findings.mjs" --run <run> --repo . --head HEAD --findings <run>/findings.json --tiers-py "$TIERS_PY"
 ```
 
-It runs the tier inventory itself for the report, writes `<run>/report.md` and prints the counts. Give the user that path and the counts, and report only what the file says.
+With `"dodFile"` (an ADR from definition-of-done) in place of `requirements`, it reads them from that ADR (`requirements.md`, section 2). It runs the tier inventory itself for the report, writes `<run>/report.md` and prints the counts. Give the user that path and the counts, and report only what the file says.
 
 ## 4. Never assume, ask
 

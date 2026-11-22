@@ -72,5 +72,15 @@
       "Does not write .claude/test-tiers.json itself, and files no missing-tier finding and no test gap before the user answers",
       "When the user names a tier, passes those files as --tests to mutate.mjs for that tier"
     ]
+  },
+  {
+    "skills": ["qa-sweep"],
+    "query": "QA the refunds change against its definition of done, docs/adr/0002-refunds.md.",
+    "files": [],
+    "expected_behavior": [
+      "Sets \"dodFile\": \"docs/adr/0002-refunds.md\" in findings.json and does not also write a requirements list",
+      "Keeps its own questions and answers in <run>/answers.md, apart from the ADR",
+      "Reports requirements from the ADR with their dod: refs as the report shows them"
+    ]
   }
 ]

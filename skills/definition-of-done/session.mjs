@@ -41,7 +41,8 @@ export function readActive({ session, env = process.env, now = Date.now() } = {}
     if (!privateFile(st) || now - st.mtimeMs > IDLE_MS || !privateDir(dirname(f))) return null;
     const m = JSON.parse(readFileSync(f, 'utf8'));
     if (typeof m.run !== 'string' || !privateDir(m.run) || !m.run.startsWith(realpathSync(runBase(env)))) return null;
-    return { run: m.run, repo: m.repo, slug: m.slug, session: m.session, started: m.started };
+    const adrFiles = Array.isArray(m.adrFiles) ? m.adrFiles.filter(f => typeof f === 'string') : [];
+    return { run: m.run, repo: m.repo, slug: m.slug, session: m.session, started: m.started, adrFiles };
   } catch { return null; }
 }
 
@@ -64,6 +65,17 @@ export function open({ repo, slug, session, env = process.env, now = Date.now() 
   writeFileSync(f, JSON.stringify({ run, repo: top, slug, session, started: new Date(now).toISOString() }) + '\n', { mode: 0o600, flag: 'wx' });
   if (!readActive({ session, env })) { rmSync(f, { force: true }); throw new Error('the new marker did not verify: the session would not be guarded'); }
   return { run, marker: f };
+}
+
+/** Record the ADR files `dod.mjs adr` wrote, so hooks/dod-guard.mjs lets the agent edit them and no other ADR. */
+export function recordAdr({ session, files, env = process.env } = {}) {
+  const active = readActive({ session, env });
+  if (!active) throw new Error('no active run: dod.mjs open first');
+  const f = markerPath(session, env);
+  const m = { run: active.run, repo: active.repo, slug: active.slug, session: active.session, started: active.started, adrFiles: [...new Set([...active.adrFiles, ...files])] };
+  rmSync(f, { force: true });
+  writeFileSync(f, JSON.stringify(m) + '\n', { mode: 0o600, flag: 'wx' });
+  return m.adrFiles;
 }
 
 /** Refresh the idle clock of this session's marker, if active. */

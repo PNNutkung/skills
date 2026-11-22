@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*) for the definition-of-done skill. Opt-in: does nothing unless DOD_GUARD=1.
 // While a DoD session is open for this session (skills/definition-of-done/session.mjs marker), it:
-//   - denies file changes outside <repo>/docs/dod/ and the run folder (no product code before the DoD is done),
+//   - denies file changes outside <repo>/docs/dod/, the run folder and the ADR and index `dod.mjs adr` wrote (no product code before the DoD is done),
 //   - denies writing to a ticket (CLI or MCP) until the user approved the exact rendered text (dod.mjs approve, bound by sha256),
 //   - denies creating a ticket at all (the skill only updates the ticket the work is linked to),
 //   - denies a third-party ticket CLI the user has not trusted on this machine (dod.mjs trust),
@@ -152,7 +152,8 @@ async function decide(input) {
   const active = s.readActive({ session, env: process.env });
   if (!active) return null;
   const run = realpathSync(active.run), dodDir = join(realpathSync(active.repo), 'docs', 'dod');
-  const allowedPath = abs => isInside(abs, run) || isInside(abs, dodDir);
+  const adrFiles = new Set(active.adrFiles ?? []); // the ADR and index that dod.mjs adr wrote (AD8): no other ADR
+  const allowedPath = abs => isInside(abs, run) || isInside(abs, dodDir) || adrFiles.has(abs);
   const approved = s.ticketApproved(run);
   let why = null;
   if (isFile) {

@@ -106,6 +106,36 @@ test('plan: should write the file fence and its marker when PTDD_GUARD=1, and no
   }
 });
 
+test('plan: should read the DoD from plan.dodFile (an ADR) and record which file and blob it came from', async t => {
+  const { renderAdr } = await import('../definition-of-done/adr.mjs');
+  const q = 'Q1: Which?\n(A) a\n  + p\n  - c\n(B) b\n  + p\n  - c\n';
+  const src = { kind: 'user', ref: 'A1', quote: 'A', question: 'Q1' };
+  const adr = renderAdr({ dod: { slug: 'alpha', touches: ['src/**'], items: [{ id: 'AC1', text: 'alpha says new', kinds: ['happy'], source: src }, { id: 'AC2', text: 'beta says beta', kinds: ['happy'], source: src }], required: Object.fromEntries(['featureFlag', 'backwardCompat', 'nonGoals', 'verifyEnv', 'testTiers'].map(k => [k, { value: k, source: src }])) }, answers: 'A1: A\n', questions: q, ticket: '', number: 1, date: '2026-11-22' }).text;
+  const fx = fixture(t, { files: { 'docs/adr/0001-alpha.md': adr }, plan: repo => ({ ...PLAN(repo), dod: undefined, dodFile: 'docs/adr/0001-alpha.md' }) });
+  const r = fx.plan();
+  assert.equal(r.status, 0, r.err);
+  assert.match(r.err, /plan ok: 2 group\(s\), 2 DoD item\(s\) from docs\/adr\/0001-alpha\.md @ [0-9a-f]{8}, base/);
+  const args = JSON.parse(r.out.trim().split('\n').pop());
+  assert.deepEqual(args.dod.map(d => d.id), ['AC1', 'AC2']);
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'plan.json'), 'utf8')).dodFile, 'docs/adr/0001-alpha.md', 'resume reads the same DoD from the run folder');
+  const noAuto = fixture(t, { files: { 'docs/adr/0001-alpha.md': adr }, plan: repo => ({ ...PLAN(repo), dod: undefined }) });
+  assert.equal(noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { DOD_AUTO: '' }).status, 0, 'found by touches');
+  const off = noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { DOD_AUTO: '0' });
+  assert.equal(off.status, 2);
+  assert.match(off.err, /at least one DoD item is required/);
+});
+
+test('plan: should exit 2 when dodFile and dod[] are both set, or dodFile is not an ADR', t => {
+  const both = fixture(t, { plan: { dodFile: 'docs/adr/0001-x.md' } });
+  const r = both.plan();
+  assert.equal(r.status, 2);
+  assert.match(r.err, /use dodFile or dod\[\], not both/);
+  const notAdr = fixture(t, { files: { 'docs/dod/x.json': '{}' }, plan: repo => ({ ...PLAN(repo), dod: undefined, dodFile: 'docs/dod/x.json' }) });
+  const r2 = notAdr.plan();
+  assert.equal(r2.status, 2);
+  assert.match(r2.err, /not an ADR with a "## Definition of done" section/);
+});
+
 test('plan: a dirty working tree becomes the base (a snapshot), and the user\'s repo is untouched', t => {
   const fx = fixture(t);
   put(fx.repo, { 'src/alpha.txt': 'dirty\n', 'notes.txt': 'new file\n' });
