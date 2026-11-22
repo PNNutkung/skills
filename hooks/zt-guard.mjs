@@ -1130,48 +1130,66 @@ function trustedScripts(run) {
 }
 
 // ---------- main ----------
-let run = '';
-let appendSafe;
-try {
-  const runctx = await import('../skills/zero-trust-review/runctx.mjs');
-  appendSafe = runctx.appendSafe;
-  const input = JSON.parse(readFileSync(0, 'utf8'));
-  run = input?.agent_id ? runctx.readMarker() : '';
-  const command = input?.tool_input?.command;
-  // flags first: a value that is not true or false, or an old name, denies every Bash command with the fix (a guard is on by intent only)
-  const { FlagError, enabled } = await import('../skills/zero-trust-review/flags.mjs');
-  let selfReview, postGuard;
+const denyOut = reason => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
+
+// The whole hook for one stdin text: returns what the hook prints ('' = allow). It reads process.env at call time, like the CLI. Exported so the
+// tests run it in-process instead of starting a node process per case; the CLI below is the only other caller.
+export async function respond(raw) {
+  let run = '';
+  let appendSafe;
   try {
-    selfReview = enabled(process.env, 'ZT_SELF_REVIEW_GUARD_ENABLED', false, { renamedFrom: 'ZT_SELF_REVIEW_GUARD' });
-    postGuard = enabled(process.env, 'ZT_POST_GUARD_ENABLED', false, { renamedFrom: 'ZT_POST_GUARD' });
-  } catch (e) {
-    if (!(e instanceof FlagError)) throw e;
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `zero-trust-review guard: ${e.message}. Fix the flag where it is set (shell or settings.json env) and start again` } }));
-    process.exit(0);
-  }
-  if (selfReview && typeof command === 'string') {
-    // any session or agent, run or no run: the author of a change never posts its review verdict (zt-self-review.mjs)
-    const { selfReviewVerdict } = await import('./zt-self-review.mjs');
-    const reason = selfReviewVerdict(command, { session: input.session_id, agent: input.agent_id, cwd: input.cwd, markerDir: runctx.markerDir() });
-    if (reason) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })); process.exit(0); }
-  }
-  if (!input?.agent_id && postGuard && typeof command === 'string') {
-    // the lead session: only the opt-in post guard applies (zt-post-guard.mjs); every other check below is for review subagents
-    const leadRun = runctx.readMarker();
-    if (leadRun) {
-      const { postVerdict } = await import('./zt-post-guard.mjs');
-      const reason = postVerdict(command, { run: leadRun, note: join(PLUGIN_SKILL_DIR, 'note.mjs') });
-      if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
+    const runctx = await import('../skills/zero-trust-review/runctx.mjs');
+    appendSafe = runctx.appendSafe;
+    const input = JSON.parse(raw);
+    run = input?.agent_id ? runctx.readMarker() : '';
+    const command = input?.tool_input?.command;
+    // flags first: a value that is not true or false, or an old name, denies every Bash command with the fix (a guard is on by intent only)
+    const { FlagError, enabled } = await import('../skills/zero-trust-review/flags.mjs');
+    let selfReview, postGuard;
+    try {
+      selfReview = enabled(process.env, 'ZT_SELF_REVIEW_GUARD_ENABLED', false, { renamedFrom: 'ZT_SELF_REVIEW_GUARD' });
+      postGuard = enabled(process.env, 'ZT_POST_GUARD_ENABLED', false, { renamedFrom: 'ZT_POST_GUARD' });
+    } catch (e) {
+      if (!(e instanceof FlagError)) throw e;
+      return denyOut(`zero-trust-review guard: ${e.message}. Fix the flag where it is set (shell or settings.json env) and start again`);
     }
+    if (selfReview && typeof command === 'string') {
+      // any session or agent, run or no run: the author of a change never posts its review verdict (zt-self-review.mjs)
+      const { selfReviewVerdict } = await import('./zt-self-review.mjs');
+      const reason = selfReviewVerdict(command, { session: input.session_id, agent: input.agent_id, cwd: input.cwd, markerDir: runctx.markerDir() });
+      if (reason) return denyOut(reason);
+    }
+    let out = '';
+    if (!input?.agent_id && postGuard && typeof command === 'string') {
+      // the lead session: only the opt-in post guard applies (zt-post-guard.mjs); every other check below is for review subagents
+      const leadRun = runctx.readMarker();
+      if (leadRun) {
+        const { postVerdict } = await import('./zt-post-guard.mjs');
+        const reason = postVerdict(command, { run: leadRun, note: join(PLUGIN_SKILL_DIR, 'note.mjs') });
+        if (reason) out = denyOut(reason);
+      }
+    }
+    if (run && typeof command === 'string') {
+      const reason = decide(command, {
+        cwd: input.cwd || process.cwd(), tmp: realish(tmpdir()), home: homedir(), run, marker: realish(runctx.markerDir()), trusted: trustedScripts(run),
+      });
+      if (reason) out += denyOut(reason);
+    }
+    return out;
+  } catch (err) {
+    try {
+      if (run) appendSafe(run, join(run, 'hook-errors.log'), `${new Date().toISOString()} zt-guard: ${String(err?.message ?? err).split('\n')[0]}\n`);
+    } catch { /* RUN unwritable or runctx missing: nothing left to do, stay silent */ }
+    return '';
   }
-  if (run && typeof command === 'string') {
-    const reason = decide(command, {
-      cwd: input.cwd || process.cwd(), tmp: realish(tmpdir()), home: homedir(), run, marker: realish(runctx.markerDir()), trusted: trustedScripts(run),
-    });
-    if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
-  }
-} catch (err) {
-  try {
-    if (run) appendSafe(run, join(run, 'hook-errors.log'), `${new Date().toISOString()} zt-guard: ${String(err?.message ?? err).split('\n')[0]}\n`);
-  } catch { /* RUN unwritable or runctx missing: nothing left to do, stay silent */ }
+}
+
+// CLI: only when this file is the script node was started with, never on import
+let isMain = false;
+try { isMain = !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { /* not the main script */ }
+if (isMain) {
+  let raw = '';
+  try { raw = readFileSync(0, 'utf8'); } catch { /* no stdin: respond('') stays silent */ }
+  const out = await respond(raw);
+  if (out) process.stdout.write(out);
 }
