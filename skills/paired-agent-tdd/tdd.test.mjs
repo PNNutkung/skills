@@ -6,20 +6,23 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, mkdtempSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SPEED_DEFAULT, SPEED_ENV, SPEED_OFF_ENV } from './speed.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TDD = join(HERE, 'tdd.mjs');
+Object.assign(process.env, SPEED_OFF_ENV); // the tests above the speed section test the v2.0.0 pipeline; the speed section sets its flags per command
 const hasPython = spawnSync('python3', ['--version']).status === 0;
 
 // Honors the runner flags, then runs the command after `--` in --cwd. config.json {exit} fakes 86/124 for every run.
 const STUB = `
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const dir = dirname(fileURLToPath(import.meta.url)), a = process.argv.slice(2);
 if (a[0] === '--check') { console.log('stub'); process.exit(0); }
 const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
+appendFileSync(join(dir, 'calls.log'), cmd.join(' ') + '\\n');
 const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
 const fake = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).exit;
 if (fake) process.exit(fake);
@@ -1114,4 +1117,292 @@ test('resume: a one-driver group of the last (fast) run keeps merged: true in it
   assert.equal('merged' in continueOf(fx).a, false, 'a default return gives the same continue file as before');
   resumeOf(fx);
   assert.equal('merged' in continueOf(fx).a, false);
+});
+
+// ---------------------------------------------------------------- speed flags (ADR 0001): plan reads them once; the gates read plan.speed and their own options
+const ON_ENV = Object.fromEntries(Object.values(SPEED_ENV).map(k => [k, '']));
+const testRuns = fx => { try { return readFileSync(join(fx.stub, 'calls.log'), 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
+const plannedWith = (t, env, opts) => { const fx = fixture(t, opts), r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], env); assert.equal(r.status, 0, r.err); fx.run = JSON.parse(r.out.trim().split('\n').pop()).runDir; return { fx, args: JSON.parse(r.out.trim().split('\n').pop()), err: r.err }; };
+const plan_ = fx => JSON.parse(readFileSync(join(fx.run, 'plan.json'), 'utf8'));
+const redThenCode = fx => { put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA }); fx.tdd('red', ['--group', 'a']); put(fx.repo, { 'src/alpha.txt': 'new\n' }); };
+
+test('pmode, fstrict: unset speed flags mean the fast pipeline and every speed flag on; plan says so and writes them into the args and plan.json', t => {
+  const { fx, args, err } = plannedWith(t, ON_ENV);
+  assert.deepEqual([args.mode, args.fast, args.speed], ['fast', true, SPEED_DEFAULT]);
+  assert.deepEqual([plan_(fx).mode, plan_(fx).speed], ['fast', SPEED_DEFAULT]);
+  assert.match(err, /mode fast; speed flags pipeline=fast quickDriverGate=true gateReuse=true courierSkip=true parallelReview=true;/);
+});
+
+test('pmode: plan.mode "fast" or "paired" overrides PTDD_PIPELINE_MODE; the flag value itself travels in args.speed', t => {
+  for (const [planMode, flag, want] of [['paired', 'fast', 'standard'], ['fast', 'paired', 'fast'], [undefined, 'paired', 'standard'], [undefined, 'fast', 'fast']]) {
+    const { args, err } = plannedWith(t, { ...ON_ENV, PTDD_PIPELINE_MODE: flag }, { plan: planMode ? { mode: planMode } : {} });
+    assert.equal(args.fast === true, want === 'fast', `${planMode}/${flag}`);
+    assert.equal(args.speed.pipeline, flag);
+    assert.match(err, new RegExp(`mode ${want};`));
+  }
+});
+
+test('fcompat: with every speed flag off, plan writes the v2.0.0 args and plan.json: no speed key, no mode key, no fast key', t => {
+  const { fx, args } = plannedWith(t, SPEED_OFF_ENV);
+  assert.deepEqual(Object.keys(args), ['repo', 'cmd', 'mutation', 'dod', 'groups', 'scratch', 'base', 'run', 'skillDir', 'ztDir', 'runDir', 'sandbox', 'preflight']);
+  assert.deepEqual(Object.keys(plan_(fx)), ['repo', 'cmd', 'mutation', 'dod', 'groups', 'scratch', 'base', 'run']);
+  const fast = plannedWith(t, SPEED_OFF_ENV, FAST);
+  assert.deepEqual([fast.args.mode, fast.args.fast, 'speed' in fast.args], ['fast', true, false], 'a v2.0.0 fast plan is unchanged too');
+  const own = plannedWith(t, SPEED_OFF_ENV, { plan: { speed: { gateReuse: true } } });
+  assert.deepEqual(['speed' in own.args, 'speed' in plan_(own.fx)], [false, false], 'a speed key of the user\'s plan.json never switches a flag on');
+});
+
+test('fstrict: a speed flag with a value that is not valid stops the plan (exit 2) with the fix', t => {
+  for (const [k, v, re] of [['PTDD_PIPELINE_MODE', 'turbo', /PTDD_PIPELINE_MODE=turbo is not valid: use one of fast, paired/], ...['PTDD_QUICK_DRIVER_GATE_ENABLED', 'PTDD_GATE_REUSE_ENABLED', 'PTDD_COURIER_SKIP_ENABLED', 'PTDD_PARALLEL_REVIEW_ENABLED'].map(n => [n, '1', new RegExp(`${n}=1 is not valid: use true or false`)])]) {
+    const fx = fixture(t), r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { [k]: v });
+    assert.equal(r.status, 2, k);
+    assert.match(r.err, re);
+  }
+});
+
+test('pquick: green --quick runs no mutants, says so, and marks its gate file quick; without it the gate mutates as before', t => {
+  const { fx } = plannedWith(t, ON_ENV, { files: { 'src/calc.sh': 'echo 1\n' } });
+  redThenCode(fx);
+  const q = fx.tdd('green', ['--group', 'a', '--quick']);
+  assert.match(q.out, /^GREEN a ok=true \(quick: no mutants; the last run and the navigator's run mutate\)/, q.out + q.err);
+  assert.match(q.out, /mutation: skipped \(--quick\)/);
+  assert.deepEqual([fx.gate('a.green.json').quick, fx.gate('a.green.json').mutation.reason], [true, 'skipped (--quick)']);
+  assert.equal(existsSync(join(fx.run, 'gates', 'a.green.cache.json')), false, 'a quick run stores nothing to reuse');
+  const ret = join(fx.dir, 'ret.json');
+  writeFileSync(ret, JSON.stringify({ groups: { a: { state: 'done', red: { verdict: 'PASS' }, green: { verdict: 'PASS' }, matrix: [{ dod: 'AC1', kind: 'happy', test: 'test_ac1_happy', file: 'tests/test_alpha.sh' }] } } }));
+  fx.tdd('resume', ['--ret', ret]);
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'continue.json'), 'utf8')).groups.a.next, 'green-check', 'a quick gate is never the last word: the navigator judges a full run');
+  const full = fx.tdd('green', ['--group', 'a']);
+  assert.match(full.out, /^GREEN a ok=true snapshot/);
+  assert.equal('quick' in fx.gate('a.green.json'), false);
+  assert.match(fx.gate('a.green.json').mutation.reason, /no mutable changed lines/);
+});
+
+test('preuse: a full run stores its result; green --reuse on byte-identical files reuses it and re-runs only the flake check; any change, or a garbled entry, runs in full', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  const first = fx.tdd('green', ['--group', 'a']);
+  assert.match(first.out, /^GREEN a ok=true/, first.out + first.err);
+  const cache = join(fx.run, 'gates', 'a.green.cache.json');
+  assert.ok(existsSync(cache), 'stored for the navigator');
+  const before = testRuns(fx), again = fx.tdd('green', ['--group', 'a', '--reuse']);
+  assert.match(again.out, /^GREEN a ok=true/);
+  assert.match(again.out, /reused: test probe, mutants and coverage of the last full run on these exact files; flake check re-run \(2 run\(s\) per test file\)/);
+  assert.deepEqual([testRuns(fx) - before, fx.gate('a.green.json').reused, fx.gate('a.green.json').tests.map(x => [x.verdict, x.head, x.base, x.nondeterministic])], [2, true, [['exercises-change', 0, 1, false]]]);
+  const fullRuns = (() => { const b = testRuns(fx); fx.tdd('green', ['--group', 'a']); return testRuns(fx) - b; })();
+  assert.ok(fullRuns > 2, `a full run tests more than the flake check (${fullRuns})`);
+  put(fx.repo, { 'src/alpha.txt': 'new\nmore\n' });
+  const changed = fx.tdd('green', ['--group', 'a', '--reuse']);
+  assert.doesNotMatch(changed.out, /reused:/, 'a changed file runs the gate in full');
+  assert.equal('reused' in fx.gate('a.green.json'), false);
+  writeFileSync(cache, '{"version":1,"key":');
+  assert.doesNotMatch(fx.tdd('green', ['--group', 'a', '--reuse']).out, /reused:/, 'a garbled entry runs the gate in full');
+  const retest = fx.tdd('green', ['--group', 'a', '--retest', '--reuse']);
+  assert.doesNotMatch(retest.out, /reused:/, 'other gate arguments are another key');
+});
+
+test('preuse, fcompat: with the flags off a full run stores nothing; an explicit --reuse still stores and reuses', t => {
+  const { fx } = plannedWith(t, SPEED_OFF_ENV);
+  redThenCode(fx);
+  fx.tdd('green', ['--group', 'a']);
+  assert.deepEqual(readdirSync(join(fx.run, 'gates')).filter(f => /cache/.test(f)), []);
+  fx.tdd('green', ['--group', 'a', '--reuse']);
+  assert.match(fx.tdd('green', ['--group', 'a', '--reuse']).out, /reused:/);
+});
+
+test('pvreuse: verify takes final.json from the cache when the snapshot is unchanged since the last final run, and runs final again when it is not or the flag is off', t => {
+  const run = env => {
+    const { fx } = plannedWith(t, env);
+    put(fx.repo, { 'tests/test_alpha.sh': TEST_ALPHA, 'tests/test_beta.sh': TEST_BETA, 'src/alpha.txt': 'new\n', 'src/beta.txt': 'beta\n' });
+    for (const g of ['a', 'b']) { fx.tdd('red', ['--group', g]); fx.tdd('green', ['--group', g]); }
+    assert.match(fx.tdd('final', ['--again']).out, /^FINAL ok=true/m);
+    return fx;
+  };
+  const on = run(ON_ENV), b = testRuns(on), v = verify(on, RET(BETA_ROW));
+  assert.deepEqual([v.final, testRuns(on) - b, v.finalReused], [true, 0, true], 'no test ran again');
+  put(on.repo, { 'notes.txt': 'stray\n' });
+  const v3 = verify(on, RET(BETA_ROW));
+  assert.deepEqual([v3.final, v3.finalReused], [false, true], 'a stray file outside the snapshot is scanned again: reuse never hides it');
+  put(on.repo, { 'notes.txt': null, 'src/beta.txt': 'beta\nmore\n' });
+  const b2 = testRuns(on), v2 = verify(on, RET(BETA_ROW));
+  assert.ok(testRuns(on) - b2 > 0 && !('finalReused' in v2), 'a changed file runs final again');
+  const off = run(SPEED_OFF_ENV), b3 = testRuns(off), v4 = verify(off, RET(BETA_ROW));
+  assert.ok(testRuns(off) - b3 > 0 && !('finalReused' in v4), 'flag off: verify runs final again, as in v2.0.0');
+  assert.equal(existsSync(join(off.run, 'gates', 'final.cache.json')), false);
+});
+
+test('preuse: with gate reuse on, the mutation probe takes its baseline from the test probe\'s head run of the same tree (no extra wait: it reads the file the last run left); off, neither option is passed', t => {
+  const calc = { plan: { dod: [{ id: 'AC1', text: 'f gives 2', source: 'assumed', kinds: ['happy'] }], groups: [{ id: 'a', tests: ['tests/test_calc.sh'], src: ['src/calc.mjs'], dod: ['AC1'], after: [] }] } };
+  const run = env => {
+    const { fx } = plannedWith(t, env, calc);
+    put(fx.repo, { 'tests/test_calc.sh': `# test_ac1_happy\n${process.execPath} -e "import('./src/calc.mjs').then(m => process.exit(m.f() === 2 ? 0 : 1))"\n` });
+    fx.tdd('red', ['--group', 'a']);
+    put(fx.repo, { 'src/calc.mjs': 'export const f = () => 1 + 1;\n' });
+    return fx;
+  };
+  const on = run(ON_ENV);
+  assert.match(on.tdd('green', ['--group', 'a']).out, /^GREEN a ok=true/);
+  assert.deepEqual(on.gate('a.green.json').mutation.baseline, { reused: false, reason: 'no head run file' }, 'the first run has no head run to read yet');
+  assert.ok(existsSync(join(on.run, 'gates', 'a.green.head.json')), 'the test probe left its head run for the next run');
+  assert.match(on.tdd('green', ['--group', 'a']).out, /^GREEN a ok=true/);
+  assert.deepEqual(on.gate('a.green.json').mutation.baseline, { reused: true }, 'the same tree again: no baseline run');
+  put(on.repo, { 'src/calc.mjs': 'export const f = () => 2 * 1;\n' });
+  on.tdd('green', ['--group', 'a']);
+  assert.equal(on.gate('a.green.json').mutation.baseline.reused, false, 'another tree runs its own baseline');
+  const off = run(SPEED_OFF_ENV);
+  off.tdd('green', ['--group', 'a']); off.tdd('green', ['--group', 'a']);
+  assert.deepEqual(['baseline' in off.gate('a.green.json').mutation, existsSync(join(off.run, 'gates', 'a.green.head.json'))], [false, false]);
+});
+
+// ---------------------------------------------------------------- review fixes (PR #22): zero-trust-review flags at the gates, the process cap per gate, cross-group regressions at verify
+const ZT_OFF_ENV = { ZT_MUTATION_BASELINE_REUSE_ENABLED: 'false', ZT_MUTATION_BUDGET_STRICT_ENABLED: 'false', ZT_TEST_PROCESS_MAX: '' };
+const ALL_OFF_ENV = { ...SPEED_OFF_ENV, ...ZT_OFF_ENV };
+const BAD_ZT = [['ZT_MUTATION_BUDGET_STRICT_ENABLED', 'yes', /ZT_MUTATION_BUDGET_STRICT_ENABLED=yes is not valid: use true or false/],
+  ['ZT_MUTATION_BASELINE_REUSE_ENABLED', '1', /ZT_MUTATION_BASELINE_REUSE_ENABLED=1 is not valid: use true or false/],
+  ['ZT_TEST_PROCESS_MAX', '0', /ZT_TEST_PROCESS_MAX=0 is not valid: use a whole number above 0, or unlimited/]];
+
+test('fstrict: plan validates the zero-trust-review flags up front: a value that is not valid stops it (exit 2) with the zero-trust-review fix', t => {
+  for (const [k, v, re] of BAD_ZT) {
+    const fx = fixture(t), r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { [k]: v });
+    assert.equal(r.status, 2, `${k}=${v}: ${r.err}`);
+    assert.match(r.err, re);
+    assert.equal(r.out, '', 'no Workflow args');
+  }
+});
+
+test('fstrict: a zero-trust-review flag that is not valid at gate time never gives a GREEN: green (and red, final) stop with the fix', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  for (const [k, v, re] of BAD_ZT) {
+    for (const cmd of [['green', '--group', 'a'], ['red', '--group', 'a'], ['final']]) {
+      const r = fx.tdd(cmd[0], cmd.slice(1), { [k]: v });
+      assert.equal(r.status, 2, `${cmd[0]} ${k}=${v}: ${r.out}`);
+      assert.match(r.err, re);
+      assert.doesNotMatch(r.out, /ok=true/);
+    }
+  }
+});
+
+// a copy of zero-trust-review whose mutation probe crashes (exit 2, no JSON): what an invalid flag did to it before the gates validated the flags themselves
+function crashingZt(fx) {
+  const zt = join(fx.dir, 'zt');
+  execFileSync('cp', ['-R', join(HERE, '..', 'zero-trust-review'), zt]);
+  writeFileSync(join(zt, 'mutate.mjs'), "console.error('mutate: boom'); process.exit(2);\n");
+  return zt;
+}
+
+test('green: a mutation probe that errors makes the gate not ok whenever mutation should have run; with every flag off it is ignored as in v2.0.0; off in the plan or --quick it never runs', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  const ZT_DIR = crashingZt(fx);
+  const r = fx.tdd('green', ['--group', 'a'], { ZT_DIR });
+  assert.match(r.out, /^GREEN a ok=false/, r.out + r.err);
+  assert.match(r.out, /not ok: .*mutation probe: mutate\.mjs exited 2: mutate: boom/);
+  assert.equal(existsSync(join(fx.run, 'gates', 'a.green.cache.json')), false, 'an errored run is never stored for reuse');
+  assert.match(fx.tdd('green', ['--group', 'a', '--quick'], { ZT_DIR }).out, /^GREEN a ok=true/, 'a quick run does not mutate');
+  const off = plannedWith(t, ALL_OFF_ENV).fx;
+  redThenCode(off);
+  assert.match(off.tdd('green', ['--group', 'a'], { ...ZT_OFF_ENV, ZT_DIR: crashingZt(off) }).out, /^GREEN a ok=true/, 'every flag off: v2.0.0 ignored a mutation probe error');
+  const planOff = plannedWith(t, ON_ENV, { plan: { mutation: { off: true } } }).fx;
+  redThenCode(planOff);
+  assert.match(planOff.tdd('green', ['--group', 'a'], { ZT_DIR: crashingZt(planOff) }).out, /^GREEN a ok=true/, 'mutation off in the plan');
+});
+
+test('preuse: the gate cache key holds the resolved mutation policy: another ZT_MUTATION_BUDGET_STRICT_ENABLED, ZT_MUTATION_BASELINE_REUSE_ENABLED, ZT_TEST_PROCESS_MAX or ZT_SANDBOX_IMAGE runs in full', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  assert.match(fx.tdd('green', ['--group', 'a']).out, /^GREEN a ok=true/);
+  for (const env of [{ ZT_MUTATION_BUDGET_STRICT_ENABLED: 'false' }, { ZT_MUTATION_BASELINE_REUSE_ENABLED: 'false' }, { ZT_TEST_PROCESS_MAX: '3' }, { ZT_SANDBOX_IMAGE: 'other:1' }]) {
+    assert.doesNotMatch(fx.tdd('green', ['--group', 'a', '--reuse'], env).out, /reused:/, JSON.stringify(env));
+    fx.tdd('green', ['--group', 'a']); // back to the stored default
+  }
+  assert.match(fx.tdd('green', ['--group', 'a', '--reuse'], { ZT_MUTATION_BUDGET_STRICT_ENABLED: 'TRUE', ZT_TEST_PROCESS_MAX: 'unlimited' }).out, /reused:/, 'the same resolved values are the same key');
+});
+
+test('pquick: dod --stage green does not accept a quick GREEN gate: it ran no mutants and is not the final word', t => {
+  const { fx } = plannedWith(t, ON_ENV);
+  redThenCode(fx);
+  fx.tdd('green', ['--group', 'a', '--quick']);
+  const q = dod(fx, 'green');
+  assert.match(q.out, /^DOD a stage=green ok=false/, q.out);
+  assert.match(q.out, /the GREEN gate is quick \(--quick: no mutants\), not final: run it without --quick/);
+  fx.tdd('green', ['--group', 'a']);
+  assert.match(dod(fx, 'green').out, /^DOD a stage=green ok=true/);
+});
+
+// Like the real runner: each command leaves a marker in live/ while it lasts and logs how many it saw (peak.log), next to the runner file, shared by every process of a gate.
+const PEAK_STUB = `
+import { spawn } from 'node:child_process';
+import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const dir = dirname(fileURLToPath(import.meta.url)), a = process.argv.slice(2);
+if (a[0] === '--check') { console.log('stub'); process.exit(0); }
+const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
+const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
+const live = join(dir, 'live'), me = join(live, String(process.pid));
+mkdirSync(live, { recursive: true });
+writeFileSync(me, '');
+appendFileSync(join(dir, 'peak.log'), readdirSync(live).length + '\\n');
+const env = { ...process.env };
+for (const kv of vals('--env')) env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
+const child = spawn(cmd[0], cmd.slice(1), { cwd: vals('--cwd')[0], env, stdio: 'inherit', detached: true });
+process.on('SIGTERM', () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } });
+child.on('exit', code => { rmSync(me, { force: true }); process.stderr.write('ZT-RUN stub exit=' + (code ?? 1) + '\\n'); process.exit(code ?? 1); });
+`;
+const peakRunner = fx => {
+  const d = mkdtempSync(join(fx.dir, 'peak-')), runner = join(d, 'peak-runner.mjs');
+  writeFileSync(runner, PEAK_STUB);
+  fx.runner = runner;
+  return { reset: () => rmSync(join(d, 'peak.log'), { force: true }), peak: () => { try { return Math.max(0, ...readFileSync(join(d, 'peak.log'), 'utf8').split('\n').filter(Boolean).map(Number)); } catch { return 0; } } };
+};
+const CALC = repo => ({ cover: 'sleep 0.2; : > {out}', dod: [{ id: 'AC1', text: 'f gives 2 and g gives 3', source: 'assumed', kinds: ['happy'] }],
+  groups: [{ id: 'a', tests: ['tests/test_calc.sh', 'tests/test_calc2.sh'], src: ['src/calc.mjs'], dod: ['AC1'], after: [] }] });
+const calcTest = (name, fn, want) => `# ${name}\nsleep 0.2\n${process.execPath} -e "import('./src/calc.mjs').then(m => process.exit(m.${fn}() === ${want} ? 0 : 1))"\n`;
+
+test('zproc: ZT_TEST_PROCESS_MAX caps the test commands ONE gate runs at once (red; green with its test probe, mutation probe and coverage; reflake; final); unset runs as before', { timeout: 240000 }, t => {
+  const { fx } = plannedWith(t, { ...ON_ENV, ZT_TEST_PROCESS_MAX: '' }, { plan: CALC });
+  const stub = peakRunner(fx);
+  put(fx.repo, { 'tests/test_calc.sh': calcTest('test_ac1_happy', 'f', 2), 'tests/test_calc2.sh': calcTest('test_ac1_happy_g', 'g', 3) });
+  const peakOf = (cmd, env) => { stub.reset(); const r = fx.tdd(cmd[0], cmd.slice(1), env); assert.equal(r.status, 0, r.err); return { peak: stub.peak(), out: r.out }; };
+  assert.ok(peakOf(['red', '--group', 'a'], {}).peak >= 2, 'unset: red runs its files together');
+  put(fx.repo, { 'src/calc.mjs': 'export const f = () => 1 + 1;\nexport const g = () => 1 + 2;\n' });
+  const free = peakOf(['green', '--group', 'a'], {});
+  assert.match(free.out, /^GREEN a ok=true/, free.out);
+  assert.ok(free.peak > 3, `unset: the probes and coverage overlap (peak ${free.peak})`);
+  for (const max of [1, 2, 3, 5]) {
+    const env = { ZT_TEST_PROCESS_MAX: String(max) };
+    for (const cmd of [['red', '--group', 'a'], ['green', '--group', 'a'], ['green', '--group', 'a', '--reuse'], ['final', '--again']]) {
+      const { peak, out } = peakOf(cmd, env);
+      assert.ok(peak >= 1 && peak <= max, `${cmd.join(' ')} with ZT_TEST_PROCESS_MAX=${max}: peak ${peak}`);
+      if (cmd[0] === 'green') assert.match(out, /^GREEN a ok=true/, `${cmd.join(' ')} ${max}: ${out}`);
+    }
+  }
+});
+
+test('pcourier: with the courier skip on, a failing final at verify puts the groups it breaks (or the run) into notDone and their stale GREEN gates close no DoD pair; flags off, v2.0.0 output', t => {
+  const strict = { 'tests/test_alpha.sh': '# test_ac1_happy\ngrep -q new src/alpha.txt\n', 'tests/test_beta.sh': '# test_ac2_happy\ngrep -qx new src/alpha.txt && grep -q beta src/beta.txt\n' };
+  const run = env => {
+    const { fx } = plannedWith(t, env);
+    put(fx.repo, strict);
+    fx.tdd('red', ['--group', 'a']); fx.tdd('red', ['--group', 'b']);
+    put(fx.repo, { 'src/alpha.txt': 'new\n' }); fx.tdd('green', ['--group', 'a']);
+    put(fx.repo, { 'src/beta.txt': 'beta\n' }); fx.tdd('green', ['--group', 'b']);
+    assert.ok(fx.gate('a.green.json').ok && fx.gate('b.green.json').ok);
+    put(fx.repo, { 'src/alpha.txt': 'new stuff\n' }); // a fixer of group a: its own tests still pass, group b's do not
+    assert.match(fx.tdd('green', ['--group', 'a']).out, /^GREEN a ok=true/, 'the fixer\'s own-group gate is ok');
+    return fx;
+  };
+  const on = run(ON_ENV), v = verify(on, { ...RET(BETA_ROW), courierSkipped: true });
+  assert.equal(v.final, false);
+  assert.ok(v.notDone.some(n => /^b: final gate not ok/.test(n)), JSON.stringify(v.notDone));
+  assert.ok(!v.notDone.some(n => /^a:/.test(n)), 'a group whose tests still pass together is not blamed');
+  assert.deepEqual([v.dod.covered, v.dod.total, v.dod.gaps], [1, 2, ['AC2/happy: unproven']], 'group b\'s GREEN gate is stale: it covers nothing');
+  put(on.repo, { 'notes.txt': 'stray\n', 'src/alpha.txt': 'new\n' });
+  const v2 = verify(on, { ...RET(BETA_ROW), courierSkipped: true });
+  assert.equal(v2.final, false);
+  assert.ok(v2.notDone.some(n => /^run: final gate not ok: files outside the plan changed: notes\.txt/.test(n)), JSON.stringify(v2.notDone));
+  assert.deepEqual([v2.dod.covered, v2.dod.total, v2.notDone.length], [2, 2, 1], 'a stray file alone is work left for the run: every group test passes together, so no GREEN gate is voided');
+  const off = run(SPEED_OFF_ENV), v3 = verify(off, RET(BETA_ROW));
+  assert.deepEqual([v3.final, v3.notDone, v3.dod.covered, v3.dod.total], [false, [], 2, 2], 'flags off: what v2.0.0 reported');
 });

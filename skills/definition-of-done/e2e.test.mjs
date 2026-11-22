@@ -1,6 +1,7 @@
 // E2E: one whole DoD session through the real CLI and the real hook, as an agent and a user would drive it, on a throwaway git repo.
 // grill answers -> check fails (open question) -> answer -> check passes and writes docs/dod -> render ticket -> hook denies the post ->
 // user approves -> hook allows -> DoD changes -> hook denies again -> export for both skills -> close -> hook allows product code again.
+// flags: defaults. The whole-session test sets no flag of its own (DOD_GUARD_ENABLED=true is a default-off flag); see rules/flag-defaults-e2e.md.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';

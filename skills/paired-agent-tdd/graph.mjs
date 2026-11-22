@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // Execution graph of paired-agent-tdd: the SINGLE SOURCE OF TRUTH for the pipeline's shape.
-// --write regenerates the diagram and the tiers table in SKILL.md and the NODE/LIM/plan table plus checkMatrix in workflow.js (a Workflow script cannot import);
+// --write regenerates the diagram and the tiers table in SKILL.md and the NODE/LIM/plan table, checkMatrix and the speed policy (speed.mjs) in workflow.js (a Workflow script cannot import);
 // --check fails when any of them has drifted or a guard below is broken. Edit NODES, run --write.
 import assert from 'node:assert';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkMatrix } from './gates.mjs';
+import { EMBED } from './speed.mjs';
 
 // tier: T0 code, T2 sonnet, T3 opus (policy in tiering.md). model 'code' = plain code (tdd.mjs or the lead), no agent.
 // agentType picks the agent definition: its tool list is a structural fence (navigators and the reviewer have no Edit or Write) and a smaller fixed context than
@@ -91,12 +92,14 @@ const nodesJs = () => [
   'const NODE = {', ...NODES.filter(n => n.model !== 'code' && !n.outside).map(n => `  '${n.id}': ${JSON.stringify({ model: n.model, effort: n.effort, ponytail: n.ponytail, agentType: n.agentType, cap: n.cap })},`), '}',
   `const LIM = ${JSON.stringify(LIM)}`, plan.toString(),
 ].join('\n');
+const speedJs = () => [...Object.entries(EMBED.constants).map(([k, v]) => `const ${k} = ${JSON.stringify(v)}`), ...EMBED.functions.map(f => f.toString())].join('\n');
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TARGETS = [
   { file: 'SKILL.md', open: '<!-- GENERATED:graph -->', close: '<!-- /GENERATED:graph -->', body: () => `\`\`\`mermaid\n${mermaid()}\n\`\`\`` },
   { file: 'SKILL.md', open: '<!-- GENERATED:tiers -->', close: '<!-- /GENERATED:tiers -->', body: tiersTable },
   { file: 'workflow.js', open: '// GENERATED:nodes (node graph.mjs --write)', close: '// /GENERATED:nodes', body: nodesJs },
   { file: 'workflow.js', open: '// GENERATED:matrix (node graph.mjs --write)', close: '// /GENERATED:matrix', body: () => checkMatrix.toString() },
+  { file: 'workflow.js', open: '// GENERATED:speed (node graph.mjs --write)', close: '// /GENERATED:speed', body: speedJs },
 ];
 const read = t => readFileSync(join(HERE, t.file), 'utf8');
 const block = t => `${t.open}\n\n${t.body()}\n\n${t.close}`;
@@ -161,7 +164,7 @@ function check() {
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   const [cmd, ...a] = process.argv.slice(2);
   if (cmd === '--check') check();
-  else if (cmd === '--write') { TARGETS.forEach(t => writeFileSync(join(HERE, t.file), read(t).replace(current(t), () => block(t)))); console.log('SKILL.md diagram and tiers, workflow.js node table and checkMatrix updated'); }
+  else if (cmd === '--write') { TARGETS.forEach(t => writeFileSync(join(HERE, t.file), read(t).replace(current(t), () => block(t)))); console.log('SKILL.md diagram and tiers, workflow.js node table, checkMatrix and speed policy updated'); }
   else if (cmd === '--mermaid') console.log(mermaid());
   else if (cmd === '--plan' && a.length >= 3 && a.length <= 6 && (a.length <= 5 || a[5] === 'fast')) { // a trailing `fast`: plan.mode fast with every group independent (a group that waits runs the default path)
     const fast = a[a.length - 1] === 'fast', [g, integ, fg, rounds = LIM.rounds, maxRepairs = LIM.repairs * g] = (fast ? a.slice(0, -1) : a).map(Number), { counts, total } = plan(g, integ, fg, fast ? g : 0);

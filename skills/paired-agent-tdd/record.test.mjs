@@ -44,6 +44,16 @@ test('buildRecord: a group stopped for lack of progress and the final courier ar
   assert.deepEqual([plain.data.stalled, plain.data.converge], [0, null]);
 });
 
+test('pnospec: logs how often a RED navigator passed the tests on the first try; carried, merged and unjudged groups do not count', () => {
+  const red = (verdict, reworks, o = {}) => ({ state: 'done', red: { verdict, reworks, ...o }, green: { reworks: 0 } });
+  const groups = { a: red('PASS', 0), b: red('PASS', 2), c: red('FAIL', 3), d: red('PASS', 0, { carried: true }), e: red('merged', 0, { merged: true }), f: { state: 'failed', red: { reworks: 0 }, green: {} } };
+  const { line, data } = buildRecord({ date: '2026-11-22', base: 'abc', ret: { groups, clusters: [] }, verify: null, greens: {}, measured });
+  assert.deepEqual(data.redFirstTry, { passed: 1, of: 3 });
+  assert.match(line, /\| findings none \| RED first try 1\/3 \|/);
+  const none = buildRecord({ date: '2026-11-22', base: 'abc', ret: { groups: { e: groups.e }, clusters: [] }, verify: null, greens: {}, measured });
+  assert.deepEqual([none.data.redFirstTry, /RED first try/.test(none.line)], [{ passed: 0, of: 0 }, false], 'no RED navigator judged anything: nothing to say');
+});
+
 function agent(dir, name, label, secs) {
   const row = (t, extra) => JSON.stringify({ timestamp: new Date(Date.UTC(2026, 9, 9, 10, 0, t)).toISOString(), message: { role: 'assistant', id: `${name}-${t}`, usage: { input_tokens: 100, output_tokens: 10, cache_creation_input_tokens: 1000, cache_read_input_tokens: 2000 }, content: extra } });
   writeFileSync(join(dir, `agent-${name}.jsonl`), `${row(0, [{ type: 'tool_use', id: `${name}-t1` }])}\n${row(secs, [{ type: 'tool_use', id: `${name}-t2` }, { type: 'text', text: 'x' }])}\n`);
@@ -74,4 +84,18 @@ test('CLI: reads the transcript and the run folder, prints the line, writes reco
   assert.equal(md.split('\n').filter(l => l.includes('| on-job |')).length, 2);
   const bad = spawnSync(process.execPath, [RECORD, '--run', run, '--ret', join(dir, 'return.json'), '--transcript', join(dir, 'empty')], { encoding: 'utf8' });
   assert.equal(bad.status, 2);
+});
+
+test('CLI: a fast run counts its tdd-driver and final-verifier agents by their node, not as reviewers', t => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pat-rec-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = join(dir, 'run'), tr = join(dir, 'tr');
+  for (const d of [run, join(run, 'gates'), tr]) mkdirSync(d, { recursive: true });
+  ['a', 'b', 'c'].forEach((g, i) => agent(tr, `d${g}`, `tdd-driver:${g}`, 10 + i));
+  agent(tr, 'rev', 'reviewer', 20); agent(tr, 'fv', 'final-verifier', 5); agent(tr, 'fv2', 'final-verifier:again', 5);
+  writeFileSync(join(run, 'plan.json'), JSON.stringify({ base: '0123456789abcdef' }));
+  writeFileSync(join(dir, 'return.json'), JSON.stringify({ groups: { a: { state: 'done' }, b: { state: 'done' }, c: { state: 'done' } } }));
+  const r = spawnSync(process.execPath, [RECORD, '--run', run, '--ret', join(dir, 'return.json'), '--transcript', tr], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(run, 'record.json'), 'utf8')).agents, { 'tdd-driver': 3, reviewer: 1, 'final-verifier': 2 }, r.stdout);
 });

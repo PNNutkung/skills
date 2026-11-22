@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -220,4 +220,137 @@ test('real sandbox runner end to end', { skip: !realSandbox && 'sandbox-run.mjs 
   const { out } = probe(fixture(t), ['--tests', 'tests/check.sh'], {}, REAL_RUNNER);
   assert.equal(out.tests[0].verdict, 'exercises-change');
   assert.notEqual(out.backend, 'none');
+});
+
+// ---- ZT_TEST_PROCESS_MAX and --head-out
+const MAX_FLAG = 'ZT_TEST_PROCESS_MAX';
+
+// Like the real runner: the command runs in a process group of its own and the ledger line closes the output (a fixed run id). Each run leaves a marker in
+// live/ while it lasts and logs how many markers it saw (peak.log).
+const PROC_STUB = `
+import { spawn } from 'node:child_process';
+import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const dir = dirname(fileURLToPath(import.meta.url)), a = process.argv.slice(2);
+if (a[0] === '--check') { console.log('stub'); process.exit(0); }
+appendFileSync(join(dir, 'calls.log'), JSON.stringify(a) + '\\n');
+const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
+const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
+const live = join(dir, 'live'), me = join(live, String(process.pid));
+mkdirSync(live, { recursive: true });
+writeFileSync(me, '');
+appendFileSync(join(dir, 'peak.log'), readdirSync(live).length + '\\n');
+const env = { ...process.env };
+for (const kv of vals('--env')) env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
+const child = spawn(cmd[0], cmd.slice(1), { cwd: vals('--cwd')[0], env, stdio: 'inherit', detached: true });
+process.on('SIGTERM', () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } });
+child.on('exit', code => { rmSync(me, { force: true }); process.stderr.write('ZT-RUN stub exit=' + (code ?? 1) + '\\n'); process.exit(code ?? 1); });
+`;
+
+function probeProc(fx, { args = [], flags = {} } = {}) {
+  const sd = mkdtempSync(join(fx.dir, 'pstub-'));
+  writeFileSync(join(sd, 'stub-runner.mjs'), PROC_STUB);
+  const env = { ...process.env };
+  delete env[MAX_FLAG];
+  const r = spawnSync(process.execPath, [PROBE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', mkdtempSync(join(fx.dir, 'scr-')), '--cmd', 'sh {file}',
+    '--runner', join(sd, 'stub-runner.mjs'), ...args], { encoding: 'utf8', env: { ...env, ...flags } });
+  const lines = name => (existsSync(join(sd, name)) ? readFileSync(join(sd, name), 'utf8').trim().split('\n').filter(Boolean) : []);
+  return { ...r, runner: join(sd, 'stub-runner.mjs'), calls: lines('calls.log').map(l => JSON.parse(l)), peak: Math.max(0, ...lines('peak.log').map(Number)) };
+}
+const stableOut = s => s.replace(/"sec":[\d.]+/g, '"sec":0');
+const normalCalls = (fx, calls) => {
+  const roots = [realpathSync(fx.dir), fx.dir];
+  return calls.map(a => a.map(x => roots.reduce((s, root) => s.replaceAll(root, '<D>'), x).replace(/(head|base|scr)-[A-Za-z0-9]{6}/g, '$1-X'))).map(a => JSON.stringify(a)).sort();
+};
+const PROBE_FIXTURE = { head: { 'tests/always.sh': 'exit 0\n', 'tests/bad.sh': 'echo boom >&2; exit 3\n' } };
+
+// captured from testprobe.mjs before ZT_TEST_PROCESS_MAX and --head-out existed (durations zeroed)
+const PROBE_GOLDEN = {
+  stdout: "{\"backend\":\"stub\",\"tests\":[{\"file\":\"tests/always.sh\",\"head\":{\"exit\":0,\"sec\":0},\"base\":{\"exit\":0,\"sec\":0},\"verdict\":\"no-signal\",\"flake\":{\"runs\":3,\"exits\":[0,0,0],\"nondeterministic\":false}},{\"file\":\"tests/bad.sh\",\"head\":{\"exit\":3,\"sec\":0},\"base\":{\"exit\":3,\"sec\":0},\"verdict\":\"fails-on-head\",\"tail\":\"boom\\nZT-RUN stub exit=3\",\"flake\":{\"runs\":3,\"exits\":[3,3,3],\"nondeterministic\":false}}],\"summary\":\"2 test file(s): 1 no-signal, 1 fails-on-head\\ntests/always.sh: no-signal\\ntests/bad.sh: fails-on-head\"}\n",
+  calls: [
+    "[\"--cwd\",\"<D>/scr-X/base-X\",\"--rw\",\"<D>/scr-X/base-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/base-X\",\"--\",\"sh\",\"-c\",\"sh tests/always.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/base-X\",\"--rw\",\"<D>/scr-X/base-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/base-X\",\"--\",\"sh\",\"-c\",\"sh tests/bad.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/always.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/always.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/always.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/always.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/bad.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/bad.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/bad.sh\"]",
+    "[\"--cwd\",\"<D>/scr-X/head-X\",\"--rw\",\"<D>/scr-X/head-X\",\"--timeout\",\"120\",\"--env\",\"PYTHONPATH=<D>/scr-X/head-X\",\"--\",\"sh\",\"-c\",\"sh tests/bad.sh\"]",
+  ],
+};
+
+test('should print byte-identical output and make the same runner calls as before when ZT_TEST_PROCESS_MAX is unset or unlimited', t => {
+  const fx = fixture(t, PROBE_FIXTURE);
+  for (const flags of [{}, { [MAX_FLAG]: 'unlimited' }, { [MAX_FLAG]: 'UNLIMITED' }, { [MAX_FLAG]: '' }]) {
+    const r = probeProc(fx, { flags });
+    assert.equal(r.status, 0, r.stderr);
+    const got = { stdout: stableOut(r.stdout), calls: normalCalls(fx, r.calls) };
+    assert.equal(got.stdout, PROBE_GOLDEN.stdout, JSON.stringify(flags));
+    assert.deepEqual(got.calls, PROBE_GOLDEN.calls, JSON.stringify(flags));
+  }
+});
+
+test('should write the head run to --head-out, keyed to the tree it ran on, and print the same stdout as without it', t => {
+  const fx = fixture(t, PROBE_FIXTURE);
+  const file = join(fx.dir, 'head.json');
+  const plain = probeProc(fx);
+  const r = probeProc(fx, { args: ['--head-out', file, '--env', 'K=V', '--timeout', '30'] });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(stableOut(r.stdout), stableOut(plain.stdout));
+  const doc = JSON.parse(readFileSync(file, 'utf8'));
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(Object.keys(doc), ['schema', 'kind', 'identity', 'tests']);
+  assert.deepEqual([doc.schema, doc.kind], [1, 'zt-head-run']);
+  assert.deepEqual(doc.identity, { tree: git(fx.repo, 'rev-parse', `${fx.head}^{tree}`), cmd: 'sh {file}', env: ['K=V'], link: [], ro: [], timeout: 30, runner: r.runner });
+  assert.deepEqual(doc.tests.map(({ file: f, pass, exit }) => [f, pass, exit]), out.tests.map(x => [x.file, x.head.exit === 0, x.head.exit]));
+  assert.deepEqual(doc.tests.map(x => x.sec), out.tests.map(x => x.head.sec));
+  assert.ok(doc.tests.every(x => typeof x.sec === 'number' && x.sec >= 0));
+});
+
+test('should write no file and change nothing when --head-out is not given', t => {
+  const fx = fixture(t, PROBE_FIXTURE);
+  const before = new Set(readdirSync(fx.dir));
+  probeProc(fx);
+  assert.deepEqual(readdirSync(fx.dir).filter(n => !before.has(n) && !/^(pstub|scr)-/.test(n)), []);
+});
+
+test('should stop with exit 2 when the --head-out file cannot be written', t => {
+  const fx = fixture(t, PROBE_FIXTURE);
+  const r = probeProc(fx, { args: ['--head-out', join(fx.dir, 'no-such-dir', 'head.json')] });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^testprobe: /);
+});
+
+test('should never run more test processes at once than ZT_TEST_PROCESS_MAX, with the same verdicts', t => {
+  const fx = fixture(t, PROBE_FIXTURE);
+  const free = probeProc(fx, { args: ['--jobs', '4'] });
+  for (const max of [1, 2]) {
+    const r = probeProc(fx, { args: ['--jobs', '4'], flags: { [MAX_FLAG]: String(max) } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.peak >= 1 && r.peak <= max, `peak ${r.peak} with max ${max}`);
+    assert.equal(stableOut(r.stdout), stableOut(free.stdout));
+    assert.equal(r.calls.length, free.calls.length);
+  }
+});
+
+// a seeded generator, so a failing case can be replayed
+const rng = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+const ALPHABET = ['0', '1', '7', '-', '.', ' ', 'x', 'unlimited', 'UNLIMITED', 'true', 'max', '00', '12', 'e3'];
+const validMax = v => { const s = v.trim(); return !s || s.toLowerCase() === 'unlimited' || (/^\d+$/.test(s) && Number(s) > 0); };
+
+test('should stop with exit 2 naming the fix for any ZT_TEST_PROCESS_MAX that is not a whole number above 0 or unlimited (fuzz)', t => {
+  const rand = rng(20261122), fx = fixture(t, PROBE_FIXTURE);
+  const values = Array.from({ length: 16 }, () => Array.from({ length: 1 + Math.floor(rand() * 3) }, () => ALPHABET[Math.floor(rand() * ALPHABET.length)]).join(''));
+  for (const v of [...values, '0', '-1', '1.5', 'unlimited', ' 3 ']) {
+    const r = probeProc(fx, { args: ['--flake', '0', '--tests', 'tests/always.sh'], flags: { [MAX_FLAG]: v } });
+    if (validMax(v)) assert.equal(r.status, 0, `${JSON.stringify(v)}: ${r.stderr}`);
+    else {
+      assert.equal(r.status, 2, JSON.stringify(v));
+      assert.equal(r.stderr.trim(), `testprobe: ${MAX_FLAG}=${v} is not valid: use a whole number above 0, or unlimited`);
+      assert.equal(r.calls.length, 0, 'nothing ran');
+    }
+  }
 });

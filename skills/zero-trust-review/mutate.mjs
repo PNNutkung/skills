@@ -10,22 +10,31 @@
 //     [--kill-exits 1] [--link NAME]... [--ro DIR]... [--env K=V]... [--runner PATH] [--files a.py:10-40,b.py]
 //   --files: mutate these files (or line ranges; a bare path = every line) at --head instead of the lines a diff touched; --base is then optional and --tests required
 //   --kill-exits: only these non-zero exits count as a kill (pytest: 1 = a test failed; 2 = collection error from a mutant that does not even import = inconclusive)
+//   --baseline-from FILE: the HEAD run testprobe.mjs --head-out wrote; used instead of an own baseline run only when it is from this exact tree, command and environment
+// Flags: ZT_MUTATION_BASELINE_REUSE_ENABLED (default true) allows --baseline-from; ZT_MUTATION_BUDGET_STRICT_ENABLED (default true) also stops the mutants still
+// running when --budget runs out (reported skipped, never killed or survived); ZT_TEST_PROCESS_MAX caps how many test commands run at once (default unlimited).
 // Prints one JSON object and exits 0 (results are data); usage errors exit 2.
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { changedLines, fileRanges, generateMutants, sample } from './mutants.mjs';
-import { DOC, NO_SANDBOX, TEST, TIMEOUT, backendOf, changes, clear, editableRoots, extract, gitOut, intOption, isSource, parseProbeArgs, pool, runIn, shq } from './probelib.mjs';
+import { enabled } from './flags.mjs';
+import { DOC, NO_SANDBOX, TEST, TIMEOUT, backendOf, changes, clear, editableRoots, extract, gitOut, intOption, isSource, parseProbeArgs, pool, readBaseline, runIdentity, runIn, shq,
+  testProcessSlots } from './probelib.mjs';
 
 const MAX_SURVIVORS_SHOWN = 3, LINE_CUT = 40; // the lead pastes this summary into FACTS, which reviewers see clipped to ~800 chars
 const PATCH_FAILED = 125;
+const BASELINE_REUSE_FLAG = 'ZT_MUTATION_BASELINE_REUSE_ENABLED', BUDGET_STRICT_FLAG = 'ZT_MUTATION_BUDGET_STRICT_ENABLED';
 
 function parse() {
-  const { values, ...common } = parseProbeArgs({ max: { type: 'string', default: '30' }, budget: { type: 'string', default: '600' }, 'kill-exits': { type: 'string' }, files: { type: 'string' } },
+  const { values, ...common } = parseProbeArgs({ max: { type: 'string', default: '30' }, budget: { type: 'string', default: '600' }, 'kill-exits': { type: 'string' }, files: { type: 'string' },
+    'baseline-from': { type: 'string' } },
     { optional: process.argv.includes('--files') ? ['base'] : [] });
   if (values.files && !common.tests?.length) throw new Error('--tests is required with --files');
   const killExits = values['kill-exits']?.split(',').map(Number);
   if (killExits?.some(n => !Number.isInteger(n) || n < 1 || n > 255)) throw new Error('--kill-exits wants integers 1-255, comma separated');
-  return { ...common, max: intOption(values, 'max', 1), budget: intOption(values, 'budget', 0), killExits, files: values.files && fileRanges(values.files) };
+  const reuse = enabled(process.env, BASELINE_REUSE_FLAG, true), strict = enabled(process.env, BUDGET_STRICT_FLAG, true), slots = testProcessSlots(process.env);
+  return { ...common, max: intOption(values, 'max', 1), budget: intOption(values, 'budget', 0), killExits, files: values.files && fileRanges(values.files),
+    baselineFrom: reuse ? values['baseline-from'] : undefined, strict, slots };
 }
 
 // A pristine tree: HEAD extracted by git (symlink-safe), plus the linked dirs (venv ...) as symlinks to the real ones.
@@ -55,6 +64,7 @@ async function tryMutant(o, tree, mutant, tests) {
   let last;
   for (const t of tests) {
     last = await runIn(o, tree, wrap(o.cmd.replaceAll('{file}', () => shq(t)), mutant));
+    if (last.aborted) return { result: 'skipped', dirty: true }; // stopped by the budget: it decided nothing
     if (last.exit === NO_SANDBOX) return { result: 'unverifiable', reason: 'no sandbox', dirty: false };
     if (last.exit === PATCH_FAILED) return { result: 'inconclusive', reason: 'the mutant could not be applied in the tree', dirty: true };
     if (last.exit === TIMEOUT) return { ...verdict(mutant, 'timeout', { ...last, by: t }), dirty: true }; // a mutant that hangs the tests is caught; the restore never ran
@@ -98,6 +108,7 @@ function wholeFiles(o) {
 
 async function main() {
   const o = parse();
+  const identity = o.baselineFrom && runIdentity(o); // the caller's environment, as testprobe.mjs saw it
   if (!o.env.some(e => e.startsWith('PYTHONDONTWRITEBYTECODE='))) o.env.push('PYTHONDONTWRITEBYTECODE=1'); // a same-size edit in the same second would run stale .pyc
   const backend = backendOf(o.runner);
   const done = extra => {
@@ -125,29 +136,36 @@ async function main() {
   o.ro = [...linked, ...editableRoots(linked, o.repo), ...o.extraRo];
 
   // the baseline runs in a tree of its own, thrown away afterwards: whatever the tests wrote there never reaches a mutant
+  // a head run of this exact tree (testprobe.mjs --head-out) already says which test files pass unmutated
+  const reused = identity && readBaseline(o.baselineFrom, identity, tests);
+  const baseline = reused && (reused.exits ? { reused: true } : { reused: false, reason: reused.reason });
   const workers = Array.from({ length: Math.min(o.jobs, picked.length) }, () => ({ tree: null }));
-  const [baseTree] = await Promise.all([newTree(o, scratch, linked), ...workers.map(async w => { w.tree = await newTree(o, scratch, linked); })]);
-  const base = await pool(tests, o.jobs, f => runIn(o, baseTree, o.cmd.replaceAll('{file}', () => shq(f))));
-  discard(baseTree);
-  const unverifiable = reason => done({ available: all.length, reason: `unverifiable: ${reason}`, mutants: picked.map(({ newLine, ...m }) => ({ ...m, result: 'unverifiable' })) });
+  const [baseTree] = await Promise.all([reused?.exits ? null : newTree(o, scratch, linked), ...workers.map(async w => { w.tree = await newTree(o, scratch, linked); })]);
+  const base = reused?.exits ? reused.exits.map(exit => ({ exit })) : await pool(tests, o.jobs, f => runIn(o, baseTree, o.cmd.replaceAll('{file}', () => shq(f))));
+  if (baseTree) discard(baseTree);
+  const unverifiable = reason => done({ available: all.length, reason: `unverifiable: ${reason}`, mutants: picked.map(({ newLine, ...m }) => ({ ...m, result: 'unverifiable' })), ...(baseline && { baseline }) });
   if (base.some(r => r.exit === NO_SANDBOX)) return unverifiable('no sandbox');
   const usable = tests.filter((_, i) => base[i].exit === 0); // only test files that pass on the unmutated HEAD can say anything about a mutant
   if (!usable.length) return unverifiable('no changed test file passes on HEAD');
 
   const deadline = performance.now() + o.budget * 1000;
+  const stop = o.strict ? new AbortController() : null; // strict budget: the deadline also stops the mutants still running
+  const timer = stop && setTimeout(() => stop.abort(), Math.max(0, deadline - performance.now()));
+  o.signal = stop?.signal;
   const results = new Array(picked.length);
   let next = 0;
   await Promise.all(workers.map(async w => {
     while (next < picked.length) {
       const i = next++;
       const { newLine, ...mutant } = picked[i];
-      if (performance.now() > deadline) { results[i] = { ...mutant, result: 'skipped' }; continue; }
+      if (performance.now() > deadline || o.signal?.aborted) { results[i] = { ...mutant, result: 'skipped' }; continue; }
       const { dirty, ...v } = await tryMutant(o, w.tree, picked[i], usable).catch(e => ({ result: 'inconclusive', reason: e.message, dirty: true }));
       results[i] = { ...mutant, ...v };
-      if (dirty) { discard(w.tree); w.tree = await newTree(o, scratch, linked); }
+      if (dirty) { discard(w.tree); w.tree = o.signal?.aborted ? null : await newTree(o, scratch, linked); }
     }
   }));
-  done({ available: all.length, tests: { run: usable, notUsable: tests.filter(t => !usable.includes(t)) }, mutants: results });
+  clearTimeout(timer);
+  done({ available: all.length, tests: { run: usable, notUsable: tests.filter(t => !usable.includes(t)) }, mutants: results, ...(baseline && { baseline }) });
 }
 
 main().catch(e => { console.error(`mutate: ${e.message}`); process.exit(2); });

@@ -1,5 +1,6 @@
 // The whole retro flow on a fixture repo (not this repo) with a fixture Claude Code transcript: collect -> findings -> check ->
 // approvals -> apply -> applied-check -> log, then the ratchet the approved proposal added guards the next commits.
+// flags: defaults. Every RETRO_* flag is dropped from the env, so the whole-flow test runs on the defaults; see rules/flag-defaults-e2e.md.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';

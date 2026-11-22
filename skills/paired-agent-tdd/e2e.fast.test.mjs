@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SPEED_OFF_ENV } from './speed.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TDD = join(HERE, 'tdd.mjs');
@@ -19,6 +20,7 @@ const repo = join(dir, 'repo'), tmp = join(dir, 'tmp');
 for (const d of [repo, tmp]) mkdirSync(d);
 process.env.TMPDIR = tmp; // the per-user zt-review base (the run folder) lives in the fixture
 process.env.ZT_MARKER_DIR = join(dir, 'marker'); // never the user's own active review marker
+Object.assign(process.env, SPEED_OFF_ENV); // the v2.0.0 pipeline these assertions describe; e2e.speed.test.mjs runs the speed flags
 let run = '';
 const RUNNER = join(HERE, 'direct-run.mjs');
 const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();

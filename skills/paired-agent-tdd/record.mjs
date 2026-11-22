@@ -25,17 +25,20 @@ export function buildRecord({ date, base, ret, verify, greens, measured, note })
   for (const g of Object.values(greens)) if (g?.mutation?.score) { mutated++; for (const key of Object.keys(mut)) mut[key] += g.mutation.score[key] ?? 0; }
   const pcts = Object.entries(greens).flatMap(([id, g]) => (g?.coverage?.pct != null ? [`${id} ${g.coverage.pct}%`] : []));
   const findings = tally(ret.clusters ?? [], c => `${c.severity} ${c.status}`);
+  // ADR 0001 (A18, no speculative GREEN): how often a RED navigator passed the tests with no rework, so a later change can decide from numbers whether starting GREEN early pays
+  const judged = groups.filter(([, g]) => !g.red?.carried && (g.red?.verdict === 'PASS' || g.red?.verdict === 'FAIL'));
+  const redFirstTry = { passed: judged.filter(([, g]) => g.red.verdict === 'PASS' && !g.red.reworks).length, of: judged.length };
   const d = verify?.dod;
   const data = {
     date, base, groups: Object.fromEntries(groups.map(([id, g]) => [id, g.state])), agents: measured.by, agentTotal: measured.agents.length, units: Math.round(measured.units), calls: measured.calls, wallSec: measured.wallSec,
-    dod: d ? { covered: d.covered, total: d.total, gaps: d.gaps, phantom: d.phantom ?? [] } : null, reworks, stalled, converge: ret.verified ? { ok: ret.verified.ok, rounds: ret.verified.rounds } : null, mutants: { ...mut, groupsMutated: mutated }, coverage: pcts, findings,
+    dod: d ? { covered: d.covered, total: d.total, gaps: d.gaps, phantom: d.phantom ?? [] } : null, reworks, stalled, converge: ret.verified ? { ok: ret.verified.ok, rounds: ret.verified.rounds } : null, mutants: { ...mut, groupsMutated: mutated }, coverage: pcts, findings, redFirstTry,
     verify: verify ? { final: verify.final, overridden: verify.overridden, unfixed: verify.unfixed, notDone: verify.notDone, integration: verify.integration, proofcheck: verify.proofcheck } : null, note: note || undefined,
   };
   const line = [date, `${String(base).slice(0, 8)}`, 'on-job', `${groups.length} group(s): ${show(states)}`, `${Object.entries(measured.by).map(([n, c]) => `${n} ${c}`).join(', ')} (=${measured.agents.length})`,
     `${k(measured.units)} units, ${measured.calls} calls`, `${measured.wallSec} s`,
     d ? `DoD ${d.covered}/${d.total}${d.gaps.length ? ` gaps ${d.gaps.join('; ')}` : ''}${(d.phantom ?? []).length ? `, ${d.phantom.length} phantom row(s)` : ''}` : 'DoD: verify not run',
     `${reworks} rework(s)${stalled ? `, ${stalled} stalled` : ''}${ret.verified ? `, converge ${ret.verified.ok ? 'ok' : 'failing'} in ${ret.verified.rounds}` : ''}`, `mutants ${mut.killed} killed / ${mut.survived} survived / ${mut.skipped + mut.timeout + mut.inconclusive + mut.unverifiable} not decided over ${mutated} group(s)`,
-    `coverage ${pcts.join(', ') || 'not configured'}`, `findings ${show(findings)}`,
+    `coverage ${pcts.join(', ') || 'not configured'}`, `findings ${show(findings)}`, redFirstTry.of ? `RED first try ${redFirstTry.passed}/${redFirstTry.of}` : '',
     verify ? `final ${verify.final}, overridden ${(verify.overridden ?? []).length}, unfixed ${(verify.unfixed ?? []).length}, notDone ${(verify.notDone ?? []).length}` : '', note ?? '', '(one run, no baseline)'].filter(Boolean).join(' | ');
   return { line, data };
 }

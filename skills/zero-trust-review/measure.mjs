@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const NODE = l => (/^refute:/.test(l) ? 'verifier-refute' : /^reproduce:/.test(l) ? 'verifier-reproduce' : /^adjudicator:/.test(l) ? 'adjudicator' : /^batch:/.test(l) ? 'batch-verifier'
   : l === 'critic' ? 'critic' : /^GAP/.test(l) ? 'gap-reviewer' : /^(test-auditor|integration-probe)$/.test(l) ? l
-  : /^((red|green)-(driver|navigator)|fixer|reviewer|integration-tester)(:|$)/.exec(l)?.[1] ?? 'reviewer'); // the last arm: paired-agent-tdd labels are <node>:<group>[:rework|:recheck|:strengthen]
+  : /^((red|green)-(driver|navigator)|tdd-driver|fixer|final-verifier|reviewer|integration-tester)(:|$)/.exec(l)?.[1] ?? 'reviewer'); // the last arm: paired-agent-tdd labels are <node>:<group>[:rework|:recheck|:strengthen]
 const jsonl = f => readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 
 /** -> { agents[{label,node,calls,out,cw,cr,units,start,end}], by{node:count}, calls, units, wallSec, last } for one Workflow transcript dir */
