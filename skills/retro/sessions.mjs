@@ -1,6 +1,6 @@
 // Which Claude Code transcripts belong to a piece of work. A session belongs when its cwd is the repo (or inside it) and its time overlaps
 // the work's commits, widened by an hour; --session names them instead. Subagent transcripts live in <session>/subagents/ and follow it.
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseTranscript } from './transcript.mjs';
@@ -34,13 +34,15 @@ export function sinceWindow(since, now = Date.now()) {
 export const projectsRoot = (env = process.env) => join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
 
 const jsonl = dir => { try { return readdirSync(dir).filter(n => n.endsWith('.jsonl')).sort(); } catch { return []; } };
+/** A cwd and its real path: on macOS /tmp and /var are links to /private/..., and git prints the real one. */
+const withReal = dirs => [...new Set(dirs.flatMap(d => { try { return [d, realpathSync(d)]; } catch { return [d]; } }))];
 const isDir = p => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
 /** Every transcript under the projects folder with its parsed summary (main sessions and their subagents). */
 export function listTranscripts(root) {
   if (!existsSync(root)) return [];
   const out = [];
-  const add = (path, subagent) => { const t = parseTranscript(readFileSync(path, 'utf8')); out.push({ path, subagent, sessionId: t.sessionId, cwds: t.cwds, start: t.start, end: t.end, summary: t }); };
+  const add = (path, subagent) => { const t = parseTranscript(readFileSync(path, 'utf8')); out.push({ path, subagent, sessionId: t.sessionId, cwds: withReal(t.cwds), start: t.start, end: t.end, summary: t }); };
   for (const project of readdirSync(root).sort()) {
     const dir = join(root, project);
     if (!isDir(dir)) continue;

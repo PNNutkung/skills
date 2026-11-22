@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listTranscripts, selectSessions, sinceWindow, workWindow } from './sessions.mjs';
@@ -39,4 +39,14 @@ test('should list main and subagent transcripts when the projects folder is read
   const got = listTranscripts(root);
   assert.deepEqual(got.map(m => [m.path.slice(root.length), m.subagent, m.sessionId]), [['/-r/s1.jsonl', false, 's1'], ['/-r/s1/subagents/agent-1.jsonl', true, 's1']]);
   assert.deepEqual(listTranscripts(join(root, 'missing')), []);
+});
+
+test('should match a session whose cwd is a symlink to the repo when git prints the real path, as with /tmp on macOS (SMatch)', () => {
+  const base = mkdtempSync(join(tmpdir(), 'retro-link-'));
+  const real = join(base, 'real'), link = join(base, 'link'), root = join(base, 'projects', 'p');
+  mkdirSync(real); symlinkSync(real, link); mkdirSync(root, { recursive: true });
+  const at = '2026-11-22T01:00:00.000Z';
+  writeFileSync(join(root, 's1.jsonl'), `${JSON.stringify({ sessionId: 's1', cwd: link, timestamp: at, type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
+  const found = selectSessions(listTranscripts(join(base, 'projects')), { repo: realpathSync(real), from: '2026-11-22T00:00:00.000Z', to: '2026-11-22T02:00:00.000Z' });
+  assert.deepEqual(found.map(s => s.sessionId), ['s1']);
 });
