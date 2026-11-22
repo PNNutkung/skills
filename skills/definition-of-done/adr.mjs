@@ -64,6 +64,11 @@ function questionProblems(q, n) {
   return q.options.filter(o => !o.pros.length || !o.cons.length).map(o => `Q${n} (${o.key}) needs at least one pro and one con`);
 }
 
+/** Every question saved in questions.md, checked the way adr will check it, so a gap shows when the question is saved. -> errors */
+export function checkQuestions(text) {
+  return [...parseQuestions(text).entries()].sort(([a], [b]) => a - b).flatMap(([n, q]) => questionProblems(q, n));
+}
+
 // ---------------------------------------------------------------- the DoD section
 /** T<n> per distinct ticket quote and S<n> per distinct spec quote, in the order the DoD cites them. */
 function citations(dod) {

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DOD_HEADING, adrFileName, checkAdr, checkAdrSources, matchGlob, nextNumber, parseAdr, parseFrontmatter, parseQuestions,
+  DOD_HEADING, adrFileName, checkAdr, checkAdrSources, checkQuestions, matchGlob, nextNumber, parseAdr, parseFrontmatter, parseQuestions,
   renderAdr, setTouches, syncTouches, toPlanDod, toRequirements, upsertIndex,
 } from './adr.mjs';
 
@@ -297,4 +297,11 @@ test('should keep a rendered ADR valid when random prose is added outside the Do
     const text = render().text.replace('## Consequences\n', `## Consequences\n\n${extra.replace(/^---$/gm, '')}\n`);
     assert.deepEqual(checkAdr(text, { show }), [], extra);
   }
+});
+
+test('should list every question that adr would refuse when questions.md is checked on its own', () => {
+  assert.deepEqual(checkQuestions(QUESTIONS), []);
+  assert.deepEqual(checkQuestions('Q3: Only one?\n(A) yes\n  + quick\n  - none\n\nQ1: Half?\n(A) a\n  + p\n(B) b\n  - c\n'),
+    ['Q1 (A) needs at least one pro and one con', 'Q1 (B) needs at least one pro and one con', 'Q3 needs at least two options']);
+  assert.deepEqual(checkQuestions(''), []);
 });
