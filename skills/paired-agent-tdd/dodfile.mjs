@@ -1,13 +1,13 @@
 // plan.json can take its DoD from an ADR that the definition-of-done skill wrote, instead of a dod[] list:
 //   "dodFile": "docs/adr/NNNN-<slug>.md"  the ADR, read at HEAD (it must be committed and unchanged), checked by that skill's own checkAdr
-//   neither dod[] nor dodFile             the one active ADR whose touches match the groups' src files ($DOD_ADR_AUTO_FIND_ENABLED=false turns this off)
+//   neither dod[] nor dodFile             the one active ADR whose touches match the groups' src files ($PTDD_ADR_AUTO_FIND_ENABLED=false turns this off)
 // The definition-of-done skill is found next to this one, or at $DOD_DIR. A plan with dod[] is returned untouched, the same object.
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { enabled } from './flags.mjs';
 
-export const AUTO_ENV = 'DOD_ADR_AUTO_FIND_ENABLED';
+export const AUTO_ENV = 'PTDD_ADR_AUTO_FIND_ENABLED';
 
 async function dodSkill(env, here) {
   const dir = resolve(env.DOD_DIR || join(here, '..', 'definition-of-done'));

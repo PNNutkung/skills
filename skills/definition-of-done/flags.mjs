@@ -1,5 +1,5 @@
 // On/off flags: NAME_ENABLED=true|false (any case). Unset or empty keeps the default; any other value warns and keeps it.
-// Each skill installs on its own, so paired-agent-tdd and qa-sweep keep identical copies (flags.test.mjs checks).
+// This skill reads only its own flags; it shares no flag with another skill.
 const say = m => process.stderr.write(`${m}\n`);
 
 /** -> boolean. env: process.env; dflt: the value when unset; warn: where a bad value is reported. */

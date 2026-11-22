@@ -1,6 +1,6 @@
 // findings.json can take its requirements from an ADR that the definition-of-done skill wrote, instead of a requirements[] list:
 //   "dodFile": "docs/adr/NNNN-<slug>.md"  the ADR at --head (unchanged in the working tree when --head is HEAD), checked by that skill's checkAdr
-//   neither requirements[] nor dodFile    the one active ADR whose touches match the files the findings and tests name ($DOD_ADR_AUTO_FIND_ENABLED=false turns this off);
+//   neither requirements[] nor dodFile    the one active ADR whose touches match the files the findings and tests name ($QA_ADR_AUTO_FIND_ENABLED=false turns this off);
 //                                         none: no requirements, as before; several: a warning, and no requirements
 // The definition-of-done skill is found next to this one, or at $DOD_DIR. Findings with requirements[] are returned untouched, the same object.
 import { existsSync } from 'node:fs';
@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { enabled } from './flags.mjs';
 
-export const AUTO_ENV = 'DOD_ADR_AUTO_FIND_ENABLED';
+export const AUTO_ENV = 'QA_ADR_AUTO_FIND_ENABLED';
 const CODE_REF = /^(.+):\d+$/;
 
 async function dodSkill(env, here) {

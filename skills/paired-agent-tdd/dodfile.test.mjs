@@ -30,7 +30,7 @@ function repoWith(files) {
 }
 const FILE = 'docs/adr/0001-report-export.md';
 const plan = (repo, extra = {}) => ({ repo, cmd: 'node --test {file}', groups: [{ id: 'g1', tests: ['t/a.test.mjs'], src: ['src/reports/export.mjs'], dod: ['AC1', 'AC2'] }], ...extra });
-const env = (over = {}) => ({ DOD_ADR_AUTO_FIND_ENABLED: '', ...over });
+const env = (over = {}) => ({ PTDD_ADR_AUTO_FIND_ENABLED: '', ...over });
 
 test('should leave a plan with dod[] exactly as it is, the same object', async () => {
   const p = { repo: '/nowhere', dod: [{ id: 'AC1' }], groups: [] };
@@ -90,10 +90,10 @@ test('should list the candidates when several ADRs touch the groups\' src, and s
   assert.match((await resolveDod(plan(none), { env: env(), here: HERE })).error, /no dod\[\], no dodFile, and no ADR with a Definition of done touches src\/reports\/export\.mjs/);
 });
 
-test('should not look for an ADR when DOD_ADR_AUTO_FIND_ENABLED is false, leaving validatePlan to report the missing DoD as today', async () => {
+test('should not look for an ADR when PTDD_ADR_AUTO_FIND_ENABLED is false, leaving validatePlan to report the missing DoD as today', async () => {
   const repo = repoWith({ [FILE]: adr(1) });
   const p = plan(repo);
-  const r = await resolveDod(p, { env: env({ DOD_ADR_AUTO_FIND_ENABLED: 'false' }), here: HERE });
+  const r = await resolveDod(p, { env: env({ PTDD_ADR_AUTO_FIND_ENABLED: 'false' }), here: HERE });
   assert.equal(r.plan, p);
   assert.ok(validatePlan(r.plan, undefined).includes('at least one DoD item is required'));
 });
