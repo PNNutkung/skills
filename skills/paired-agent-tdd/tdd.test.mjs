@@ -1402,7 +1402,7 @@ test('pcourier: with the courier skip on, a failing final at verify puts the gro
   const v2 = verify(on, { ...RET(BETA_ROW), courierSkipped: true });
   assert.equal(v2.final, false);
   assert.ok(v2.notDone.some(n => /^run: final gate not ok: files outside the plan changed: notes\.txt/.test(n)), JSON.stringify(v2.notDone));
-  assert.deepEqual([v2.dod.covered, v2.dod.total], [0, 2], 'a failure no group owns: no GREEN gate is trusted');
+  assert.deepEqual([v2.dod.covered, v2.dod.total, v2.notDone.length], [2, 2, 1], 'a stray file alone is work left for the run: every group test passes together, so no GREEN gate is voided');
   const off = run(SPEED_OFF_ENV), v3 = verify(off, RET(BETA_ROW));
   assert.deepEqual([v3.final, v3.notDone, v3.dod.covered, v3.dod.total], [false, [], 2, 2], 'flags off: what v2.0.0 reported');
 });

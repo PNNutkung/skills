@@ -14,7 +14,7 @@ TDD (RED, GREEN) as **driver/navigator pairs**, one pipeline per file group, run
 ```
 - [ ] 0 Gate: skill needed? DoD written with source quotes; groups partitioned, one owner per file
 - [ ] 1 tdd.mjs plan ok; agent count shown (confirm if > 25)
-- [ ] 2 Workflow run; compact return read, saved as return.json
+- [ ] 2 Workflow run; compact return read, saved as $RUN/return.json
 - [ ] 3 tdd.mjs verify: DoD closure, unfixed, overridden, notDone, proofcheck
 - [ ] 3b Rename test_ac* to the naming rule; guard passes
 - [ ] 4 Full suite and lint on changed files, once; record the run; report
@@ -41,7 +41,8 @@ Partition by file ownership, never by chore. Run the `graph-planner` (opus, one 
 
 ```bash
 SK=${SK:-$HOME/.claude/skills/paired-agent-tdd}
-node $SK/tdd.mjs plan --plan plan.json > args.json    # validates, snapshots the base, makes the run folder RUN, prints the Workflow args
+W=$(mktemp -d)   # not in the repo: a stray file fails final
+node $SK/tdd.mjs plan --plan $W/plan.json   # validates, snapshots the base, makes RUN, prints the Workflow args ($RUN/args.json)
 node $SK/graph.mjs --plan <groups> <integration 0|1> <groups expected to get findings> [fast]
 ```
 
@@ -50,26 +51,26 @@ node $SK/graph.mjs --plan <groups> <integration 0|1> <groups expected to get fin
 ## Step 2 — Run
 
 ```
-Workflow({ scriptPath: "$SK/workflow.js", args: <the JSON in args.json> })
+Workflow({ scriptPath: "$SK/workflow.js", args: <$RUN/args.json> })
 ```
 
-`mode: "plan"` is a dry run (counts, ceiling, prompt sizes). Read the **compact return** only: `{groups{state, reason, red, green, matrix, files}, clusters, fixes, verified, notDone, stats, boardMd, postmortemMd}`. Save it as `return.json`; write `boardMd` and `postmortemMd` into `$RUN`.
+`mode: "plan"`: a dry run (counts, ceiling, prompt sizes). Read the **compact return** only: `{groups{state, reason, red, green, matrix, files}, clusters, fixes, verified, notDone, stats, boardMd, postmortemMd}`. Save it as `$RUN/return.json`; write `boardMd` and `postmortemMd` into `$RUN`.
 
-**Continue after a failure** (a group `failed`, `blocked` or `paused`, or the run died): `node $SK/tdd.mjs resume --run $RUN [--ret return.json] [--max-repairs N]` reads the gate files (no agent, no tokens), prints the next run's budget and agent ceiling, and writes `$RUN/continue.json`. Run the Workflow again with `args: {...args, resume: <that file>}`: it sets the budget, done groups cost nothing, the others restart where they stopped. A group on `env` (a gate said `unverifiable`: fix the runner) or `hold` (the same defects stalled; [`probes.md`](./probes.md) "resume") spends nothing until you decide.
+**Continue after a failure** (a group `failed`, `blocked` or `paused`, or the run died): `node $SK/tdd.mjs resume --run $RUN [--ret $RUN/return.json] [--max-repairs N]` reads the gate files (no agent, no tokens), prints the next run's budget and agent ceiling, and writes `$RUN/continue.json`. Run the Workflow again with `args: {...args, resume: <that file>}`: it sets the budget, done groups cost nothing, the others restart where they stopped. A group on `env` (a gate said `unverifiable`: fix the runner) or `hold` (the same defects stalled; [`probes.md`](./probes.md) "resume") spends nothing until you decide.
 
 ## Step 3 — Verify, then report
 
 ```bash
-node $SK/tdd.mjs verify --run $RUN --ret return.json
+node $SK/tdd.mjs verify --run $RUN --ret $RUN/return.json
 ```
 
 It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** a DoD gap, `final: false`, an `overridden` entry (a navigator said PASS against its gate), an `unfixed` finding or a `notDone` entry remains; say so with the numbers. Then rename tests to the repo's naming rule, if any (probes.md, "Naming rule"), run the project's full suite once (background) and lint on the changed files only. Report: DoD matrix, blocked groups and why, findings by proof status, assumed DoD items.
 
-**Record every real run** (one line, no baseline): `node $SK/record.mjs --run $RUN --ret return.json --transcript <the transcript dir the Workflow result prints> --note "<job>" --append $SK/runs.md`. Run `verify` first; cost and time come from the transcript.
+**Record every real run** (one line, no baseline): `node $SK/record.mjs --run $RUN --ret $RUN/return.json --transcript <the transcript dir the Workflow result prints> --note "<job>" --append $SK/runs.md`. Run `verify` first; cost and time come from the transcript.
 
 ## Speed flags (env, read once by `plan`)
 
-`PTDD_PIPELINE_MODE=fast|paired`, default **fast**: a group that waits for no other gets ONE `tdd-driver` (tests, RED gate, code, GREEN gate) and ONE navigator over both gates. `plan.mode` `"fast"`/`"paired"` overrides it. **Use `paired`** for security-critical or tightly coupled groups: in fast mode the code's author also wrote its tests. Switches, default `true`: `PTDD_QUICK_DRIVER_GATE_ENABLED` (a driver's middle GREEN run skips mutants), `PTDD_GATE_REUSE_ENABLED` (the navigator and `verify` reuse a gate result on byte-identical files), `PTDD_COURIER_SKIP_ENABLED` (no final courier when every fixer's gate is ok: `verify` is the check), `PTDD_PARALLEL_REVIEW_ENABLED` (integration tester and reviewer together). An invalid value stops `plan`. All off (`paired`, the rest `false`) is v2.0.0 byte for byte and resumes its runs. [`probes.md`](./probes.md) "Speed flags".
+`PTDD_PIPELINE_MODE=fast|paired`, default **fast**: a group that waits for no other gets ONE `tdd-driver` (tests, RED gate, code, GREEN gate) and ONE navigator over both gates. `plan.mode` `"fast"`/`"paired"` overrides it. **Use `paired`** for security-critical or tightly coupled groups: in fast mode the code's author also wrote its tests. Switches, default `true`: `PTDD_QUICK_DRIVER_GATE_ENABLED` (a driver's middle GREEN run skips mutants), `PTDD_GATE_REUSE_ENABLED` (the navigator and `verify` reuse a gate result on byte-identical files), `PTDD_COURIER_SKIP_ENABLED` (no final courier when every fixer's gate is ok: `verify` is the check), `PTDD_PARALLEL_REVIEW_ENABLED` (integration tester and reviewer together). An invalid value stops `plan`. All off is v2.0.0 byte for byte. [`probes.md`](./probes.md) "Speed flags".
 
 ## The graph
 

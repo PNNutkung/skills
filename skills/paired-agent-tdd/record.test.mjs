@@ -85,3 +85,17 @@ test('CLI: reads the transcript and the run folder, prints the line, writes reco
   const bad = spawnSync(process.execPath, [RECORD, '--run', run, '--ret', join(dir, 'return.json'), '--transcript', join(dir, 'empty')], { encoding: 'utf8' });
   assert.equal(bad.status, 2);
 });
+
+test('CLI: a fast run counts its tdd-driver and final-verifier agents by their node, not as reviewers', t => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pat-rec-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = join(dir, 'run'), tr = join(dir, 'tr');
+  for (const d of [run, join(run, 'gates'), tr]) mkdirSync(d, { recursive: true });
+  ['a', 'b', 'c'].forEach((g, i) => agent(tr, `d${g}`, `tdd-driver:${g}`, 10 + i));
+  agent(tr, 'rev', 'reviewer', 20); agent(tr, 'fv', 'final-verifier', 5); agent(tr, 'fv2', 'final-verifier:again', 5);
+  writeFileSync(join(run, 'plan.json'), JSON.stringify({ base: '0123456789abcdef' }));
+  writeFileSync(join(dir, 'return.json'), JSON.stringify({ groups: { a: { state: 'done' }, b: { state: 'done' }, c: { state: 'done' } } }));
+  const r = spawnSync(process.execPath, [RECORD, '--run', run, '--ret', join(dir, 'return.json'), '--transcript', tr], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(run, 'record.json'), 'utf8')).agents, { 'tdd-driver': 3, reviewer: 1, 'final-verifier': 2 }, r.stdout);
+});

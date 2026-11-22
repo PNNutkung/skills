@@ -83,11 +83,14 @@ export function processShares(max, { mutate, cover }) {
 /**
  * `tdd.mjs verify` after a run whose courier was skipped (the flag on, or the return says so): the fixers' own-group gates were the only check, so a failing final makes
  * the GREEN gates it contradicts stale. -> null (nothing to distrust), or { groups: ids whose GREEN gate no longer counts, run: true when no group owns the failure }.
+ * Files outside the plan (fin.outOfScope) make the run not done but void no group's gate: they are not a group test failing.
  */
 export function untrustedByFinal(plan, sp, courierSkipped, fin) {
   if (!(sp.courierSkip === true || courierSkipped === true) || !fin || fin.ok !== false) return null;
   const failing = new Set((fin.together ?? []).filter(r => r.exit !== 0).map(r => r.file)), groups = plan.groups ?? [];
   const owners = groups.filter(g => (g.tests ?? []).some(f => failing.has(f))).map(g => g.id);
-  const run = !owners.length || !!(fin.existing?.regressions ?? []).length || !!(fin.outOfScope ?? []).length;
-  return { groups: run ? groups.map(g => g.id) : owners, run };
+  const regressions = !!(fin.existing?.regressions ?? []).length, strays = !!(fin.outOfScope ?? []).length;
+  // a broken existing test, or a failure nothing names, cannot be pinned on a group: every GREEN gate is stale. A stray file is no group's test failing: work left for the run only.
+  const all = regressions || (!owners.length && !strays);
+  return { groups: all ? groups.map(g => g.id) : owners, run: all || strays };
 }

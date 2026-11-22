@@ -143,7 +143,8 @@ test('pcourier: untrustedByFinal: a passing final, or the courier on, trusts eve
   assert.equal(untrustedByFinal(plan, on, false, null), null);
   assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'ta', exit: 0 }, { file: 'tb', exit: 1 }])), { groups: ['b'], run: false });
   assert.deepEqual(untrustedByFinal(plan, off, true, fin([{ file: 'tb', exit: 1 }])), { groups: ['b'], run: false }, 'the return says the courier was skipped');
-  assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'ta', exit: 0 }], { outOfScope: ['x'] })), { groups: ['a', 'b'], run: true });
+  assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'ta', exit: 0 }, { file: 'tb', exit: 0 }], { outOfScope: ['args.json'] })), { groups: [], run: true }, 'a stray file is work left for the run, never a void of every group\'s GREEN gate');
+  assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'ta', exit: 0 }, { file: 'tb', exit: 1 }], { outOfScope: ['x'] })), { groups: ['b'], run: true }, 'strays and a failing group: only that group');
   assert.deepEqual(untrustedByFinal(plan, on, false, fin([{ file: 'tb', exit: 1 }], { existing: { regressions: [{ file: 'old' }] } })), { groups: ['a', 'b'], run: true });
   assert.deepEqual(untrustedByFinal(plan, on, false, fin([])), { groups: ['a', 'b'], run: true }, 'a failure no group owns');
 });
