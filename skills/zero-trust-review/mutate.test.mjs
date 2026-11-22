@@ -1,4 +1,5 @@
 // Offline checks for mutate.mjs: fixture git repos plus a stub runner, so no real sandbox is needed. Run: node --test mutate.test.mjs
+// flags: defaults. The mutate.mjs CLI runs with the inherited env and no ZT_MUTATION_* flag in most tests; see rules/flag-defaults-e2e.md.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';

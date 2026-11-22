@@ -47,3 +47,4 @@ Every flag, its values and its default: [README, Flags](../README.md#flags).
 | qa-sweep runs e2e only against a local host unless the user confirms the URL | `target.mjs` | always |
 | A change request ships unit, integration and e2e tests, and removes or skips no test silently | `hooks/pr-test-tiers` (standalone) | install it |
 | A commit adds no test named outside `should ... when ...` | `hooks/test-name-guard` (standalone) | install it |
+| Every skill with a flag that defaults ON keeps an e2e test marked `flags: defaults` that runs with that skill's flags unset ([`flag-defaults-e2e.md`](./flag-defaults-e2e.md)) | `rules/checks/flag-defaults-e2e.mjs`, run by `rules/checks/flag-defaults-e2e.test.mjs` in CI | always (CI) |

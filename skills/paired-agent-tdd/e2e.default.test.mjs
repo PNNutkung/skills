@@ -1,6 +1,7 @@
 // End to end with the DEFAULT environment (no PTDD_* flag set: fast pipeline, quick driver gate, gate reuse, courier skip, parallel review all on), the way a real run starts.
 // The REAL workflow.js and the REAL tdd.mjs gates in a fixture git repo, SCRIPTED agents that run the gate commands their prompts name; 3 independent groups, 6 DoD items, 18 pairs.
 // A real run left files outside the plan in the repo (an args file, a hook cache): the final gate fails on them alone, which is work left for the run, never a void of every group's proven pairs.
+// flags: defaults. This file is the model for rules/flag-defaults-e2e.md.
 //   node --test e2e.default.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

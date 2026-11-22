@@ -1,5 +1,6 @@
 // The real qa-sweep chain on a fixture repo, nothing stubbed: run.mjs start, mutate.mjs --files through direct-run.mjs with ZT_RUN_DIR (a survivor),
 // a new test and its passing run, run.mjs snap, a second mutate.mjs on the snap (the kill), then findings.mjs --tiers-py. Run: node --test e2e.test.mjs
+// flags: defaults. No QA_* flag is set, so QA_ADR_AUTO_FIND_ENABLED runs at its default; see rules/flag-defaults-e2e.md.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
