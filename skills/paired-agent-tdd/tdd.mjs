@@ -35,7 +35,8 @@ if (!existsSync(join(ZT, 'probelib.mjs'))) fail(2, `the zero-trust-review skill 
 const imp = f => import(pathToFileURL(join(ZT, f)).href);
 const lib = await imp('probelib.mjs');
 const { createRunDir, markerDir, readMarker, resolveRun, writeSafe } = await imp('runctx.mjs');
-const { FENCE_ENV, clearFence, writeFence } = await import('./fence.mjs');
+const { FENCE_ENV, OLD_FENCE_ENV, clearFence, writeFence } = await import('./fence.mjs');
+const { FlagError, enabled, positiveInt } = await import('./flags.mjs');
 const { resolveDod } = await import('./dodfile.mjs');
 const { changedLines } = await imp('mutants.mjs');
 
@@ -444,6 +445,12 @@ async function verify(ctx, retPath) {
 
 // ---------------------------------------------------------------- plan command
 async function cmdPlan(o) {
+  // flags first: a value that is not valid, or an old name, stops the plan before any work
+  let fence, cap;
+  try {
+    fence = enabled(process.env, FENCE_ENV, false, { renamedFrom: OLD_FENCE_ENV }); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
+    cap = positiveInt(process.env, 'PTDD_AGENT_MAX', { renamedFrom: 'PTDD_AGENT_CAP' }); // opt-in hard ceiling, enforced by workflow.js
+  } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; }
   let plan;
   try { plan = JSON.parse(readFileSync(resolve(o.plan ?? ''), 'utf8')); } catch (e) { fail(2, `--plan must be a plan.json file: ${e.message}`); }
   const fromDod = await resolveDod(plan, { env: process.env, here: HERE }); // a plan with dod[] comes back untouched
@@ -482,10 +489,9 @@ async function cmdPlan(o) {
   // `fast` is set here and nowhere else, and only for mode "fast" (it survives the Workflow's own mode: "plan", a dry run, replaces args.mode). A `fast` key of the user's plan.json is
   // dropped from the args: it would switch the one-driver pipeline on while the gates stay standard (no firstSnapshot). Without mode "fast" the args are what they always were.
   const { fast: _userFast, ...fullArgs } = full;
-  const cap = /^\d+$/.test(process.env.PTDD_AGENT_CAP ?? '') && +process.env.PTDD_AGENT_CAP > 0 ? +process.env.PTDD_AGENT_CAP : null; // opt-in hard ceiling, enforced by workflow.js
   const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(plan.mode === 'fast' ? { fast: true } : {}), ...(cap ? { agentCap: cap } : {}) };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
-  if (process.env[FENCE_ENV] === '1') writeFence(run, full, markerDir(process.env)); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
+  if (fence) writeFence(run, full, markerDir(process.env));
   process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${fromDod.note ?? `${plan.dod.length} DoD item(s)`}, base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${plan.mode === 'fast' ? 'fast' : 'standard'}; Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
   process.stdout.write(`${JSON.stringify(args)}\n`);
 }

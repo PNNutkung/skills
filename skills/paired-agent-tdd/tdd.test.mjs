@@ -85,19 +85,34 @@ test('plan: validates, snapshots a clean tree as HEAD, writes the run folder, pr
   assert.ok(args.scratch.startsWith(realpathSync(tmpdir())) && args.skillDir === HERE);
 });
 
-test('plan: should write agentCap into the Workflow args when PTDD_AGENT_CAP is a positive integer, and leave it out otherwise', t => {
-  for (const [raw, want] of [['25', 25], ['', undefined], ['0', undefined], ['-5', undefined], ['abc', undefined], ['2.5', undefined]]) {
+test('plan: should write agentCap into the Workflow args when PTDD_AGENT_MAX is a positive integer, and leave it out when unset', t => {
+  for (const [raw, want] of [['25', 25], ['', undefined]]) {
     const fx = fixture(t);
-    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_AGENT_CAP: raw });
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_AGENT_MAX: raw });
     assert.equal(r.status, 0, r.err);
     assert.equal(JSON.parse(r.out.trim().split('\n').pop()).agentCap, want, JSON.stringify(raw));
   }
 });
 
-test('plan: should write the file fence and its marker when PTDD_GUARD=1, and nothing when it is unset', t => {
-  for (const [flag, want] of [['1', true], ['', false], ['0', false]]) {
+test('plan: should exit 2, naming the fix, when a flag is not valid or an old flag name is set', t => {
+  for (const [env, re] of [
+    [{ PTDD_AGENT_MAX: '0' }, /PTDD_AGENT_MAX=0 is not valid: use a whole number above 0/],
+    [{ PTDD_AGENT_MAX: 'abc' }, /PTDD_AGENT_MAX=abc is not valid/],
+    [{ PTDD_AGENT_CAP: '5' }, /PTDD_AGENT_CAP was renamed: use PTDD_AGENT_MAX=<number>/],
+    [{ PTDD_GUARD_ENABLED: '1' }, /PTDD_GUARD_ENABLED=1 is not valid: use true or false/],
+    [{ PTDD_GUARD: '1' }, /PTDD_GUARD was renamed: use PTDD_GUARD_ENABLED=true/],
+  ]) {
     const fx = fixture(t);
-    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_GUARD: flag });
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], env);
+    assert.equal(r.status, 2, JSON.stringify(env));
+    assert.match(r.err, re);
+  }
+});
+
+test('plan: should write the file fence and its marker when PTDD_GUARD_ENABLED=true, and nothing when it is unset or false', t => {
+  for (const [flag, want] of [['true', true], ['', false], ['false', false]]) {
+    const fx = fixture(t);
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_GUARD_ENABLED: flag });
     assert.equal(r.status, 0, r.err);
     const run = JSON.parse(r.out.trim().split('\n').pop()).runDir;
     assert.equal(existsSync(join(fx.dir, 'marker', '.ptdd-active')), want, `marker for ${JSON.stringify(flag)}`);

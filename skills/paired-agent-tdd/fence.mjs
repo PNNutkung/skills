@@ -1,4 +1,4 @@
-// File fence for paired-agent-tdd (opt-in: PTDD_GUARD=1 when `tdd.mjs plan` runs). Read by hooks/ptdd-guard.mjs.
+// File fence for paired-agent-tdd (opt-in: PTDD_GUARD_ENABLED=true when `tdd.mjs plan` runs). Read by hooks/ptdd-guard.mjs.
 // Every driver and fixer prompt names the only files it may edit; without this, the `final` gate only reports a stray file after the fact.
 // With the fence on, a SUBAGENT (hook input has agent_id) may Edit/Write inside the run's repo only:
 //   - the files of the group it works on. An agent's group is the group owning the first fenced file it writes (one owner per file),
@@ -11,7 +11,8 @@
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
-export const FENCE_ENV = 'PTDD_GUARD';
+export const FENCE_ENV = 'PTDD_GUARD_ENABLED';
+export const OLD_FENCE_ENV = 'PTDD_GUARD';
 export const MARKER_NAME = '.ptdd-active';
 export const STALE_MS = 12 * 3600e3;
 const MODE_CLOSED = 0o022;

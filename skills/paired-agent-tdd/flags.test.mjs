@@ -20,11 +20,13 @@ test('should stop with an error naming the new flag when an old name is still se
   assert.equal(enabled({ X_GUARD: '' }, 'X_GUARD_ENABLED', false, { renamedFrom: 'X_GUARD' }), false, 'an empty old name is unset');
 });
 
-test('should read a positive whole number, null when unset, and stop on anything else', () => {
+test('should read a positive whole number, null for unlimited or unset, and stop on anything else', () => {
   assert.equal(positiveInt({ N_MAX: '12' }, 'N_MAX'), 12);
   assert.equal(positiveInt({}, 'N_MAX'), null);
-  for (const v of ['0', '-1', '1.5', 'ten', '3x']) assert.throws(() => positiveInt({ N_MAX: v }, 'N_MAX'), { message: `N_MAX=${v} is not valid: use a whole number above 0` }, v);
-  assert.throws(() => positiveInt({ N_CAP: '3' }, 'N_MAX', { renamedFrom: 'N_CAP' }), /N_CAP was renamed: use N_MAX=<number>/);
+  assert.equal(positiveInt({ N_MAX: 'unlimited' }, 'N_MAX'), null, 'unlimited says no limit on purpose');
+  assert.equal(positiveInt({ N_MAX: 'Unlimited' }, 'N_MAX'), null);
+  for (const v of ['0', '-1', '1.5', 'ten', '3x']) assert.throws(() => positiveInt({ N_MAX: v }, 'N_MAX'), { message: `N_MAX=${v} is not valid: use a whole number above 0, or unlimited` }, v);
+  assert.throws(() => positiveInt({ N_CAP: '3' }, 'N_MAX', { renamedFrom: 'N_CAP' }), /N_CAP was renamed: use N_MAX=<number> or N_MAX=unlimited/);
 });
 
 test('should read one of the listed modes, the default when unset, and stop on anything else', () => {

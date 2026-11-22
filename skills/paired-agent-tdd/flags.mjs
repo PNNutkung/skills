@@ -1,5 +1,5 @@
 // Flags mean what they say, or the run stops: a value that is not valid, or an old flag name still set, throws a FlagError naming the fix.
-//   NAME_ENABLED=true|false (any case)   NAME_MODE=<one of the listed modes>   NAME_MAX=<whole number above 0>
+//   NAME_ENABLED=true|false (any case)   NAME_MODE=<one of the listed modes>   NAME_MAX=<whole number above 0>|unlimited
 // Unset or empty keeps the default. This skill reads only its own flags; it shares no flag with another skill.
 export class FlagError extends Error {}
 
@@ -18,13 +18,13 @@ export function enabled(env, name, dflt, { renamedFrom } = {}) {
   throw new FlagError(`${name}=${env[name]} is not valid: use true or false`);
 }
 
-/** NAME_MAX: a whole number above 0, or null when unset. */
+/** NAME_MAX: a whole number above 0; null (no limit) for unlimited or when unset. */
 export function positiveInt(env, name, { renamedFrom } = {}) {
-  oldName(env, renamedFrom, name, `${name}=<number>`);
+  oldName(env, renamedFrom, name, `${name}=<number> or ${name}=unlimited`);
   const v = raw(env, name);
-  if (!v) return null;
+  if (!v || v.toLowerCase() === 'unlimited') return null;
   if (/^\d+$/.test(v) && Number(v) > 0) return Number(v);
-  throw new FlagError(`${name}=${env[name]} is not valid: use a whole number above 0`);
+  throw new FlagError(`${name}=${env[name]} is not valid: use a whole number above 0, or unlimited`);
 }
 
 /** NAME_MODE: one of modes (any case); dflt when unset. */
