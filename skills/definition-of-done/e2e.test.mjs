@@ -21,7 +21,7 @@ const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c'
 git('init', '-q'); git('add', '.'); git('commit', '-qm', 'base');
 
 const SESSION = 'e2e-session';
-const env = { ...process.env, DOD_MARKER_DIR: join(tmp, 'm'), DOD_RUN_BASE: join(tmp, 'r'), DOD_CONFIG_DIR: join(tmp, 'c'), DOD_GUARD: '1', CLAUDE_CODE_SESSION_ID: SESSION };
+const env = { ...process.env, DOD_MARKER_DIR: join(tmp, 'm'), DOD_RUN_BASE: join(tmp, 'r'), DOD_CONFIG_DIR: join(tmp, 'c'), DOD_GUARD: '', DOD_GUARD_ENABLED: 'true', CLAUDE_CODE_SESSION_ID: SESSION };
 function cli(...args) {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });
   return { code: r.status, out: r.stdout, err: r.stderr, json: (() => { try { return JSON.parse(r.stdout); } catch { return null; } })() };

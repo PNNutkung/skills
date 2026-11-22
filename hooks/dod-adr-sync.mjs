@@ -68,8 +68,13 @@ function renamesOf(moves, cwd, repo, files) {
 
 async function decide(input) {
   if (input?.tool_name !== 'Bash') return null;
-  const { enabled } = await import(FLAGS);
-  if (!enabled(process.env, SYNC_ENV, true)) return null;
+  const { FlagError, enabled } = await import(FLAGS);
+  try {
+    if (!enabled(process.env, SYNC_ENV, true)) return null;
+  } catch (e) {
+    if (e instanceof FlagError) return { block: `dod-adr-sync: ${e.message}. Fix the flag where it is set (shell or settings.json env)` };
+    throw e;
+  }
   const command = String(input?.tool_input?.command ?? '');
   if (!/\bmv\b/.test(command)) return null;
   const moves = movesOf(command);
@@ -87,7 +92,8 @@ async function decide(input) {
 async function main() {
   try {
     const said = await decide(JSON.parse(readFileSync(0, 'utf8')));
-    if (said) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: said } }));
+    if (said?.block) process.stdout.write(JSON.stringify({ decision: 'block', reason: said.block }));
+    else if (said) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: said } }));
   } catch { /* fail open: no output */ }
   process.exit(0);
 }

@@ -106,3 +106,8 @@ test('should warn about touches globs that match no file at HEAD, and stay quiet
   const fine = repoWith({ [FILE]: adr(1), 'src/reports/export.mjs': 'x\n' });
   assert.deepEqual((await resolveDod(plan(fine, { dodFile: FILE }), { env: env(), here: HERE })).warnings, []);
 });
+
+test('should refuse the plan, naming the fix, when PTDD_ADR_AUTO_FIND_ENABLED is not true or false', async () => {
+  const r = await resolveDod(plan('/x'), { env: env({ PTDD_ADR_AUTO_FIND_ENABLED: '0' }), here: HERE });
+  assert.equal(r.error, 'PTDD_ADR_AUTO_FIND_ENABLED=0 is not valid: use true or false');
+});

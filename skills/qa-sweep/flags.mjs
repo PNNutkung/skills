@@ -1,12 +1,37 @@
-// On/off flags: NAME_ENABLED=true|false (any case). Unset or empty keeps the default; any other value warns and keeps it.
-// This skill reads only its own flags; it shares no flag with another skill.
-const say = m => process.stderr.write(`${m}\n`);
+// Flags mean what they say, or the run stops: a value that is not valid, or an old flag name still set, throws a FlagError naming the fix.
+//   NAME_ENABLED=true|false (any case)   NAME_MODE=<one of the listed modes>   NAME_MAX=<whole number above 0>
+// Unset or empty keeps the default. This skill reads only its own flags; it shares no flag with another skill.
+export class FlagError extends Error {}
 
-/** -> boolean. env: process.env; dflt: the value when unset; warn: where a bad value is reported. */
-export function enabled(env, name, dflt, warn = say) {
-  const v = String(env?.[name] ?? '').trim().toLowerCase();
+const raw = (env, name) => String(env?.[name] ?? '').trim();
+function oldName(env, renamedFrom, name, use) {
+  if (renamedFrom && raw(env, renamedFrom)) throw new FlagError(`${renamedFrom} was renamed: use ${use}, and unset ${renamedFrom}`);
+}
+
+/** NAME_ENABLED: true or false; dflt when unset. */
+export function enabled(env, name, dflt, { renamedFrom } = {}) {
+  oldName(env, renamedFrom, name, `${name}=true or ${name}=false`);
+  const v = raw(env, name).toLowerCase();
+  if (!v) return dflt;
   if (v === 'true') return true;
   if (v === 'false') return false;
-  if (v) warn(`${name}=${env[name]} is not true or false; using the default, ${dflt}`);
-  return dflt;
+  throw new FlagError(`${name}=${env[name]} is not valid: use true or false`);
+}
+
+/** NAME_MAX: a whole number above 0, or null when unset. */
+export function positiveInt(env, name, { renamedFrom } = {}) {
+  oldName(env, renamedFrom, name, `${name}=<number>`);
+  const v = raw(env, name);
+  if (!v) return null;
+  if (/^\d+$/.test(v) && Number(v) > 0) return Number(v);
+  throw new FlagError(`${name}=${env[name]} is not valid: use a whole number above 0`);
+}
+
+/** NAME_MODE: one of modes (any case); dflt when unset. */
+export function oneOf(env, name, modes, dflt, { renamedFrom } = {}) {
+  oldName(env, renamedFrom, name, `${name}=${modes.join('|')}`);
+  const v = raw(env, name).toLowerCase();
+  if (!v) return dflt;
+  if (modes.includes(v)) return v;
+  throw new FlagError(`${name}=${env[name]} is not valid: use one of ${modes.join(', ')}`);
 }

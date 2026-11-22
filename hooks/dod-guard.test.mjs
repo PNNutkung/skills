@@ -27,10 +27,10 @@ function fixture() {
   return { repo, env, session, run };
 }
 
-function hook(fx, tool, input, extraEnv = { DOD_GUARD: '1' }) {
+function hook(fx, tool, input, extraEnv = { DOD_GUARD_ENABLED: 'true' }) {
   const r = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ hook_event_name: 'PreToolUse', session_id: fx.session, cwd: fx.repo, tool_name: tool, tool_input: input }),
-    env: { ...process.env, DOD_GUARD: '', ...fx.env, ...extraEnv }, encoding: 'utf8',
+    env: { ...process.env, DOD_GUARD: '', DOD_GUARD_ENABLED: '', ...fx.env, ...extraEnv }, encoding: 'utf8',
   });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput : { permissionDecision: 'allow' };
@@ -38,9 +38,20 @@ function hook(fx, tool, input, extraEnv = { DOD_GUARD: '1' }) {
 const decision = (...a) => hook(...a).permissionDecision;
 
 // ---------- the flag ----------
-test('should allow everything when DOD_GUARD is not 1, so current installs keep their behavior', () => {
+test('should allow everything when DOD_GUARD_ENABLED is unset or false', () => {
   const fx = fixture();
-  for (const v of [{}, { DOD_GUARD: '0' }, { DOD_GUARD: 'true' }]) assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'src', 'app.js') }, v), 'allow');
+  for (const v of [{}, { DOD_GUARD_ENABLED: 'false' }, { DOD_GUARD_ENABLED: 'FALSE' }]) assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'src', 'app.js') }, v), 'allow');
+});
+
+test('should deny every tool, naming the fix, when DOD_GUARD_ENABLED is not true or false or the old DOD_GUARD is set', () => {
+  const fx = fixture();
+  for (const [v, re] of [[{ DOD_GUARD_ENABLED: '1' }, /DOD_GUARD_ENABLED=1 is not valid: use true or false/], [{ DOD_GUARD: '1' }, /DOD_GUARD was renamed: use DOD_GUARD_ENABLED=true/]]) {
+    for (const [tool, input] of [['Edit', { file_path: join(fx.repo, 'docs', 'dod', 'x.json') }], ['Bash', { command: 'ls' }], ['mcp__x__read', {}]]) {
+      const h = hook({ ...fx, session: 'no-session-needed' }, tool, input, v);
+      assert.equal(h.permissionDecision, 'deny', `${tool} ${JSON.stringify(v)}`);
+      assert.match(h.permissionDecisionReason, re);
+    }
+  }
 });
 
 test('should allow everything when no DoD session is active', () => {
@@ -168,7 +179,7 @@ test('should allow an MCP ticket update when approved but never an MCP create', 
 
 // ---------- fail open ----------
 test('should allow and exit 0 when the input is not JSON', () => {
-  const r = spawnSync(process.execPath, [HOOK], { input: 'not json', env: { ...process.env, DOD_GUARD: '1' }, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [HOOK], { input: 'not json', env: { ...process.env, DOD_GUARD: '', DOD_GUARD_ENABLED: 'true' }, encoding: 'utf8' });
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '');
 });

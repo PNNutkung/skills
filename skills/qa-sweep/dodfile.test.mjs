@@ -101,3 +101,8 @@ test('should warn about touches globs that match no file at --head', async () =>
   assert.equal(r.error, undefined);
   assert.match(r.warning, /lib\/gone\/\*\* matches no file/);
 });
+
+test('should refuse the findings, naming the fix, when QA_ADR_AUTO_FIND_ENABLED is not true or false', async () => {
+  const r = await requirementsFromDod({ findings: [] }, { repo: '/nowhere', head: 'HEAD', env: env({ QA_ADR_AUTO_FIND_ENABLED: 'no' }), here: HERE });
+  assert.equal(r.error, 'QA_ADR_AUTO_FIND_ENABLED=no is not valid: use true or false');
+});

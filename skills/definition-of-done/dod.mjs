@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CLI of the definition-of-done skill. Every command prints one JSON line on stdout.
-//   open --repo DIR --slug SLUG          open a DoD session: run folder + marker (hooks/dod-guard.mjs reads it when DOD_GUARD=1)
+//   open --repo DIR --slug SLUG          open a DoD session: run folder + marker (hooks/dod-guard.mjs reads it when DOD_GUARD_ENABLED=true)
 //   check --dod FILE                     the gate: every item and required section quoted, no open question; on pass writes docs/dod/<slug>.md
 //                                        (<slug>.md next to FILE when FILE is in the run folder: the ADR path, nothing of the DoD in the repo)
 //   render --dod FILE [--lang en|th] [--fallback]
@@ -26,7 +26,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { checkAdrSources, renderAdr } from './adr.mjs';
-import { enabled } from './flags.mjs';
+import { FlagError, enabled } from './flags.mjs';
 import { HOOK_ENV, adrTarget, findAdrsFor, installHook, repoFiles, stagedRenames, syncRepo, topLevel, writeIndex } from './adrio.mjs';
 import { checkDod, exportPtdd, exportQa, renderMarkdown, renderTicket, ticketCheck } from './dodcheck.mjs';
 import { RENDERED_FILE, approve, close, open, readActive, recordAdr, toolFor, touch, trust } from './session.mjs';
@@ -164,7 +164,7 @@ function main(argv) {
     process.exit(result.ok === false ? 1 : 0);
   } catch (e) {
     process.stderr.write(`dod: ${e.message}\n`);
-    process.exit(e instanceof Usage || /a run is active|bad session id|bad slug/.test(e.message) ? 2 : 1);
+    process.exit(e instanceof Usage || e instanceof FlagError || /a run is active|bad session id|bad slug/.test(e.message) ? 2 : 1);
   }
 }
 

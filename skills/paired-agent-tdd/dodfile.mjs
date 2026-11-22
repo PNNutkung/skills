@@ -5,7 +5,7 @@
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { enabled } from './flags.mjs';
+import { FlagError, enabled } from './flags.mjs';
 
 export const AUTO_ENV = 'PTDD_ADR_AUTO_FIND_ENABLED';
 
@@ -23,7 +23,8 @@ async function dodSkill(env, here) {
 export async function resolveDod(plan, { env = process.env, here }) {
   const has = k => plan?.[k] !== undefined;
   if (has('dodFile') && has('dod')) return { error: 'use dodFile or dod[], not both' };
-  const auto = !has('dodFile') && !has('dod') && enabled(env, AUTO_ENV, true);
+  let auto;
+  try { auto = !has('dodFile') && !has('dod') && enabled(env, AUTO_ENV, true); } catch (e) { if (e instanceof FlagError) return { error: e.message }; throw e; }
   if (!has('dodFile') && !auto) return { plan, fromAdr: false };
   const { dir, lib } = await dodSkill(env, here);
   if (!lib) return auto ? { plan, fromAdr: false } : { error: `dodFile needs the definition-of-done skill, not found at ${dir} (set DOD_DIR)` };

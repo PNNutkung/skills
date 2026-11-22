@@ -76,3 +76,12 @@ test('should be registered as a PostToolUse hook for Bash', () => {
   const hooks = JSON.parse(readFileSync(join(HERE, 'hooks.json'), 'utf8')).hooks.PostToolUse;
   assert.ok(hooks.some(h => h.matcher === 'Bash' && h.hooks.some(x => x.command.includes('dod-adr-sync.mjs'))));
 });
+
+test('should block with the fix when DOD_ADR_TOUCHES_SYNC_ENABLED is not true or false', () => {
+  const fx = fixture();
+  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: fx.repo }), env: { ...process.env, DOD_ADR_TOUCHES_SYNC_ENABLED: '0' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, 'block');
+  assert.match(out.reason, /DOD_ADR_TOUCHES_SYNC_ENABLED=0 is not valid: use true or false/);
+});

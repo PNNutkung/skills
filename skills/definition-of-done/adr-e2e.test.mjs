@@ -29,7 +29,7 @@ const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c'
 git('init', '-q'); git('add', '.'); git('commit', '-qm', 'base');
 
 const SESSION = 'adr-e2e-session';
-const env = { ...process.env, DOD_MARKER_DIR: join(tmp, 'm'), DOD_RUN_BASE: join(tmp, 'r'), DOD_CONFIG_DIR: join(tmp, 'c'), DOD_GUARD: '1', DOD_ADR_PRECOMMIT_HOOK_ENABLED: '', DOD_ADR_TOUCHES_SYNC_ENABLED: '', PTDD_ADR_AUTO_FIND_ENABLED: '', QA_ADR_AUTO_FIND_ENABLED: '', CLAUDE_CODE_SESSION_ID: SESSION };
+const env = { ...process.env, DOD_MARKER_DIR: join(tmp, 'm'), DOD_RUN_BASE: join(tmp, 'r'), DOD_CONFIG_DIR: join(tmp, 'c'), DOD_GUARD: '', DOD_GUARD_ENABLED: 'true', DOD_ADR_PRECOMMIT_HOOK_ENABLED: '', DOD_ADR_TOUCHES_SYNC_ENABLED: '', PTDD_ADR_AUTO_FIND_ENABLED: '', QA_ADR_AUTO_FIND_ENABLED: '', CLAUDE_CODE_SESSION_ID: SESSION };
 function cli(...args) {
   const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env, encoding: 'utf8' });
   return { code: r.status, out: r.stdout, err: r.stderr, json: (() => { try { return JSON.parse(r.stdout); } catch { return null; } })() };
@@ -165,4 +165,10 @@ test('should take a DoD from the grill to a committed ADR that paired-agent-tdd 
 
   // the ADR is still a valid DoD after both moves, and a stale glob is reported
   assert.equal((await resolveDod({ repo, cmd: 'node --test {file}', dodFile: ADR, groups: [{ ...group, src: ['src/out/export.js'] }] }, { env, here: join(ROOT, 'skills', 'paired-agent-tdd') })).error, undefined);
+});
+
+test('should exit 2, naming the fix, when DOD_ADR_PRECOMMIT_HOOK_ENABLED is not true or false', () => {
+  const r = spawnSync(process.execPath, [CLI, 'adrs', '--repo', repo, '--sync'], { env: { ...env, DOD_ADR_PRECOMMIT_HOOK_ENABLED: '0' }, encoding: 'utf8' });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /DOD_ADR_PRECOMMIT_HOOK_ENABLED=0 is not valid: use true or false/);
 });

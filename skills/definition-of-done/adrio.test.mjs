@@ -146,6 +146,10 @@ test('should follow a folder move through a real commit when the hook is install
   assert.equal(off.status, 0);
   assert.match(g('show', `HEAD:${file}`), /- "src\/export\/\*\*"/, 'DOD_ADR_PRECOMMIT_HOOK_ENABLED=false skips the hook');
   renameSync(join(repo, 'src/x'), join(repo, 'src/y'));
+  g('add', '-A');
+  const bad = spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'move3'], { encoding: 'utf8', env: { ...process.env, DOD_ADR_PRECOMMIT_HOOK_ENABLED: '0' } });
+  assert.notEqual(bad.status, 0, 'a flag that is not true or false stops the commit');
+  assert.match(bad.stderr, /DOD_ADR_PRECOMMIT_HOOK_ENABLED=0 is not valid: use true or false/);
 });
 
 test('should accept only normalized relative paths inside the repo', () => {

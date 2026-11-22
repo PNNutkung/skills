@@ -6,7 +6,7 @@
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { enabled } from './flags.mjs';
+import { FlagError, enabled } from './flags.mjs';
 
 export const AUTO_ENV = 'QA_ADR_AUTO_FIND_ENABLED';
 const CODE_REF = /^(.+):\d+$/;
@@ -29,7 +29,8 @@ function namedFiles(data) {
 export async function requirementsFromDod(data, { repo, head, env = process.env, here }) {
   const has = k => data?.[k] !== undefined;
   if (has('dodFile') && has('requirements')) return { error: 'use dodFile or requirements[], not both' };
-  const auto = !has('dodFile') && !has('requirements') && enabled(env, AUTO_ENV, true);
+  let auto;
+  try { auto = !has('dodFile') && !has('requirements') && enabled(env, AUTO_ENV, true); } catch (e) { if (e instanceof FlagError) return { error: e.message }; throw e; }
   if (!has('dodFile') && !auto) return { data };
   const { dir, lib } = await dodSkill(env, here);
   if (!lib) return auto ? { data } : { error: `dodFile needs the definition-of-done skill, not found at ${dir} (set DOD_DIR)` };

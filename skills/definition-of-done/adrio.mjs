@@ -128,7 +128,8 @@ export function syncRepo({ repo, renames, files, stage = false }) {
 }
 
 /** The pre-commit hook script; dodMjs is this skill's dod.mjs, absolute. */
-export const hookLine = dodMjs => `node "${dodMjs}" adrs --sync --staged >/dev/null || true`; // the dod-adr: lines on stderr stay
+// the dod-adr: lines on stderr stay; only a usage error (exit 2: a flag that is not true or false) stops the commit, anything else never does
+export const hookLine = dodMjs => `node "${dodMjs}" adrs --sync --staged >/dev/null; [ $? -ne 2 ] || exit 1`;
 export const hookScript = dodMjs => `#!/bin/sh\n# ${HOOK_TAG}: follows file moves in the ADRs' touches. ${HOOK_ENV}=false skips it.\n[ "$${HOOK_ENV}" = "false" ] && exit 0\ncommand -v node >/dev/null 2>&1 || exit 0\n[ -f "${dodMjs}" ] || exit 0\n${hookLine(dodMjs)}\n`;
 
 /**
