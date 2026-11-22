@@ -32,7 +32,7 @@ Put that line at the top of each Bash call. `<run>` is the absolute run folder `
 
 ## 1. Collect (code, no tokens)
 
-`node "$SK/retro.mjs" collect --pr <n>` for a merged PR (reads its comments and checks with `gh`), `--base <ref>` for the current branch, or `--since 7d` for a time window. Default: the current branch against the default branch. Sessions are matched by cwd and time; `--session <id>` names them. `--lang th|en` sets the report's headings.
+`node "$SK/retro.mjs" collect --pr <n>` for a merged PR (reads its comments and checks with `gh`, through `gh api` REST where GraphQL is blocked), `--base <ref>` for the current branch, or `--since 7d` for a time window. Default: the current branch against the default branch. Sessions are matched by cwd and time; `--session <id>` names them. `--lang th|en` sets the report's headings.
 
 `<run>/collect.json` holds: commits, sessions (tokens, tool calls, files read more than once, commands that failed more than once, the biggest tool results, the user's own messages), the guardrail (pre-commit hooks, CI lint, typecheck and test steps), steering file sizes against `RETRO_STEERING_BYTES_MAX`, where standards go, and which ratchet rules apply to the repo's languages. Transcript quotes are redacted; nothing from a transcript goes into the repo. `RETRO_TRANSCRIPTS_ENABLED=false`: no transcripts are read.
 

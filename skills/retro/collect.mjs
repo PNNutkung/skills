@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { guardrail, standardsFile, steering } from './facts.mjs';
+import { checksFromRest, prFromRest } from './github.mjs';
 import { applicablePatterns } from './patterns.mjs';
 import { readBaseline, repoFiles } from './ratchet-io.mjs';
 import { listTranscripts, projectsRoot, selectSessions, sinceWindow, workWindow } from './sessions.mjs';
@@ -46,6 +47,26 @@ function gh(args, repo) {
   const r = spawnSync('gh', args, { cwd: repo, encoding: 'utf8', maxBuffer: MAX_BUFFER });
   return r.status === 0 ? r.stdout : null;
 }
+const ghJson = (args, repo) => { const out = gh(args, repo); try { return out === null ? null : JSON.parse(out); } catch { return null; } };
+const restList = (repo, path) => ghJson(['api', `repos/{owner}/{repo}/${path}?per_page=100`], repo);
+
+/** gh pr view uses GraphQL; where only REST is open, read the same facts with gh api. -> the gh pr view shape, or null */
+function readPr(n, repo) {
+  const viaGraphql = ghJson(['pr', 'view', n, '--json', 'number,title,url,mergedAt,headRefName,baseRefName,commits,comments,reviews'], repo);
+  if (viaGraphql) return viaGraphql;
+  const pr = ghJson(['api', `repos/{owner}/{repo}/pulls/${n}`], repo);
+  if (!pr) return null;
+  const pulls = `pulls/${n}`;
+  return { ...prFromRest({ pr, commits: restList(repo, `${pulls}/commits`), comments: restList(repo, `issues/${n}/comments`),
+    reviewComments: restList(repo, `${pulls}/comments`), reviews: restList(repo, `${pulls}/reviews`) }), headSha: pr.head?.sha };
+}
+
+function readChecks(pr, repo) {
+  const viaGraphql = gh(['pr', 'checks', String(pr.number)], repo);
+  if (viaGraphql !== null) return viaGraphql;
+  const sha = pr.headSha ?? pr.commits?.at(-1)?.oid;
+  return sha ? checksFromRest(ghJson(['api', `repos/{owner}/{repo}/commits/${sha}/check-runs?per_page=100`], repo)) || null : null;
+}
 
 export function guardrailFacts(repo) {
   const ciFiles = {};
@@ -82,8 +103,8 @@ export function collect(opts) {
   const startRef = (tryGit(repo, ['rev-parse', 'HEAD']) ?? '').trim() || null;
   let work, list = [], window, pr = null;
   if (opts.pr) {
-    const json = gh(['pr', 'view', String(opts.pr), '--json', 'number,title,url,mergedAt,headRefName,baseRefName,commits,comments,reviews'], repo);
-    if (json) pr = JSON.parse(json); else notes.push(`gh could not read PR ${opts.pr}; PR comments and CI were not read`);
+    pr = readPr(String(opts.pr), repo);
+    if (!pr) notes.push(`gh could not read PR ${opts.pr}; PR comments and CI were not read`);
   }
   if (opts.since) {
     window = sinceWindow(opts.since, opts.now);
@@ -99,7 +120,7 @@ export function collect(opts) {
   const run = runDir(work.label);
   if (pr) {
     writeFileSync(join(run, 'pr.json'), JSON.stringify({ title: pr.title, url: pr.url, comments: pr.comments, reviews: pr.reviews }, null, 1));
-    const checks = gh(['pr', 'checks', String(pr.number)], repo);
+    const checks = readChecks(pr, repo);
     if (checks !== null) writeFileSync(join(run, 'ci.log'), checks);
   }
   let sessions = [];
