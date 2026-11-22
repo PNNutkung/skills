@@ -317,6 +317,87 @@ Recommended: B
 Answer: B (speed.mjs (pure policy: flags + state -> decisions) and gatecache.mjs (sha256 of snapshot + group files + gate args); workflow.js and tdd.mjs call them)
 Trade-off accepted: two new files
 
+### A23: Real run: how?
+
+Options considered (the agent's analysis when the question was asked):
+- (A) a script and steps Nut runs in WSL, twice (flags off, flags on)
+  - pro: Nut's own Claude Code and plugin, closest to real use
+  - con: Nut runs it twice and sends runs.md back
+- (B) Remote Control on Nut's machine
+  - pro: nothing for Nut to do
+  - con: only D:\chat-ogc (Windows native) is reachable; tests need WSL, more setup
+- (C) skip in this PR; log the first real run on next real use
+  - pro: merge sooner
+  - con: VReal stays open, DoD must change
+Recommended: A
+Answer: B (run inside my WSL)
+Trade-off accepted: none recorded (the answer picks no single option)
+
+### A24: Mutation baseline reuse rarely fires in ptdd (mutate reads the previous run's head.json; same-tree reuse already skips mutation)
+
+Options considered (the agent's analysis when the question was asked):
+- (A) mutate waits for the current probe's head run, falls back to its own baseline after a timeout
+  - pro: saves one test run of CPU per gate
+  - con: same wall-clock, more complex
+- (B) leave it, document the truth
+  - pro: no new risk
+  - con: the flag has little effect
+Recommended: B
+Answer: B (leave it, document the truth)
+Trade-off accepted: the flag has little effect
+
+### A25: record.mjs always writes the RED first-try stat, so runs.md lines differ from v2.0.0 even with all flags off
+
+Options considered (the agent's analysis when the question was asked):
+- (A) accept: it is a log, not pipeline behavior
+  - pro: every run has the stat (A18)
+  - con: not "byte-identical" in the Q10 sense
+- (B) write it only when some flag is on
+  - pro: matches Q10 exactly
+  - con: flags-off runs lack the stat, no before/after
+Recommended: A
+Answer: A (accept: it is a log, not pipeline behavior)
+Trade-off accepted: not "byte-identical" in the Q10 sense
+
+### A26: WSL has no tdd-guide or code-reviewer agent types
+
+Options considered (the agent's analysis when the question was asked):
+- (A) Nut copies ~/.claude/agents from the usual machine
+  - pro: real token numbers
+  - con: one more step for Nut
+- (B) stand-in agents with the tool sets tiering.md lists
+  - pro: nothing for Nut to do
+  - con: prompts differ, numbers close but not exact
+Recommended: B
+Answer: B (stand-in agents with the tool sets tiering.md lists)
+Trade-off accepted: prompts differ, numbers close but not exact
+
+### A27: WSL already has older paired-agent-tdd and zero-trust-review installed
+
+Options considered (the agent's analysis when the question was asked):
+- (A) move them to ~/ptdd-vreal/backup during the runs, link the PR branch, restore after
+  - pro: the new code is surely measured
+  - con: during the runs WSL uses the PR version
+- (B) leave them, name the path in the prompt
+  - pro: nothing changes on the machine
+  - con: may measure the old code
+Recommended: A
+Answer: A (move them to ~/ptdd-vreal/backup during the runs, link the PR branch, restore after)
+Trade-off accepted: during the runs WSL uses the PR version
+
+### A28: The permission check refused changing global ~/.claude; how to set up?
+
+Options considered (the agent's analysis when the question was asked):
+- (A) agents and skill links inside each run folder's .claude only
+  - pro: ~/.claude untouched, nothing to restore
+  - con: the global skill of the same name may still load
+- (B) keep Q27 A: Nut runs ~/ptdd-vreal/setup.sh (restore.sh undoes it)
+  - pro: surely the new code
+  - con: Nut runs it and then says go
+Recommended: A
+Answer: B (keep Q27 A: Nut runs ~/ptdd-vreal/setup.sh (restore.sh undoes it))
+Trade-off accepted: Nut runs it and then says go
+
 ## Consequences
 
 Trade-offs we accepted:
@@ -337,6 +418,11 @@ Trade-offs we accepted:
 - A19: one more flag
 - A21: none seen
 - A22: two new files
+- A24: the flag has little effect
+- A25: not "byte-identical" in the Q10 sense
+- A26: prompts differ, numbers close but not exact
+- A27: during the runs WSL uses the PR version
+- A28: Nut runs it and then says go
 
 ## Definition of done
 
