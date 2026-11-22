@@ -1,6 +1,7 @@
 // Tests for the zero-trust-review plugin hooks and manifests. Run: node --test hooks/zt-hooks.test.mjs
-// Both hooks are driven as child processes with stdin fixtures, a private TMPDIR and a private ZT_MARKER_DIR (0700) holding the .active marker,
-// so a real marker on this host can never make these tests act on a live run. Marker trust checks live in skills/zero-trust-review/runctx.mjs.
+// The capture hook is driven as a child process with stdin fixtures, a private TMPDIR and a private ZT_MARKER_DIR (0700) holding the .active marker,
+// so a real marker on this host can never make these tests act on a live run. The guard runs in-process through its exported respond() with the
+// same TMPDIR/ZT_MARKER_DIR/HOME set for the call (a node start per case made this file 80 s); the 'guard CLI' tests below still spawn it. Marker trust checks live in skills/zero-trust-review/runctx.mjs.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -8,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { respond } from './zt-guard.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -48,7 +50,19 @@ mkdirSync(join(FX.tmp, 'exists')); // a directory that exists, for `cd` followed
 const T = FX.tmp, R = FX.run, MD = FX.md, SK = FX.sk;
 const SKILL_DIR = join(ROOT, 'skills', 'zero-trust-review'), SANDBOX = join(SKILL_DIR, 'sandbox-run.mjs'), NOTE = join(SKILL_DIR, 'note.mjs');
 const guardIn = (command, extra = {}) => ({ hook_event_name: 'PreToolUse', tool_name: 'Bash', agent_id: 'agent-1', cwd: '/work/repo', tool_input: { command }, ...extra });
-const bash = (command, fx = FX, extra = {}) => drive(GUARD, fx, guardIn(command, extra));
+// the guard in-process: the fixture's env for the call only, restored after; tests in this file run one at a time, so nothing else sees it
+const ENV_KEYS = ['TMPDIR', 'ZT_MARKER_DIR', 'HOME'];
+async function inProcess(fx, input) {
+  const saved = ENV_KEYS.map(k => [k, process.env[k]]);
+  Object.assign(process.env, { TMPDIR: fx.tmp, ZT_MARKER_DIR: fx.md, ...(fx.home && { HOME: fx.home }) });
+  try {
+    return { status: 0, stderr: '', stdout: await respond(JSON.stringify(input)) };
+  } finally {
+    for (const [k, v] of saved) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+}
+const bash = (command, fx = FX, extra = {}) => inProcess(fx, guardIn(command, extra));
+const spawnBash = (command, fx = FX, extra = {}) => drive(GUARD, fx, guardIn(command, extra));
 const verdict = r => {
   assert.equal(r.status, 0, r.stderr);
   if (!r.stdout) return 'allow';
@@ -147,7 +161,7 @@ const ALLOW = [
   `cat ${R}/exec.jsonl`, `grep -c x ${R}/obs.jsonl | wc -l`, `tail -5 ${R}/exec.jsonl`, `wc -l ${R}/obs.jsonl`, `jq -c . ${R}/obs.jsonl`, `sort ${R}/obs.jsonl`,
   `sed -n 1p ${R}/exec.jsonl`, `ls ${R} ${MD}`, `cp ${R}/exec.jsonl ${T}/copy`, `cp ${R}/.skilldir ${T}/copy`, `echo x >> ${T}/scratch.log`, `cat ${R}/.skilldir`, `tail -5 ${R}/exec.jsonl`, `grep x < ${R}/obs.jsonl`,
 ];
-for (const c of ALLOW) test(`guard allows: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'allow'));
+for (const c of ALLOW) test(`guard allows: ${show(c)}`, async () => assert.equal(verdict(await bash(c)), 'allow'));
 
 const DENY = [
   // interpreters and runners
@@ -280,7 +294,7 @@ const DENY = [
   `rm -f ${R}/f`, `rm -rf ${R}`, `rm -rf ${T}/lnk-run`, `echo x > ${R}/.skilldir`, `echo x > ${MD}/other`, `echo x > ${R}/*`, `echo x > ${R}/sub/*/y`, `cd ${R} && echo x > f`, `cd ${R} && mkdir sub`,
   `echo x > "$RUN/.skilldir"`, `tar -xf a.tar -C ${R}`, `echo x > ${T}/lnk-run/notes.txt`,
 ];
-for (const c of DENY) test(`guard denies: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'deny'));
+for (const c of DENY) test(`guard denies: ${show(c)}`, async () => assert.equal(verdict(await bash(c)), 'deny'));
 
 // ---------- guard: option ALLOW-LISTS (the six bypasses found by red-teaming a deny-list of known-bad options) ----------
 // Root cause: filtering on a leading `-` and denying KNOWN-bad options. Each program below now accepts only the options it is listed to take;
@@ -394,13 +408,13 @@ const BYPASS_DENY = [
   `sort --out=/etc/x f`, `sort --ou=${R}/notes f`, `sort --o=src/out f`, `sort --outp=src f`, `sort -T /etc f`, `sort --temporary-directory=/etc f`, `sort --tmp=/etc f`, `sort -S 1 -T /x f`,
   `sort --files0-from=x`, `sort --random-source=x f`, `sort --parallel=2 f`, `sort --batch-size=2 f`,
 ];
-for (const c of BYPASS_DENY) test(`guard denies bypass: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'deny'));
+for (const c of BYPASS_DENY) test(`guard denies bypass: ${show(c)}`, async () => assert.equal(verdict(await bash(c)), 'deny'));
 // a repo in the temp dir is also refused when the shell is already there (the hook input's cwd)
 for (const c of [`git log`, `git -C . status`, `git -C .. status`, `git --git-dir=.git log`]) {
-  test(`guard denies git with cwd in the temp dir: ${c}`, () => assert.equal(verdict(bash(c, FX, { cwd: REPO_T })), 'deny'));
+  test(`guard denies git with cwd in the temp dir: ${c}`, async () => assert.equal(verdict(await bash(c, FX, { cwd: REPO_T })), 'deny'));
 }
-test('guard denies git with cwd behind a symlink into the temp dir', () => assert.equal(verdict(bash('git log', FX, { cwd: join(T, 'lnk-self') })), 'deny'));
-test('guard denies git with cwd = the temp dir itself', () => assert.equal(verdict(bash('git log', FX, { cwd: T })), 'deny'));
+test('guard denies git with cwd behind a symlink into the temp dir', async () => assert.equal(verdict(await bash('git log', FX, { cwd: join(T, 'lnk-self') })), 'deny'));
+test('guard denies git with cwd = the temp dir itself', async () => assert.equal(verdict(await bash('git log', FX, { cwd: T })), 'deny'));
 
 const BYPASS_ALLOW = [
   `awk -F: '{print $1}' f`, `awk -F ':' '{print $1}' f`, `awk -v x=1 -v y=2 'BEGIN{print x+y}'`, `awk -vx=1 'BEGIN{print x}'`, `awk -F: -- '{print $1}' f`, `gawk -F, '{print $2}' f`,
@@ -434,7 +448,7 @@ const BYPASS_ALLOW = [
   `[ "$a" = b ]`, `[[ -n $x ]]`, `export FOO=1`, `declare -a arr`, `declare -p FOO`, `declare -x FOO=1`, `echo $((1 + 2 * 3 - 4 / 2 % 3))`, `echo $((0x1F + 010))`, `echo $(( 1 < 2 && 3 > 2 ? 1 : 0 ))`,
   `sort -u f`, `sort -k2,2 -t: -n f`, `sort -nr f`, `sort -rn -k3 f`, `sort --unique --reverse f`, `sort --key=2 --field-separator=: f`, `sort -c f`, `sort -V f`, `sort -h f`, `sort -f -d -b f`,
 ];
-for (const c of BYPASS_ALLOW) test(`guard allows after the allow-lists: ${show(c)}`, () => assert.equal(verdict(bash(c)), 'allow'));
+for (const c of BYPASS_ALLOW) test(`guard allows after the allow-lists: ${show(c)}`, async () => assert.equal(verdict(await bash(c)), 'allow'));
 
 // environment switches must not steer the sandbox runner, the run folder or the loaders: prefix, `env`, and `export` forms
 const STEERING = ['ZT_SANDBOX_MODE', 'ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RUN_DIR', 'ZT_MARKER_DIR', 'ZT_LEDGER', 'XDG_RUNTIME_DIR', 'HOME', 'TMPDIR',
@@ -452,17 +466,17 @@ const STEERING = ['ZT_SANDBOX_MODE', 'ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SA
   'HOSTALIASES', 'RES_OPTIONS', 'TZDIR', 'TERMINFO', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'];
 for (const v of STEERING) {
   for (const c of [`${v}=1 node ${SANDBOX} --cwd /r -- ls`, `env ${v}=1 git log`, `export ${v}=1 && ls`]) {
-    test(`guard denies env switch: ${c}`, () => {
-      const r = bash(c);
+    test(`guard denies env switch: ${c}`, async () => {
+      const r = await bash(c);
       assert.equal(verdict(r), 'deny');
       assert.match(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason, new RegExp(`setting ${v} is an environment switch`));
     });
   }
 }
 for (const c of [`HOME=/x`, `ls; TMPDIR=/x`, `sudo HOME=/x ls`, `X=1 NODE_OPTIONS=--require=./x git log`, `env -i LD_PRELOAD=/x git log`, `export A=1 BASH_ENV=/x`,
-  `time ZT_RUN_DIR=/x grep a b`, `NODE_OPTIONS+=x git log`]) test(`guard denies env switch: ${c}`, () => assert.equal(verdict(bash(c)), 'deny'));
+  `time ZT_RUN_DIR=/x grep a b`, `NODE_OPTIONS+=x git log`]) test(`guard denies env switch: ${c}`, async () => assert.equal(verdict(await bash(c)), 'deny'));
 for (const c of [`FOO=1 node ${SANDBOX} --cwd /r -- ls`, `env FOO=1 git log`, `export FOO=1 && ls`, `echo HOME=1 TMPDIR=2`, `echo $HOME $TMPDIR`, `ls ${'$'}HOME`,
-  `grep ZT_RUN_DIR=1 file`, `export -n FOO`]) test(`guard allows plain assignment: ${c}`, () => assert.equal(verdict(bash(c)), 'allow'));
+  `grep ZT_RUN_DIR=1 file`, `export -n FOO`]) test(`guard allows plain assignment: ${c}`, async () => assert.equal(verdict(await bash(c)), 'allow'));
 
 // ---------- guard: which `node <script>` may run (realpath must be the skill's own script: plugin dir, or the dir named by RUN/.skilldir) ----------
 const SCRIPT_FIX = /use the absolute path of the skill's sandbox-run\.mjs\/note\.mjs/;
@@ -477,8 +491,8 @@ const stage = fx => {
   return { own, evil };
 };
 const { own: OWN, evil: EVIL } = stage(FX);
-const nodeDenied = (cmd, fx = FX) => {
-  const r = bash(cmd, fx);
+const nodeDenied = async (cmd, fx = FX) => {
+  const r = await bash(cmd, fx);
   assert.equal(verdict(r), 'deny');
   return JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason;
 };
@@ -489,18 +503,18 @@ for (const cmd of [
   `node /nonexistent/sandbox-run.mjs`, `node ${SKILL_DIR}/missing/note.mjs`, // unresolvable
   `node $SK/sandbox-run.mjs --cwd /r -- ls`, `node "$SK"/note.mjs`, `node ~other/sandbox-run.mjs`,
   `node --require ${OWN}/sandbox-run.mjs ${SANDBOX}`, `node -- ${OWN}/note.mjs`,
-]) test(`guard denies node script: ${show(cmd)}`, () => assert.match(nodeDenied(cmd), cmd.startsWith('node --') ? /node/ : SCRIPT_FIX));
-test('guard allows node script: a symlink to the plugin script resolves to it', () => {
+]) test(`guard denies node script: ${show(cmd)}`, async () => assert.match(await nodeDenied(cmd), cmd.startsWith('node --') ? /node/ : SCRIPT_FIX));
+test('guard allows node script: a symlink to the plugin script resolves to it', async () => {
   symlinkSync(SANDBOX, join(FX.tmp, 'own', 'link-to-real'));
-  assert.equal(verdict(bash(`node ${OWN}/link-to-real --cwd /r -- ls`)), 'allow');
+  assert.equal(verdict(await bash(`node ${OWN}/link-to-real --cwd /r -- ls`)), 'allow');
 });
-test('guard allows node script: ~/ path to the plugin script', { skip: !ROOT.startsWith(homedir() + '/') }, () => {
-  assert.equal(verdict(bash(`node ~${SANDBOX.slice(homedir().length)} --cwd /r -- ls`)), 'allow');
+test('guard allows node script: ~/ path to the plugin script', { skip: !ROOT.startsWith(homedir() + '/') }, async () => {
+  assert.equal(verdict(await bash(`node ~${SANDBOX.slice(homedir().length)} --cwd /r -- ls`)), 'allow');
 });
-test('guard allows node script: the plugin note.mjs', { skip: !existsSync(NOTE) }, () => assert.equal(verdict(bash(`node ${NOTE} begin --unit u --ck p`)), 'allow'));
-test('guard allows node script: dir named by RUN/.skilldir (sandbox-run.mjs and note.mjs)', () => {
-  assert.equal(verdict(bash(`node ${SK}/sandbox-run.mjs --cwd /r -- ls`)), 'allow');
-  assert.equal(verdict(bash(`node ${SK}/note.mjs done --unit u`)), 'allow');
+test('guard allows node script: the plugin note.mjs', { skip: !existsSync(NOTE) }, async () => assert.equal(verdict(await bash(`node ${NOTE} begin --unit u --ck p`)), 'allow'));
+test('guard allows node script: dir named by RUN/.skilldir (sandbox-run.mjs and note.mjs)', async () => {
+  assert.equal(verdict(await bash(`node ${SK}/sandbox-run.mjs --cwd /r -- ls`)), 'allow');
+  assert.equal(verdict(await bash(`node ${SK}/note.mjs done --unit u`)), 'allow');
 });
 const FORGED_SKILLDIR = {
   'no .skilldir at all': () => fixture({ skilldir: false }),
@@ -522,9 +536,9 @@ const FORGED_SKILLDIR = {
   },
 };
 for (const [name, make] of Object.entries(FORGED_SKILLDIR)) {
-  test(`guard ignores a forged .skilldir: ${name}`, () => {
+  test(`guard ignores a forged .skilldir: ${name}`, async () => {
     const fx = make();
-    assert.match(nodeDenied(`node ${fx.sk}/sandbox-run.mjs --cwd /r -- ls`, fx), SCRIPT_FIX);
+    assert.match(await nodeDenied(`node ${fx.sk}/sandbox-run.mjs --cwd /r -- ls`, fx), SCRIPT_FIX);
   });
 }
 
@@ -534,23 +548,23 @@ for (const cmd of [
   `node ${SK}/note.mjs activate --name x`, `node ${NOTE} activate`, `node ${NOTE} deactivate`, `node ${NOTE} deactivate --run ${R}`, `node ${NOTE} --run ${R} activate`,
   `node ${NOTE} --run ${R} begin --unit u`, `node ${NOTE} --unit u begin`, `node ${NOTE}`, `node ${NOTE} frobnicate`, `node ${NOTE} -- begin`, `node ${NOTE} Begin --unit u`,
   `node ${NOTE} --run ${R} checkpoint x`, `node ${NOTE} '' begin`, `node ${NOTE} "activate"`, `node ${NOTE} --name x activate`, `node ${SK}/note.mjs --run ${R} activate`,
-]) test(`guard denies note.mjs lifecycle: ${show(cmd)}`, () => assert.match(nodeDenied(cmd), LIFECYCLE));
+]) test(`guard denies note.mjs lifecycle: ${show(cmd)}`, async () => assert.match(await nodeDenied(cmd), LIFECYCLE));
 for (const cmd of [
   `node ${SANDBOX} --help`, `node ${SANDBOX} --plan x -- ls`, `node ${SANDBOX} ls`, `node ${SANDBOX}`, `node ${SANDBOX} --cwd /r ls`, `node ${SANDBOX} --force -- ls`,
   `node ${SANDBOX} --cwd`, `node ${SANDBOX} --cwd -- ls`, `node ${SANDBOX} --check-all -- ls`, `node ${SANDBOX} --unknown=1 -- ls`, `node ${SK}/sandbox-run.mjs --help`,
-]) test(`guard denies sandbox-run.mjs odd form: ${show(cmd)}`, () => assert.match(nodeDenied(cmd), /sandbox-run\.mjs/));
+]) test(`guard denies sandbox-run.mjs odd form: ${show(cmd)}`, async () => assert.match(await nodeDenied(cmd), /sandbox-run\.mjs/));
 
 // the marker dir under $HOME (the default location): `~` must resolve
-test('guard resolves ~ for the marker dir under $HOME', () => {
+test('guard resolves ~ for the marker dir under $HOME', async () => {
   const fx = fixture({ home: true });
   for (const c of ['echo x > ~/.cache/zt-review/.active', 'tee ~/.cache/zt-review/.active', 'cp a ~/.cache/zt-review/x', 'echo x >> ~/.cache/zt-review/../zt-review/.active']) {
-    assert.equal(verdict(bash(c, fx)), 'deny', c);
+    assert.equal(verdict(await bash(c, fx)), 'deny', c);
   }
-  for (const c of ['cat ~/.cache/zt-review/.active', 'echo x > ~/other', 'ls ~/.cache/zt-review']) assert.equal(verdict(bash(c, fx)), 'allow', c);
+  for (const c of ['cat ~/.cache/zt-review/.active', 'echo x > ~/other', 'ls ~/.cache/zt-review']) assert.equal(verdict(await bash(c, fx)), 'allow', c);
 });
 
-test('guard deny output: JSON shape, reason names the program and the fix, exit 0', () => {
-  const r = bash(`ls && python3 -c 'import pytest'`);
+test('guard CLI deny output: JSON shape, reason names the program and the fix, exit 0', () => {
+  const r = spawnBash(`ls && python3 -c 'import pytest'`);
   assert.equal(r.status, 0);
   const o = JSON.parse(r.stdout).hookSpecificOutput;
   assert.equal(o.hookEventName, 'PreToolUse');
@@ -559,43 +573,60 @@ test('guard deny output: JSON shape, reason names the program and the fix, exit 
   for (const s of ['sandbox-run.mjs', '--cwd DIR --rw DIR', '--ro VENV', 'exit 86', 'UNVERIFIABLE', 'note.mjs']) assert.ok(o.permissionDecisionReason.includes(s), s);
 });
 
-test('guard hint for programs off the read-only allow-list: names the allowed tools, and says sort -u replaces uniq', () => {
-  const reason = JSON.parse(bash('sort a | uniq').stdout).hookSpecificOutput.permissionDecisionReason;
+test('guard hint for programs off the read-only allow-list: names the allowed tools, and says sort -u replaces uniq', async () => {
+  const reason = JSON.parse((await bash('sort a | uniq')).stdout).hookSpecificOutput.permissionDecisionReason;
   assert.match(reason, /^zero-trust-review: uniq is not on the review allow-list\. Use grep\/sort\/awk \(sort -u instead of uniq\) or the Read tool\./);
 });
 
-test('guard xargs denial says why: arguments supplied on stdin cannot be checked', () => {
-  const reason = JSON.parse(bash('echo a | xargs echo').stdout).hookSpecificOutput.permissionDecisionReason;
+test('guard xargs denial says why: arguments supplied on stdin cannot be checked', async () => {
+  const reason = JSON.parse((await bash('echo a | xargs echo')).stdout).hookSpecificOutput.permissionDecisionReason;
   assert.match(reason, /^zero-trust-review: xargs is not allowed\. Reason: arguments supplied on stdin cannot be checked: pass the files explicitly\./);
 });
 
-test('guard reports the first bad segment when the first is fine and the second is not', () => {
-  const o = JSON.parse(bash('git log && curl http://x').stdout).hookSpecificOutput;
+test('guard reports the first bad segment when the first is fine and the second is not', async () => {
+  const o = JSON.parse((await bash('git log && curl http://x')).stdout).hookSpecificOutput;
   assert.match(o.permissionDecisionReason, /curl/);
 });
 
 // ---------- guard: inactive and error paths (exit 0, no output) ----------
 const silent = r => { assert.equal(r.status, 0, r.stderr); assert.equal(r.stdout, ''); };
-test('guard inactive: no marker', () => silent(bash('python3 x', fixture({ marker: false }))));
-test('guard active: marker 11 h old still counts', () => assert.equal(verdict(bash('python3 x', fixture({ ageH: 11 }))), 'deny'));
-test('guard inactive: no agent_id (main thread)', () => silent(bash('python3 x', FX, { agent_id: undefined })));
-test('guard inactive: marker first line not absolute', () => silent(bash('python3 x', fixture({ markerText: 'relative/run\n' }))));
-test('guard inactive: empty marker', () => silent(bash('python3 x', fixture({ markerText: '' }))));
-test('guard error input: garbage JSON', () => silent(drive(GUARD, FX, null, '{not json')));
-test('guard error input: empty stdin', () => silent(drive(GUARD, FX, null, '')));
-test('guard error input: command is not a string', () => silent(bash(42)));
-test('guard error input: no tool_input', () => silent(drive(GUARD, FX, { agent_id: 'a' })));
-test('guard internal error: exit 0 silent, one line in RUN/hook-errors.log', () => {
+test('guard inactive: no marker', async () => silent(await bash('python3 x', fixture({ marker: false }))));
+test('guard active: marker 11 h old still counts', async () => assert.equal(verdict(await bash('python3 x', fixture({ ageH: 11 }))), 'deny'));
+test('guard inactive: no agent_id (main thread)', async () => silent(await bash('python3 x', FX, { agent_id: undefined })));
+test('guard inactive: marker first line not absolute', async () => silent(await bash('python3 x', fixture({ markerText: 'relative/run\n' }))));
+test('guard inactive: empty marker', async () => silent(await bash('python3 x', fixture({ markerText: '' }))));
+test('guard CLI error input: garbage JSON', () => silent(drive(GUARD, FX, null, '{not json')));
+test('guard CLI error input: empty stdin', () => silent(drive(GUARD, FX, null, '')));
+test('guard error input: command is not a string', async () => silent(await bash(42)));
+test('guard CLI error input: no tool_input', () => silent(drive(GUARD, FX, { agent_id: 'a' })));
+test('guard internal error: exit 0 silent, one line in RUN/hook-errors.log', async () => {
   const fx = fixture();
-  silent(bash('cd x', fx, { cwd: 123 })); // path.resolve(123, ...) throws inside the decision (the cd is followed)
+  silent(await bash('cd x', fx, { cwd: 123 })); // path.resolve(123, ...) throws inside the decision (the cd is followed)
   const log = readFileSync(join(fx.run, 'hook-errors.log'), 'utf8');
   assert.equal(log.trim().split('\n').length, 1);
   assert.match(log, /zt-guard/);
 });
-test('guard writes no error log on a normal run', () => {
+test('guard writes no error log on a normal run', async () => {
   const fx = fixture();
-  bash('python3 x', fx);
+  await bash('python3 x', fx);
   assert.equal(existsSync(join(fx.run, 'hook-errors.log')), false);
+});
+
+// the CLI and respond() must agree: a spread of cases from every list, spawned and in-process, give the same output (allow and deny alike)
+const PARITY = [ALLOW, DENY, BYPASS_DENY, BYPASS_ALLOW].flatMap(list => list.filter((_, i) => i % 40 === 0));
+test(`guard CLI and in-process agree on ${PARITY.length} sampled commands`, async () => {
+  for (const c of PARITY) assert.equal(spawnBash(c).stdout, (await bash(c)).stdout, c);
+});
+test('guard CLI inactive: no marker, exit 0 silent', () => silent(spawnBash('python3 x', fixture({ marker: false }))));
+test('guard CLI under its realpath: a symlinked script still runs as the hook', () => {
+  const link = join(T, 'zt-guard-link.mjs');
+  symlinkSync(GUARD, link);
+  assert.equal(verdict(drive(link, FX, guardIn('python3 x'))), 'deny');
+});
+test('importing the guard runs nothing: no stdin read, no output', () => {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(GUARD)}); process.stdout.write('ok')`], { input: '{"tool_input":{"command":"python3 x"},"agent_id":"a"}', encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'ok');
 });
 
 // ---------- capture ----------
@@ -636,7 +667,7 @@ const UNTRUSTED = {
   'stale marker (13 h)': () => fixture({ ageH: 13 }),
 };
 for (const [name, make] of Object.entries(UNTRUSTED)) {
-  test(`guard inactive: ${name}`, () => silent(bash('python3 x', make())));
+  test(`guard inactive: ${name}`, async () => silent(await bash('python3 x', make())));
   test(`capture inactive: ${name}`, () => {
     const fx = make();
     silent(post(fx));
