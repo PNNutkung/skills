@@ -19,7 +19,7 @@ const ISO = mkdtempSync(join(tmpdir(), 'zt-test-iso-'));
 process.env.ZT_MARKER_DIR = join(ISO, 'no-marker');
 // vars the tool refuses to start with (see checkToolEnv): stripped here so a host that sets one cannot fail the whole suite
 const POISON = ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH', 'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'BASH_ENV', 'ENV', 'PERL5OPT', 'RUBYOPT', 'PYTHONSTARTUP', 'PYTHONHOME'];
-const { ZT_SANDBOX_FORCE: _f, ZT_RUN_DIR: _r, ...CLEAN_ENV } = Object.fromEntries(Object.entries(process.env).filter(([k]) => !POISON.includes(k)));
+const { ZT_SANDBOX_FORCE: _f, ZT_SANDBOX_MODE: _m, ZT_RUN_DIR: _r, ...CLEAN_ENV } = Object.fromEntries(Object.entries(process.env).filter(([k]) => !POISON.includes(k)));
 const run = (args, env = {}) => new Promise(resolve => {
   const t0 = Date.now(), p = spawn(process.execPath, [RUN, ...args], { env: { ...CLEAN_ENV, ...env } });
   let stdout = '', stderr = '';
@@ -55,24 +55,27 @@ test('--check prints the backend and exits 0, or "none" to stderr and exits 86',
   assert.match(probe.stdout, /^(seatbelt|bwrap|docker)\n$/);
 });
 
-test('ZT_SANDBOX_FORCE=none: exit 86, UNVERIFIABLE on stderr, command never runs', async () => {
+test('ZT_SANDBOX_MODE=none: exit 86, UNVERIFIABLE on stderr, command never runs', async () => {
   const d = mk(), marker = join(d, 'ran');
-  const r = await run(['--cwd', d, '--rw', d, ...sh('echo x > "$0"', marker)], { ZT_SANDBOX_FORCE: 'none' });
+  const r = await run(['--cwd', d, '--rw', d, ...sh('echo x > "$0"', marker)], { ZT_SANDBOX_MODE: 'none' });
   assert.equal(r.code, 86);
   assert.match(r.stderr, /^UNVERIFIABLE: no sandbox backend/m);
   assert.equal(existsSync(marker), false);
-  const c = await run(['--check'], { ZT_SANDBOX_FORCE: 'none' });
+  const c = await run(['--check'], { ZT_SANDBOX_MODE: 'none' });
   assert.equal(c.code, 86);
   assert.match(c.stderr, /^none$/m);
 });
 
-test('no env var turns confinement off or changes what runs: unknown force values and the old test switches are ignored', async () => {
+test('no env var turns confinement off or changes what runs: unknown modes and the old names stop the tool, the old test switches are ignored', async () => {
   const d = mk(), marker = join(d, 'ran'), cmd = ['--cwd', d, ...sh('echo x > "$0"', marker)]; // --cwd is readable, NOT writable: only a real sandbox stops this write
-  for (const env of [{ ZT_SANDBOX_FORCE: 'passthrough', ZT_TESTS_ONLY: '1' }, { ZT_TESTS_ONLY: '1' }, { ZT_TESTS_ONLY: '1', ZT_SANDBOX_PLAN: 'seatbelt' }, { ZT_SANDBOX_FORCE: 'bogus' }]) {
+  for (const env of [{ ZT_SANDBOX_MODE: 'passthrough', ZT_TESTS_ONLY: '1' }, { ZT_TESTS_ONLY: '1' }, { ZT_TESTS_ONLY: '1', ZT_SANDBOX_PLAN: 'seatbelt' }, { ZT_SANDBOX_MODE: 'bogus' }, { ZT_SANDBOX_FORCE: 'docker' }]) {
     const r = await run(cmd, env);
     assert.equal(existsSync(marker), false, JSON.stringify(env));
     assert.doesNotMatch(r.stdout, /"argv"/, JSON.stringify(env));
-    if (env.ZT_SANDBOX_FORCE) assert.equal(r.code, 86, JSON.stringify(env));
+    if (env.ZT_SANDBOX_MODE || env.ZT_SANDBOX_FORCE) {
+      assert.equal(r.code, 64, JSON.stringify(env));
+      assert.match(r.stderr, env.ZT_SANDBOX_FORCE ? /ZT_SANDBOX_FORCE was renamed: use ZT_SANDBOX_MODE=auto\|none\|seatbelt\|bwrap\|docker/ : /ZT_SANDBOX_MODE=\w+ is not valid: use one of auto, none, seatbelt, bwrap, docker/);
+    }
     assert.notEqual((await run(['--check'], env)).stdout.trim(), 'passthrough', JSON.stringify(env));
   }
 });
@@ -219,7 +222,7 @@ test('venv python runs when its dir and the resolved interpreter prefix are pass
 });
 
 test('docker backend: no network, read-only root, exit code passes through', process.env.ZT_SANDBOX_IMAGE ? {} : { skip: 'ZT_SANDBOX_IMAGE not set' }, async () => {
-  const r = await run(['--cwd', mk(), ...sh('touch /zt-probe 2>/dev/null && echo rw || echo ro; exit 7')], { ZT_SANDBOX_FORCE: 'docker' });
+  const r = await run(['--cwd', mk(), ...sh('touch /zt-probe 2>/dev/null && echo rw || echo ro; exit 7')], { ZT_SANDBOX_MODE: 'docker' });
   assert.equal(r.code, 7, r.stderr);
   assert.equal(r.stdout.trim(), 'ro');
 });

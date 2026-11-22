@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // PreToolUse hook (Edit|Write|MultiEdit|Bash) for paired-agent-tdd's file fence. The rules live in skills/paired-agent-tdd/fence.mjs.
-// Off unless `tdd.mjs plan` ran with PTDD_GUARD=1 (it then writes the marker this hook reads); only subagents are fenced.
+// Off unless `tdd.mjs plan` ran with PTDD_GUARD_ENABLED=true (it then writes the marker this hook reads); only subagents are fenced.
 // Fail open: it always exits 0 and denies only through the JSON permissionDecision; any internal error allows the action.
 import { readFileSync } from 'node:fs';
 import { userInfo } from 'node:os';

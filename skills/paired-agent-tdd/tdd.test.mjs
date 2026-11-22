@@ -85,25 +85,70 @@ test('plan: validates, snapshots a clean tree as HEAD, writes the run folder, pr
   assert.ok(args.scratch.startsWith(realpathSync(tmpdir())) && args.skillDir === HERE);
 });
 
-test('plan: should write agentCap into the Workflow args when PTDD_AGENT_CAP is a positive integer, and leave it out otherwise', t => {
-  for (const [raw, want] of [['25', 25], ['', undefined], ['0', undefined], ['-5', undefined], ['abc', undefined], ['2.5', undefined]]) {
+test('plan: should write agentCap into the Workflow args when PTDD_AGENT_MAX is a positive integer, and leave it out when unset', t => {
+  for (const [raw, want] of [['25', 25], ['', undefined]]) {
     const fx = fixture(t);
-    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_AGENT_CAP: raw });
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_AGENT_MAX: raw });
     assert.equal(r.status, 0, r.err);
     assert.equal(JSON.parse(r.out.trim().split('\n').pop()).agentCap, want, JSON.stringify(raw));
   }
 });
 
-test('plan: should write the file fence and its marker when PTDD_GUARD=1, and nothing when it is unset', t => {
-  for (const [flag, want] of [['1', true], ['', false], ['0', false]]) {
+test('plan: should exit 2, naming the fix, when a flag is not valid or an old flag name is set', t => {
+  for (const [env, re] of [
+    [{ PTDD_AGENT_MAX: '0' }, /PTDD_AGENT_MAX=0 is not valid: use a whole number above 0/],
+    [{ PTDD_AGENT_MAX: 'abc' }, /PTDD_AGENT_MAX=abc is not valid/],
+    [{ PTDD_AGENT_CAP: '5' }, /PTDD_AGENT_CAP was renamed: use PTDD_AGENT_MAX=<number>/],
+    [{ PTDD_GUARD_ENABLED: '1' }, /PTDD_GUARD_ENABLED=1 is not valid: use true or false/],
+    [{ PTDD_GUARD: '1' }, /PTDD_GUARD was renamed: use PTDD_GUARD_ENABLED=true/],
+  ]) {
     const fx = fixture(t);
-    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_GUARD: flag });
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], env);
+    assert.equal(r.status, 2, JSON.stringify(env));
+    assert.match(r.err, re);
+  }
+});
+
+test('plan: should write the file fence and its marker when PTDD_GUARD_ENABLED=true, and nothing when it is unset or false', t => {
+  for (const [flag, want] of [['true', true], ['', false], ['false', false]]) {
+    const fx = fixture(t);
+    const r = fx.tdd('plan', ['--plan', join(fx.dir, 'plan.json')], { PTDD_GUARD_ENABLED: flag });
     assert.equal(r.status, 0, r.err);
     const run = JSON.parse(r.out.trim().split('\n').pop()).runDir;
     assert.equal(existsSync(join(fx.dir, 'marker', '.ptdd-active')), want, `marker for ${JSON.stringify(flag)}`);
     assert.equal(existsSync(join(run, 'fence.json')), want, `fence.json for ${JSON.stringify(flag)}`);
     if (want) assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(run, 'fence.json'), 'utf8')).groups).length > 0, true);
   }
+});
+
+test('plan: should read the DoD from plan.dodFile (an ADR) and record which file and blob it came from', async t => {
+  const { renderAdr } = await import('../definition-of-done/adr.mjs');
+  const q = 'Q1: Which?\n(A) a\n  + p\n  - c\n(B) b\n  + p\n  - c\n';
+  const src = { kind: 'user', ref: 'A1', quote: 'A', question: 'Q1' };
+  const adr = renderAdr({ dod: { slug: 'alpha', touches: ['src/**'], items: [{ id: 'AC1', text: 'alpha says new', kinds: ['happy'], source: src }, { id: 'AC2', text: 'beta says beta', kinds: ['happy'], source: src }], required: Object.fromEntries(['featureFlag', 'backwardCompat', 'nonGoals', 'verifyEnv', 'testTiers'].map(k => [k, { value: k, source: src }])) }, answers: 'A1: A\n', questions: q, ticket: '', number: 1, date: '2026-11-22' }).text;
+  const fx = fixture(t, { files: { 'docs/adr/0001-alpha.md': adr }, plan: repo => ({ ...PLAN(repo), dod: undefined, dodFile: 'docs/adr/0001-alpha.md' }) });
+  const r = fx.plan();
+  assert.equal(r.status, 0, r.err);
+  assert.match(r.err, /plan ok: 2 group\(s\), 2 DoD item\(s\) from docs\/adr\/0001-alpha\.md @ [0-9a-f]{8}, base/);
+  const args = JSON.parse(r.out.trim().split('\n').pop());
+  assert.deepEqual(args.dod.map(d => d.id), ['AC1', 'AC2']);
+  assert.equal(JSON.parse(readFileSync(join(fx.run, 'plan.json'), 'utf8')).dodFile, 'docs/adr/0001-alpha.md', 'resume reads the same DoD from the run folder');
+  const noAuto = fixture(t, { files: { 'docs/adr/0001-alpha.md': adr }, plan: repo => ({ ...PLAN(repo), dod: undefined }) });
+  assert.equal(noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { PTDD_ADR_AUTO_FIND_ENABLED: '' }).status, 0, 'found by touches');
+  const off = noAuto.tdd('plan', ['--plan', join(noAuto.dir, 'plan.json')], { PTDD_ADR_AUTO_FIND_ENABLED: 'false' });
+  assert.equal(off.status, 2);
+  assert.match(off.err, /at least one DoD item is required/);
+});
+
+test('plan: should exit 2 when dodFile and dod[] are both set, or dodFile is not an ADR', t => {
+  const both = fixture(t, { plan: { dodFile: 'docs/adr/0001-x.md' } });
+  const r = both.plan();
+  assert.equal(r.status, 2);
+  assert.match(r.err, /use dodFile or dod\[\], not both/);
+  const notAdr = fixture(t, { files: { 'docs/dod/x.json': '{}' }, plan: repo => ({ ...PLAN(repo), dod: undefined, dodFile: 'docs/dod/x.json' }) });
+  const r2 = notAdr.plan();
+  assert.equal(r2.status, 2);
+  assert.match(r2.err, /not an ADR with a "## Definition of done" section/);
 });
 
 test('plan: a dirty working tree becomes the base (a snapshot), and the user\'s repo is untouched', t => {

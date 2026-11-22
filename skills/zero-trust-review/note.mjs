@@ -8,7 +8,7 @@
 //   node note.mjs activate --name NAME                                 creates the run dir, RUN/.skilldir and the active marker, prints the run dir
 //   node note.mjs deactivate [--run DIR]                               removes the marker if it still points at that run
 //   node note.mjs allow-post [--run DIR]                               the USER approves posting to the review host for this run (RUN/.post-ok);
-//                                                                      with ZT_POST_GUARD=1 the plugin guard denies the agent running it
+//                                                                      with ZT_POST_GUARD_ENABLED=true the plugin guard denies the agent running it
 // Run dir and marker rules live in runctx.mjs (--run, else $ZT_RUN_DIR, else the per-user marker; an untrusted or unapproved candidate is
 // skipped, never used). Every path touched must resolve (realpath of its nearest existing parent) inside the run dir and every write refuses
 // symlinks at the leaf; input is data, never executed or interpolated.

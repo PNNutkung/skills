@@ -155,5 +155,16 @@
       "Says a group with after edges, a continue-file restart and every repair run the default pipeline in fast mode, and no RED navigator is ever skipped",
       "Says the one navigator also judges RED, that a test it calls outright wrong comes back as a WRONG TEST defect corrected in place, and that its notes are kept in green.redNotes and shown by verify"
     ]
+  },
+  {
+    "skills": ["paired-agent-tdd"],
+    "query": "Implement report export. The definition of done is the committed ADR docs/adr/0003-report-export.md.",
+    "files": [],
+    "expected_behavior": [
+      "Sets \"dodFile\": \"docs/adr/0003-report-export.md\" in plan.json and writes no dod[] list",
+      "Does not set plan.json ticket for the ADR's quotes",
+      "When tdd.mjs plan exits 2 because the ADR differs from HEAD, asks the user to commit it instead of editing the DoD section",
+      "Reports the DoD items by the ids the ADR gives (AC1, AC2...) in the DoD matrix"
+    ]
   }
 ]

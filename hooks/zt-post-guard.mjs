@@ -1,4 +1,4 @@
-// Post guard for zero-trust-review, called from zt-guard.mjs for the LEAD session (no agent_id) when ZT_POST_GUARD=1 and a review run is active.
+// Post guard for zero-trust-review, called from zt-guard.mjs for the LEAD session (no agent_id) when ZT_POST_GUARD_ENABLED=true and a review run is active.
 // zero-trust-review says "do not post until the user asks". Subagents cannot reach gh/glab at all (zt-guard's allow-list); this file covers the lead.
 // While the run has no approval, it denies commands that post to the review host: gh pr comment|review, gh issue comment, glab mr note|comment|approve,
 // and gh/glab api writes to comments, reviews, discussions or notes (or a GraphQL mutation). Reads stay allowed.
@@ -8,7 +8,8 @@
 import { lstatSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
-export const POST_GUARD_ENV = 'ZT_POST_GUARD';
+export const POST_GUARD_ENV = 'ZT_POST_GUARD_ENABLED';
+export const OLD_POST_GUARD_ENV = 'ZT_POST_GUARD';
 export const APPROVAL_FILE = '.post-ok';
 
 const SEGMENT_SPLIT_RE = /&&|\|\||[;|&\n()`]|\$\(/;

@@ -8,8 +8,8 @@
 // can defeat the guard with obfuscation: variable indirection, base64 into a file, eval-by-config, a script written then run via an allowed tool,
 // `git` aliases or hooks already present in the repo's .git/config, `rm` of a whole parent folder, subshell `cd` leaking into later segments, etc.
 //
-// Opt-in for everyone (ZT_SELF_REVIEW_GUARD=1, zt-self-review.mjs): the author of a change never posts its review verdict.
-// The lead session (no agent_id) is checked only by the opt-in post guard (ZT_POST_GUARD=1, zt-post-guard.mjs): no posting to the review host until the user approves.
+// Opt-in for everyone (ZT_SELF_REVIEW_GUARD_ENABLED=true, zt-self-review.mjs): the author of a change never posts its review verdict.
+// The lead session (no agent_id) is checked only by the opt-in post guard (ZT_POST_GUARD_ENABLED=true, zt-post-guard.mjs): no posting to the review host until the user approves.
 //
 // Active = hook input has agent_id AND runctx.readMarker() names a trusted run dir (marker owned by us, not a symlink, not group/world-writable,
 // < 12 h old). Otherwise (main thread, no run, untrusted marker) it exits 0 with no output. Fail-open: any internal error exits 0 silently, logged
@@ -295,7 +295,7 @@ const NOOP = new Set(['for', 'select', 'case', 'function', 'fi', 'done', 'esac',
 
 const ASSIGNMENT = /^([A-Za-z_]\w*)\+?=/;
 // environment switches that steer the sandbox runner, the run folder, the ledgers or the loaders: never settable from a review agent's command
-const STEERING_VARS = new Set(['ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RUN_DIR', 'ZT_MARKER_DIR', 'ZT_LEDGER', 'XDG_RUNTIME_DIR', 'HOME', 'TMPDIR',
+const STEERING_VARS = new Set(['ZT_SANDBOX_MODE', 'ZT_SANDBOX_FORCE', 'ZT_TESTS_ONLY', 'ZT_SANDBOX_PLAN', 'ZT_RUN_DIR', 'ZT_MARKER_DIR', 'ZT_LEDGER', 'XDG_RUNTIME_DIR', 'HOME', 'TMPDIR',
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'NODE_OPTIONS', 'PYTHONSTARTUP', 'BASH_ENV',
   'PATH', 'ZT_SANDBOX_IMAGE', 'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
   // config-driven code execution through git and pagers/editors
@@ -1138,13 +1138,24 @@ try {
   const input = JSON.parse(readFileSync(0, 'utf8'));
   run = input?.agent_id ? runctx.readMarker() : '';
   const command = input?.tool_input?.command;
-  if (process.env.ZT_SELF_REVIEW_GUARD === '1' && typeof command === 'string') {
+  // flags first: a value that is not true or false, or an old name, denies every Bash command with the fix (a guard is on by intent only)
+  const { FlagError, enabled } = await import('../skills/zero-trust-review/flags.mjs');
+  let selfReview, postGuard;
+  try {
+    selfReview = enabled(process.env, 'ZT_SELF_REVIEW_GUARD_ENABLED', false, { renamedFrom: 'ZT_SELF_REVIEW_GUARD' });
+    postGuard = enabled(process.env, 'ZT_POST_GUARD_ENABLED', false, { renamedFrom: 'ZT_POST_GUARD' });
+  } catch (e) {
+    if (!(e instanceof FlagError)) throw e;
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `zero-trust-review guard: ${e.message}. Fix the flag where it is set (shell or settings.json env) and start again` } }));
+    process.exit(0);
+  }
+  if (selfReview && typeof command === 'string') {
     // any session or agent, run or no run: the author of a change never posts its review verdict (zt-self-review.mjs)
     const { selfReviewVerdict } = await import('./zt-self-review.mjs');
     const reason = selfReviewVerdict(command, { session: input.session_id, agent: input.agent_id, cwd: input.cwd, markerDir: runctx.markerDir() });
     if (reason) { process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } })); process.exit(0); }
   }
-  if (!input?.agent_id && process.env.ZT_POST_GUARD === '1' && typeof command === 'string') {
+  if (!input?.agent_id && postGuard && typeof command === 'string') {
     // the lead session: only the opt-in post guard applies (zt-post-guard.mjs); every other check below is for review subagents
     const leadRun = runctx.readMarker();
     if (leadRun) {

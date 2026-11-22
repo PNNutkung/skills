@@ -1,18 +1,20 @@
 #!/usr/bin/env node
-// PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*) for the definition-of-done skill. Opt-in: does nothing unless DOD_GUARD=1.
+// PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*) for the definition-of-done skill. Opt-in: does nothing unless DOD_GUARD_ENABLED=true.
+// A value of DOD_GUARD_ENABLED that is not true or false, or the old DOD_GUARD still set, denies every tool with the fix: a guard is on by intent only.
 // While a DoD session is open for this session (skills/definition-of-done/session.mjs marker), it:
-//   - denies file changes outside <repo>/docs/dod/ and the run folder (no product code before the DoD is done),
+//   - denies file changes outside <repo>/docs/dod/, the run folder and the ADR and index `dod.mjs adr` wrote (no product code before the DoD is done),
 //   - denies writing to a ticket (CLI or MCP) until the user approved the exact rendered text (dod.mjs approve, bound by sha256),
 //   - denies creating a ticket at all (the skill only updates the ticket the work is linked to),
 //   - denies a third-party ticket CLI the user has not trusted on this machine (dod.mjs trust),
 //   - denies the agent running `dod.mjs approve` or `dod.mjs trust`: only the user runs them (own terminal or the ! prefix).
 // The close command is always allowed and named in every deny. Like qa-guard it catches agent mistakes, not a determined attacker:
-// pattern matching on the command text, no shell evaluation. Fail open: it always exits 0 and denies only through the JSON decision.
+// pattern matching on the command text, no shell evaluation. Otherwise fail open: it always exits 0 and denies only through the JSON decision.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const GUARD_ENV = 'DOD_GUARD';
+export const GUARD_ENV = 'DOD_GUARD_ENABLED';
+export const OLD_GUARD_ENV = 'DOD_GUARD';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = join(HERE, '..', 'skills', 'definition-of-done');
 const DOD_MJS = join(SKILL, 'dod.mjs');
@@ -143,7 +145,13 @@ export function mcpVerdict(name, input, ctx) {
 }
 
 async function decide(input) {
-  if (process.env[GUARD_ENV] !== '1') return null;
+  const { FlagError, enabled } = await import(join(SKILL, 'flags.mjs'));
+  try {
+    if (!enabled(process.env, GUARD_ENV, false, { renamedFrom: OLD_GUARD_ENV })) return null;
+  } catch (e) {
+    if (e instanceof FlagError) return `definition-of-done guard: ${e.message}. Fix the flag where it is set (shell or settings.json env) and start again`;
+    throw e;
+  }
   const { session_id: session, tool_name: tool, tool_input: ti, cwd } = input ?? {};
   if (!session || !tool) return null;
   const isFile = FILE_TOOLS.has(tool), isMcp = String(tool).startsWith('mcp__');
@@ -152,7 +160,8 @@ async function decide(input) {
   const active = s.readActive({ session, env: process.env });
   if (!active) return null;
   const run = realpathSync(active.run), dodDir = join(realpathSync(active.repo), 'docs', 'dod');
-  const allowedPath = abs => isInside(abs, run) || isInside(abs, dodDir);
+  const adrFiles = new Set(active.adrFiles ?? []); // the ADR and index that dod.mjs adr wrote (AD8): no other ADR
+  const allowedPath = abs => isInside(abs, run) || isInside(abs, dodDir) || adrFiles.has(abs);
   const approved = s.ticketApproved(run);
   let why = null;
   if (isFile) {
@@ -160,7 +169,7 @@ async function decide(input) {
     if (typeof p === 'string' && !allowedPath(realPathLoose(isAbsolute(p) ? p : join(cwd ?? process.cwd(), p)))) why = `${p} is outside docs/dod and the run folder`;
   } else if (isMcp) why = mcpVerdict(tool, ti, { approved });
   else why = bashVerdict(String(ti?.command ?? ''), { approved, trusted: cli => s.isTrusted(cli, process.env), allowedPath, cwd: cwd ?? active.repo });
-  return why ? `definition-of-done session ${active.run} is open (DOD_GUARD=1): ${why}. To close the session: node "${DOD_MJS}" close --session ${session}` : null;
+  return why ? `definition-of-done session ${active.run} is open (DOD_GUARD_ENABLED=true): ${why}. To close the session: node "${DOD_MJS}" close --session ${session}` : null;
 }
 
 async function main() {

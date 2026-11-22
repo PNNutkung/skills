@@ -4,12 +4,14 @@
 // Ground truth: the repo at HEAD (git show, never the working tree), and in the run dir exec.jsonl (runner ledger), answers.md, ticket.md.
 // --tiers-py: pr-test-tiers.py, which it runs itself (`--inventory`, in --repo) for the report's inventory and the missing-tier check.
 // A finding whose proof fails is listed under Unverified with its reasons, never dropped.
+// findings.json "dodFile" (an ADR of the definition-of-done skill) gives the requirements, and without requirements[] the ADR is found by touches: dodfile.mjs.
 // Prints {report, verified, unverified, unconfirmed} (counts). Exit: 0 ok; 2 usage error; 1 other error.
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { requirementsFromDod } from './dodfile.mjs';
 import { touch } from './run.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -221,7 +223,7 @@ export function renderReport(data, verdicts, inventory) {
   const put = (name, line) => sections.get(name).push(line);
   const route = (v, name) => (v.ok ? name : 'Unverified');
   if (inventory) put('Inventory', inventoryTable(inventory));
-  (data.requirements ?? []).forEach((r, i) => { const v = verdicts.requirements[i]; put(route(v, 'Requirements'), item(r.id, `${r.text ?? ''} (${r.source?.kind}: ${r.source?.ref})`, [sourceLine(r.source)], v.reasons)); });
+  (data.requirements ?? []).forEach((r, i) => { const v = verdicts.requirements[i]; put(route(v, 'Requirements'), item(r.id, `${r.text ?? ''} (${r.dod ? `dod:${r.dod} · ` : `${r.source?.kind}: `}${r.source?.ref})`, [sourceLine(r.source)], v.reasons)); });
   const findings = (data.findings ?? []).map((f, i) => [f, verdicts.findings[i]]);
   const missingFirst = [...findings.filter(([f]) => f?.kind === 'missing-tier'), ...findings.filter(([f]) => f?.kind !== 'missing-tier')]; // the top test gap
   for (const [f, v] of missingFirst) {
@@ -233,13 +235,17 @@ export function renderReport(data, verdicts, inventory) {
   return '# QA sweep report\n\n' + [...sections].filter(([, l]) => l.length).map(([n, l]) => `## ${n}\n\n${l.join('\n')}\n`).join('\n');
 }
 
-function main(argv) {
+async function main(argv) {
   const fail = (code, msg) => { process.stderr.write(`qa-findings: ${msg}\n`); process.exit(code); };
   let v;
   try { v = parseArgs({ args: argv, options: { run: { type: 'string' }, repo: { type: 'string' }, head: { type: 'string' }, findings: { type: 'string' }, 'tiers-py': { type: 'string' }, out: { type: 'string' } } }).values; } catch (e) { fail(2, e.message); }
   if (!v.run || !v.repo || !v.head || !v.findings) fail(2, 'usage: findings.mjs --run DIR --repo DIR --head REV --findings FILE [--tiers-py PATH] [--out FILE]');
   let data;
   try { data = JSON.parse(readFileSync(v.findings, 'utf8')); if (!data || typeof data !== 'object') throw new Error('not an object'); } catch (e) { fail(2, `cannot read findings: ${e.message}`); }
+  const fromDod = await requirementsFromDod(data, { repo: v.repo, head: v.head, env: process.env, here: HERE }); // findings with requirements[] come back untouched
+  if (fromDod.error) fail(2, fromDod.error);
+  if (fromDod.warning) process.stderr.write(`qa-findings: ${fromDod.warning}\n`);
+  data = fromDod.data;
   try {
     const ctx = loadContext({ run: v.run, repo: v.repo, head: v.head, requirements: data.requirements, tiersPy: v['tiers-py'] });
     if (v['tiers-py'] && ctx.inventoryError) process.stderr.write(`qa-findings: ${ctx.inventoryError}\n`);
@@ -254,4 +260,4 @@ function main(argv) {
 }
 
 const direct = (() => { try { return process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })();
-if (direct) main(process.argv.slice(2));
+if (direct) await main(process.argv.slice(2));

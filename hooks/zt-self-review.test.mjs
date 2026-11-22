@@ -1,4 +1,4 @@
-// Tests for the self-review guard (opt-in with ZT_SELF_REVIEW_GUARD=1): zt-authors.mjs records who edited which file, and zt-guard.mjs
+// Tests for the self-review guard (opt-in with ZT_SELF_REVIEW_GUARD_ENABLED=true): zt-authors.mjs records who edited which file, and zt-guard.mjs
 // denies a review verdict (gh pr review, glab mr approve) from the session or agent that wrote any file the branch changes.
 // Run: node --test hooks/zt-self-review.test.mjs. Each test uses a throwaway git repo and a private ZT_MARKER_DIR.
 import { after, test } from 'node:test';
@@ -32,7 +32,7 @@ function fixture() {
   git(repo, 'commit', '-qam', 'change');
   return { tmp, repo, md };
 }
-const env = (fx, flag = '1') => ({ ...process.env, ...GIT_ENV, ZT_MARKER_DIR: fx.md, TMPDIR: fx.tmp, ZT_POST_GUARD: '', [SELF_REVIEW_ENV]: flag });
+const env = (fx, flag = 'true', extra = {}) => ({ ...process.env, ...GIT_ENV, ZT_MARKER_DIR: fx.md, TMPDIR: fx.tmp, ZT_POST_GUARD: '', ZT_POST_GUARD_ENABLED: '', ZT_SELF_REVIEW_GUARD: '', [SELF_REVIEW_ENV]: flag, ...extra });
 const record = (fx, file, { session = 's1', agent, tool = 'Edit', flag } = {}) => {
   const input = { hook_event_name: 'PostToolUse', tool_name: tool, session_id: session, ...(agent && { agent_id: agent }), cwd: fx.repo, tool_input: { file_path: join(fx.repo, file) } };
   const r = spawnSync(process.execPath, [AUTHORS], { input: JSON.stringify(input), encoding: 'utf8', env: env(fx, flag) });
@@ -89,12 +89,27 @@ test('should count uncommitted edits of the working tree as part of the change',
   assert.equal(review(fx, 'gh pr review 3 --approve')?.permissionDecision, 'deny');
 });
 
-test('should record nothing and deny nothing when ZT_SELF_REVIEW_GUARD is not 1', () => {
+test('should record nothing and deny nothing when ZT_SELF_REVIEW_GUARD_ENABLED is unset or false', () => {
   const fx = fixture();
   record(fx, 'src/a.py', { flag: '' });
   assert.equal(existsSync(join(fx.md, 'authors.jsonl')), false);
   record(fx, 'src/a.py');
-  assert.equal(review(fx, 'gh pr review 3 --approve', { flag: '0' }), null);
+  assert.equal(review(fx, 'gh pr review 3 --approve', { flag: 'false' }), null);
+});
+
+test('should stop, naming the fix, when ZT_SELF_REVIEW_GUARD_ENABLED is not true or false or the old ZT_SELF_REVIEW_GUARD is set', () => {
+  const fx = fixture();
+  for (const [flag, extra, re] of [['1', {}, /ZT_SELF_REVIEW_GUARD_ENABLED=1 is not valid: use true or false/], ['', { ZT_SELF_REVIEW_GUARD: '1' }, /ZT_SELF_REVIEW_GUARD was renamed: use ZT_SELF_REVIEW_GUARD_ENABLED=true/]]) {
+    const g = spawnSync(process.execPath, [GUARD], { input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: 's1', cwd: fx.repo, tool_input: { command: 'ls' } }), encoding: 'utf8', env: env(fx, flag, extra) });
+    assert.equal(g.status, 0, g.stderr);
+    const h = JSON.parse(g.stdout).hookSpecificOutput;
+    assert.equal(h.permissionDecision, 'deny');
+    assert.match(h.permissionDecisionReason, re);
+    const a = spawnSync(process.execPath, [AUTHORS], { input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Edit', session_id: 's1', cwd: fx.repo, tool_input: { file_path: join(fx.repo, 'src/a.py') } }), encoding: 'utf8', env: env(fx, flag, extra) });
+    assert.equal(a.status, 0, a.stderr);
+    assert.equal(JSON.parse(a.stdout).decision, 'block');
+    assert.match(JSON.parse(a.stdout).reason, re);
+  }
 });
 
 test('should keep the authors ledger private: 0600 in a 0700 dir', () => {

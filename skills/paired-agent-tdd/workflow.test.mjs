@@ -797,7 +797,7 @@ const fastPrompts = async () => Object.fromEntries((await play(FASTA, {}, 0)).ca
 assert.deepEqual(await fastPrompts(), await fastPrompts());
 }
 
-// agentCap (tdd.mjs plan writes it from PTDD_AGENT_CAP) is a hard ceiling: no agent past it, and the groups it stops are not done
+// agentCap (tdd.mjs plan writes it from PTDD_AGENT_MAX) is a hard ceiling: no agent past it, and the groups it stops are not done
 r = await play({ agentCap: 3 });
 assert.equal(r.calls.length, 3, 'spawned past the cap');
 assert.ok(r.out.stats.capped > 0 && r.out.notDone.length > 0, 'capped work must show as not done');

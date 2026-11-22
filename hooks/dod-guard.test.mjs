@@ -11,7 +11,7 @@ import { bashVerdict, mcpVerdict } from './dod-guard.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, 'dod-guard.mjs');
-const { approve, open, trust } = await import(join(HERE, '..', 'skills', 'definition-of-done', 'session.mjs'));
+const { approve, open, recordAdr, trust } = await import(join(HERE, '..', 'skills', 'definition-of-done', 'session.mjs'));
 
 const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'dod-guard-')));
 let n = 0;
@@ -27,10 +27,10 @@ function fixture() {
   return { repo, env, session, run };
 }
 
-function hook(fx, tool, input, extraEnv = { DOD_GUARD: '1' }) {
+function hook(fx, tool, input, extraEnv = { DOD_GUARD_ENABLED: 'true' }) {
   const r = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ hook_event_name: 'PreToolUse', session_id: fx.session, cwd: fx.repo, tool_name: tool, tool_input: input }),
-    env: { ...process.env, DOD_GUARD: '', ...fx.env, ...extraEnv }, encoding: 'utf8',
+    env: { ...process.env, DOD_GUARD: '', DOD_GUARD_ENABLED: '', ...fx.env, ...extraEnv }, encoding: 'utf8',
   });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput : { permissionDecision: 'allow' };
@@ -38,9 +38,20 @@ function hook(fx, tool, input, extraEnv = { DOD_GUARD: '1' }) {
 const decision = (...a) => hook(...a).permissionDecision;
 
 // ---------- the flag ----------
-test('should allow everything when DOD_GUARD is not 1, so current installs keep their behavior', () => {
+test('should allow everything when DOD_GUARD_ENABLED is unset or false', () => {
   const fx = fixture();
-  for (const v of [{}, { DOD_GUARD: '0' }, { DOD_GUARD: 'true' }]) assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'src', 'app.js') }, v), 'allow');
+  for (const v of [{}, { DOD_GUARD_ENABLED: 'false' }, { DOD_GUARD_ENABLED: 'FALSE' }]) assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'src', 'app.js') }, v), 'allow');
+});
+
+test('should deny every tool, naming the fix, when DOD_GUARD_ENABLED is not true or false or the old DOD_GUARD is set', () => {
+  const fx = fixture();
+  for (const [v, re] of [[{ DOD_GUARD_ENABLED: '1' }, /DOD_GUARD_ENABLED=1 is not valid: use true or false/], [{ DOD_GUARD: '1' }, /DOD_GUARD was renamed: use DOD_GUARD_ENABLED=true/]]) {
+    for (const [tool, input] of [['Edit', { file_path: join(fx.repo, 'docs', 'dod', 'x.json') }], ['Bash', { command: 'ls' }], ['mcp__x__read', {}]]) {
+      const h = hook({ ...fx, session: 'no-session-needed' }, tool, input, v);
+      assert.equal(h.permissionDecision, 'deny', `${tool} ${JSON.stringify(v)}`);
+      assert.match(h.permissionDecisionReason, re);
+    }
+  }
 });
 
 test('should allow everything when no DoD session is active', () => {
@@ -60,6 +71,19 @@ test('should allow writing under docs/dod and the run folder when a DoD session 
   const fx = fixture();
   assert.equal(decision(fx, 'Write', { file_path: join(fx.repo, 'docs', 'dod', 'csv.json'), content: '{}' }), 'allow');
   assert.equal(decision(fx, 'Write', { file_path: join(fx.run, 'answers.md'), content: 'A1: x' }), 'allow');
+});
+
+test('should allow editing the ADR and index that dod.mjs adr wrote, and no other ADR or product file', () => {
+  const fx = fixture();
+  const adr = join(fx.repo, 'docs', 'adr', '0002-csv.md'), index = join(fx.repo, 'docs', 'adr', 'README.md');
+  mkdirSync(dirname(adr), { recursive: true });
+  assert.equal(decision(fx, 'Edit', { file_path: adr }), 'deny', 'not recorded yet');
+  recordAdr({ session: fx.session, env: fx.env, files: [adr, index] });
+  assert.equal(decision(fx, 'Edit', { file_path: adr }), 'allow');
+  assert.equal(decision(fx, 'Write', { file_path: index, content: '' }), 'allow');
+  assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'docs', 'adr', '0001-other.md') }), 'deny');
+  assert.equal(decision(fx, 'Edit', { file_path: join(fx.repo, 'src', 'app.js') }), 'deny');
+  assert.equal(decision(fx, 'Bash', { command: `echo x >> ${adr}` }), 'allow');
 });
 
 test('should deny a path that only looks like docs/dod when it escapes with ..', () => {
@@ -155,7 +179,7 @@ test('should allow an MCP ticket update when approved but never an MCP create', 
 
 // ---------- fail open ----------
 test('should allow and exit 0 when the input is not JSON', () => {
-  const r = spawnSync(process.execPath, [HOOK], { input: 'not json', env: { ...process.env, DOD_GUARD: '1' }, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [HOOK], { input: 'not json', env: { ...process.env, DOD_GUARD: '', DOD_GUARD_ENABLED: 'true' }, encoding: 'utf8' });
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '');
 });

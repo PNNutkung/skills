@@ -35,5 +35,18 @@
       "Updates ABC-12 only and never creates a ticket or a subtask",
       "Reads the ticket back after posting and runs ticket-check --posted, reporting any difference without pulling it back into the repo"
     ]
+  },
+  {
+    "skills": ["definition-of-done"],
+    "query": "The DoD for report-export is confirmed and the ticket is posted. Record it so paired-agent-tdd and qa-sweep can read it, and so we can see later why we chose what we chose.",
+    "files": [],
+    "expected_behavior": [
+      "Has kept every grill question in <run>/questions.md when it was asked, each option with at least one pro and one con and a recommendation",
+      "Keeps the DoD JSON in <run>/dod.json, not in docs/dod, and runs dod.mjs adr --dod with that path",
+      "Reorganizes only the Context, Decision and Consequences prose and does not edit the Definition of done section",
+      "Runs dod.mjs adr-check until it passes, shows the ADR to the user, and commits only the ADR and the index README",
+      "Tells the user to set dodFile to the ADR path in plan.json or findings.json, or that the ADR is found by its touches",
+      "Reports whether the pre-commit hook was installed, or the line to add when a hook manager owns the hooks"
+    ]
   }
 ]
