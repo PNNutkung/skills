@@ -115,6 +115,7 @@ export function restore(repo, copy, srcChanges) {
 // Runs `command` (a shell line) in `dir` through the sandbox runner. -> { exit, sec, tail, run } where run = the id of the runner's ledger entry (ZT-RUN <id>)
 // o.slots (a limiter) caps how many commands run at once. o.signal (an AbortSignal) stops the command: SIGTERM makes the runner kill the command's process group;
 // a stopped or never-started command comes back with aborted: true and decides nothing.
+// o.procEnv / o.procCwd: the runner process's own environment and cwd (an in-process caller's injected ones; unset: this process's).
 export function runIn(o, dir, command) {
   return o.slots ? o.slots(() => spawnRun(o, dir, command)) : spawnRun(o, dir, command);
 }
@@ -127,7 +128,7 @@ function spawnRun(o, dir, command) {
     '--', 'sh', '-c', command];
   return new Promise(done => {
     // the runner enforces --timeout itself (124); this is only a backstop against a hung runner
-    const p = spawn(...runnerCommand(argv), { stdio: ['ignore', 'pipe', 'pipe'], timeout: (o.timeout + KILL_GRACE_SEC) * 1000, killSignal: 'SIGKILL' });
+    const p = spawn(...runnerCommand(argv), { ...(o.procEnv ? { env: o.procEnv } : {}), ...(o.procCwd ? { cwd: o.procCwd } : {}), stdio: ['ignore', 'pipe', 'pipe'], timeout: (o.timeout + KILL_GRACE_SEC) * 1000, killSignal: 'SIGKILL' });
     let tail = '', aborted = false, backstop;
     const stop = () => {
       aborted = true;
@@ -217,7 +218,7 @@ export async function pool(items, n, fn) {
 const NODE_FILE = /\.(mjs|js|cjs)$/i;
 const runnerCommand = argv => (NODE_FILE.test(argv[0]) ? [process.execPath, argv] : [argv[0], argv.slice(1)]);
 
-export function backendOf(runner) {
-  const r = spawnSync(...runnerCommand([runner, '--check']), { encoding: 'utf8', timeout: 15000 });
+export function backendOf(runner, env) { // env: the runner's own environment (undefined: this process's)
+  const r = spawnSync(...runnerCommand([runner, '--check']), { ...(env ? { env } : {}), encoding: 'utf8', timeout: 15000 });
   return r.status === 0 ? r.stdout.trim().split('\n')[0].slice(0, 40) || 'sandbox' : 'none';
 }
