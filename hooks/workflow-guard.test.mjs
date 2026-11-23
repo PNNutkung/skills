@@ -43,7 +43,7 @@ test('should allow product-code edits when the run is at tdd or later (GuardEdit
   }
 });
 
-test('should deny a Bash write into product code before the lock and allow it after (GuardEdit)', () => {
+test('should deny a Bash write into product code when the design is not locked and allow it after (GuardEdit)', () => {
   const fx = fixture('board');
   try {
     assert.match(bash(fx, 'echo x > src/app.js'), /design is not locked/);
@@ -54,7 +54,7 @@ test('should deny a Bash write into product code before the lock and allow it af
   } finally { fx.done(); }
 });
 
-test('should deny gh pr merge and glab mr merge while verify or retro is not done (GuardMerge)', () => {
+test('should deny gh pr merge and glab mr merge when verify or retro is not done (GuardMerge)', () => {
   for (const step of ['tdd', 'verify', 'retro']) {
     const fx = fixture(step);
     try {
@@ -88,6 +88,22 @@ test('should find merges and write targets only in real commands when parsing Ba
   assert.equal(mergeCommand('gh pr list'), null);
   assert.equal(mergeCommand("git commit -m 'gh pr merge'"), null);
   assert.deepEqual(writeTargets('a > b; c >> "d e" | tee f g; sed -i s/x/y/ h; echo 2>&1'), ['b', 'd e', 'f', 'g', 'h']);
+});
+
+test('should catch merges behind -R, --repo and sh -c when the command hides them (GuardMerge)', () => {
+  assert.equal(mergeCommand('gh -R o/r pr merge 1'), 'gh pr merge');
+  assert.equal(mergeCommand('gh --repo o/r pr merge 1'), 'gh pr merge');
+  assert.equal(mergeCommand("bash -c 'gh pr merge 1'"), 'gh pr merge');
+  assert.equal(mergeCommand('glab -R g/p mr merge 2'), 'glab mr merge');
+});
+
+test('should treat heredoc bodies as data and see unspaced, cp and touch writes when parsing Bash (GuardEdit)', () => {
+  assert.deepEqual(writeTargets("cat > /tmp/run/facts.md <<'EOF'\n> src/a.js:1 is the entry\nif a > b then\nEOF"), ['/tmp/run/facts.md']);
+  assert.deepEqual(writeTargets('echo x>src/a.js'), ['src/a.js']);
+  assert.deepEqual(writeTargets('cp /tmp/a src/a.js && mv x src/b.js; touch src/c.js'), ['src/a.js', 'src/b.js', 'src/c.js']);
+  assert.deepEqual(writeTargets('node -e "x => x" 2>&1'), []);
+  const fx = fixture('intake');
+  try { assert.equal(bash(fx, `cat > ${join(fx.base, 'facts.md')} <<'EOF'\n> src/a.js:1 entry\nEOF`), null); } finally { fx.done(); }
 });
 
 function spawnHook(input, env) {

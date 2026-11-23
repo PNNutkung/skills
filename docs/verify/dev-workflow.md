@@ -7,7 +7,7 @@ env: cloud container (Linux)
 run: node --test --test-name-pattern='Skill' skills/dev-workflow/*.test.mjs hooks/workflow-guard.test.mjs
 result: pass
 ```
-ok - should keep SKILL.md short with the dev-workflow name and a quoted description (Skill, Name)
+ok - should keep SKILL.md short with the dev-workflow name and a quoted description when SKILL.md changes (Skill, Name)
 ok - should register the hook and list the skill when the plugin ships it (Skill)
 ok - should run the CLI and guard edits only when the flag says so (flags: defaults) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: on) (Skill, GuardEdit, GuardIdle)
@@ -20,7 +20,7 @@ env: cloud container (Linux)
 run: node --test --test-name-pattern='Name' skills/dev-workflow/*.test.mjs hooks/workflow-guard.test.mjs
 result: pass
 ```
-ok - should keep SKILL.md short with the dev-workflow name and a quoted description (Skill, Name)
+ok - should keep SKILL.md short with the dev-workflow name and a quoted description when SKILL.md changes (Skill, Name)
 1 matching tests passed, fail 0
 ```
 
@@ -38,12 +38,11 @@ ok - should walk every step to done when each gate gets its evidence (Order, Gat
 
 ## RetroFirst
 env: cloud container (Linux)
-run: node --test --test-name-pattern='RetroFirst|GuardMerge' skills/dev-workflow/*.test.mjs hooks/workflow-guard.test.mjs
+run: node --test --test-name-pattern='RetroFirst' skills/dev-workflow/*.test.mjs hooks/workflow-guard.test.mjs
 result: pass
 ```
-ok - should deny gh pr merge and glab mr merge while verify or retro is not done (GuardMerge)
 ok - should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)
-2 matching tests passed, fail 0
+1 matching tests passed, fail 0
 ```
 
 ## ShortPath
@@ -52,11 +51,12 @@ run: node --test --test-name-pattern='ShortPath' skills/dev-workflow/*.test.mjs 
 result: pass
 ```
 ok - should describe the steps in order with the never-skipped ones when SKILL.md lists them (Order, ShortPath)
-ok - should never skip DoD, verify or retro whatever the answer says (ShortPath)
-ok - should skip the board only with a user answer that gives a reason (ShortPath, Gate)
+ok - should never skip DoD, verify or retro when any answer asks to (ShortPath)
+ok - should skip the board only when a user answer gives a reason (ShortPath, Gate)
 ok - should never skip the DoD, verify or retro steps when asked to (ShortPath)
-ok - should skip the board on a saved answer with a reason and refuse to skip the DoD (ShortPath)
-5 matching tests passed, fail 0
+ok - should refuse to skip any step but the board when the user answer gives a reason (ShortPath, Gate)
+ok - should skip the board and refuse to skip the DoD when a saved answer gives a reason (ShortPath)
+6 matching tests passed, fail 0
 ```
 
 ## RunDir
@@ -83,8 +83,9 @@ run: node --test --test-name-pattern='Resume' skills/dev-workflow/*.test.mjs hoo
 result: pass
 ```
 ok - should infer the step from repo evidence when the run folder is gone (Resume)
+ok - should never resume past a step whose evidence is missing when later evidence exists (Resume)
 ok - should resume at the step the repo shows when the run folder is gone (Resume)
-2 matching tests passed, fail 0
+3 matching tests passed, fail 0
 ```
 
 ## Gate
@@ -95,10 +96,12 @@ result: pass
 ok - should open a gate only when its own evidence is there when the evidence is random (Gate)
 ok - should move one step at a time when each gate has its evidence (Order, Gate)
 ok - should refuse to move on and name the missing evidence when a gate has none (Gate)
-ok - should skip the board only with a user answer that gives a reason (ShortPath, Gate)
+ok - should skip the board only when a user answer gives a reason (ShortPath, Gate)
+ok - should refuse to skip any step but the board when the user answer gives a reason (ShortPath, Gate)
 ok - should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)
 ok - should pass the DoD gate only when the real dod.mjs check passes in an open DoD session (Gate, integration)
-6 matching tests passed, fail 0
+ok - should read the same evidence from any folder when --dod was given as a relative path (Gate, Board)
+8 matching tests passed, fail 0
 ```
 
 ## GuardEdit
@@ -108,12 +111,13 @@ result: pass
 ```
 ok - should deny a product-code edit and allow docs and outside files when the design is not locked (GuardEdit)
 ok - should allow product-code edits when the run is at tdd or later (GuardEdit)
-ok - should deny a Bash write into product code before the lock and allow it after (GuardEdit)
+ok - should deny a Bash write into product code when the design is not locked and allow it after (GuardEdit)
+ok - should treat heredoc bodies as data and see unspaced, cp and touch writes when parsing Bash (GuardEdit)
 ok - should print a deny decision and always exit 0 when run as a hook with the flag on (GuardEdit, flags: on)
 ok - should run the CLI and guard edits only when the flag says so (flags: defaults) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: on) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: off) (Skill, GuardEdit, GuardIdle)
-7 matching tests passed, fail 0
+8 matching tests passed, fail 0
 ```
 
 ## GuardMerge
@@ -121,8 +125,9 @@ env: cloud container (Linux)
 run: node --test --test-name-pattern='GuardMerge' skills/dev-workflow/*.test.mjs hooks/workflow-guard.test.mjs
 result: pass
 ```
-ok - should deny gh pr merge and glab mr merge while verify or retro is not done (GuardMerge)
-1 matching tests passed, fail 0
+ok - should deny gh pr merge and glab mr merge when verify or retro is not done (GuardMerge)
+ok - should catch merges behind -R, --repo and sh -c when the command hides them (GuardMerge)
+2 matching tests passed, fail 0
 ```
 
 ## GuardIdle
@@ -146,7 +151,8 @@ ok - should require a mermaid diagram when it fits and two or more variants when
 ok - should need the user choice on the board when the board itself is valid (Board)
 ok - should read the chosen variant id when the board answer starts with it (Board)
 ok - should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)
-4 matching tests passed, fail 0
+ok - should read the same evidence from any folder when --dod was given as a relative path (Gate, Board)
+5 matching tests passed, fail 0
 ```
 
 ## Variants
@@ -177,8 +183,9 @@ result: pass
 ```
 ok - should pass and tick only items with a passing real run when every item has evidence or an accepted answer (Verify, TicketTick)
 ok - should fail when an item is missing, failed, has no evidence or names an answer that does not exist (Verify)
+ok - should fail closed when the ADR yields no DoD items whatever verify.md says (Verify)
 ok - should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)
-3 matching tests passed, fail 0
+4 matching tests passed, fail 0
 ```
 
 ## TicketTick

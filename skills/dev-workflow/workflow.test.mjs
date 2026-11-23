@@ -86,7 +86,7 @@ test('should resume at the step the repo shows when the run folder is gone (Resu
   } finally { f.done(); }
 });
 
-test('should skip the board on a saved answer with a reason and refuse to skip the DoD (ShortPath)', () => {
+test('should skip the board and refuse to skip the DoD when a saved answer gives a reason (ShortPath)', () => {
   const f = fixture();
   try {
     const call = argv => main(argv, { env: f.env, cwd: f.repo, gh: noGh, dodMjs: '/none' });
@@ -103,7 +103,7 @@ test('should skip the board on a saved answer with a reason and refuse to skip t
   } finally { f.done(); }
 });
 
-test('should refuse a bad slug, an unknown command, a second open and a bad flag with exit 2 or 1', () => {
+test('should exit 2 or 1 when given a bad slug, an unknown command, a second open or a bad flag', () => {
   const f = fixture();
   try {
     const call = (argv, env = f.env) => main(argv, { env, cwd: f.repo, gh: noGh, dodMjs: '/none' });
@@ -153,6 +153,24 @@ test('should keep the run folder under the cache and write nothing in the repo w
     assert.ok(cacheBase({}).endsWith(join('.cache', 'dev-workflow')), cacheBase({}));
     assert.equal(cacheBase({ XDG_CACHE_HOME: '/x' }), join('/x', 'dev-workflow'));
     assert.ok(!cacheBase({}).startsWith(tmpdir()), 'not under /tmp');
+  } finally { f.done(); }
+});
+
+test('should read the same evidence from any folder when --dod was given as a relative path (Gate, Board)', () => {
+  const f = fixture();
+  try {
+    const sub = join(f.repo, 'sub');
+    mkdirSync(join(f.repo, 'docs', 'dod'), { recursive: true }); mkdirSync(sub);
+    writeFileSync(join(f.repo, 'docs', 'dod', 'demo.json'), JSON.stringify({ items: [{ id: 'X' }] }));
+    writeFileSync(join(f.repo, 'docs', 'dod', 'answers.md'), 'A2: A because simple\ntime: t\n');
+    const call = (argv, cwd) => main(argv, { env: f.env, cwd, gh: noGh, dodMjs: '/none' });
+    const run = call(['open', '--slug', 'demo'], f.repo).out.run;
+    writeFileSync(join(run, 'facts.md'), 'a.js:1\n');
+    call(['next'], f.repo);
+    assert.equal(call(['next', '--dod', '../docs/dod/demo.json'], sub).out.step, 'board');
+    writeFileSync(join(run, 'board.json'), JSON.stringify(BOARD));
+    assert.equal(call(['status'], f.repo).out.evidence.choice, 'A');
+    assert.equal(call(['status'], sub).out.evidence.choice, 'A');
   } finally { f.done(); }
 });
 

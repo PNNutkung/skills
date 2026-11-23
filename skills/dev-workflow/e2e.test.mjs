@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,8 +17,11 @@ function setup(flag) {
   const repo = join(base, 'repo');
   mkdirSync(join(repo, 'src'), { recursive: true });
   git(repo, 'init', '-q', '-b', 'feat/e2e');
-  // no gh on PATH: the PR comes from next --pr, as in a session without gh
-  const env = { PATH: dirname(process.execPath) + ':/usr/bin:/bin', HOME: base, XDG_CACHE_HOME: join(base, 'cache') };
+  // PATH holds only node: no gh, so nothing reaches the network; the PR comes from next --pr, as in a session without gh
+  const bin = join(base, 'bin');
+  mkdirSync(bin);
+  symlinkSync(process.execPath, join(bin, 'node'));
+  const env = { PATH: bin, HOME: base, XDG_CACHE_HOME: join(base, 'cache') };
   if (flag !== undefined) env.WORKFLOW_GUARD_ENABLED = flag;
   const cli = (...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: repo, env, encoding: 'utf8' }); return { code: r.status, out: JSON.parse(r.stdout) }; };
   const hook = input => { const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ cwd: repo, ...input }), env, encoding: 'utf8' }); return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.permissionDecision : 'allow'; };

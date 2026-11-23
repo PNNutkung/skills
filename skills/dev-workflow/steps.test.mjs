@@ -39,7 +39,7 @@ test('should need the user choice on the board when the board itself is valid (B
   assert.ok(r.errors.some(e => /user's choice/.test(e)));
 });
 
-test('should skip the board only with a user answer that gives a reason (ShortPath, Gate)', () => {
+test('should skip the board only when a user answer gives a reason (ShortPath, Gate)', () => {
   const answers = { A5: 'skip: one-line doc fix', A6: 'B' };
   const ok = skip(at('board'), answers, 'A5');
   assert.equal(ok.ok, true);
@@ -60,7 +60,17 @@ test('should infer the step from repo evidence when the run folder is gone (Resu
   assert.equal(inferStep({ ...none, adr: true }), 'tdd');
   assert.equal(inferStep({ ...none, adr: true, pr: 'x' }), 'verify');
   assert.equal(inferStep({ ...none, adr: true, pr: 'x', verify: { ok: true } }), 'retro');
-  assert.equal(inferStep({ ...none, retro: true }), 'done');
+  assert.equal(inferStep({ ...none, adr: true, pr: 'x', verify: { ok: true }, retro: true }), 'done');
+});
+
+test('should never resume past a step whose evidence is missing when later evidence exists (Resume)', () => {
+  assert.equal(inferStep({ ...none, retro: true }), 'intake');
+  assert.equal(inferStep({ ...none, adr: true, pr: 'x', retro: true }), 'verify', 'a retro line before verify does not reach done');
+  assert.equal(inferStep({ ...none, adr: true, verify: { ok: true } }), 'tdd');
+});
+
+test('should refuse to skip any step but the board when the user answer gives a reason (ShortPath, Gate)', () => {
+  for (const step of ['intake', 'lock', 'tdd']) assert.match(skip(at(step), { A9: 'no ADR needed here' }, 'A9').errors.join(), /cannot be skipped/, step);
 });
 
 test('should report the gate of each step without moving when gate is asked', () => {

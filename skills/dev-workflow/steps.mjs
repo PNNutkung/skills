@@ -4,6 +4,8 @@
 export const STEPS = ['intake', 'dod', 'board', 'lock', 'tdd', 'verify', 'retro', 'done'];
 /** Steps no answer can skip: what "done" means, the proof it works, and the look back (A5). */
 export const NEVER_SKIP = ['dod', 'verify', 'retro'];
+/** The only step a user's answer may skip: the concept board, for small work (A5). */
+export const SKIPPABLE = ['board'];
 const REASON_MIN_WORDS = 2;
 
 const GATES = {
@@ -42,7 +44,7 @@ export function advance(state, evidence) {
 export function skip(state, answers, answerId) {
   const step = state.step;
   if (NEVER_SKIP.includes(step)) return { ok: false, errors: [`${step} is never skipped`] };
-  if (!GATES[step]) return { ok: false, errors: [`nothing to skip at ${step}`] };
+  if (!SKIPPABLE.includes(step)) return { ok: false, errors: [`${step} cannot be skipped: only the concept board can, on the user's answer`] };
   const text = answers?.[answerId];
   if (typeof text !== 'string' || !text.trim()) return { ok: false, errors: [`${answerId} not in answers.md: save the user's answer word for word first`] };
   if (text.trim().split(/\s+/).length < REASON_MIN_WORDS) return { ok: false, errors: [`${answerId} gives no reason: the user's answer must say why the step is skipped`] };
@@ -51,9 +53,10 @@ export function skip(state, answers, answerId) {
 
 /** The step to resume at from what the repo shows (A18): the furthest gate whose evidence is there. */
 export function inferStep(ev) {
-  if (ev.retro) return 'done';
-  if (ev.verify?.ok) return 'retro';
-  if (ev.pr) return 'verify';
-  if (ev.adr) return 'tdd';
-  return 'intake';
+  // a chain: a later piece of evidence counts only when every earlier one is there too
+  if (!ev.adr) return 'intake';
+  if (!ev.pr) return 'tdd';
+  if (!ev.verify?.ok) return 'verify';
+  if (!ev.retro) return 'retro';
+  return 'done';
 }

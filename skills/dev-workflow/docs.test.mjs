@@ -15,7 +15,7 @@ const skill = read('SKILL.md');
 const SKILL_MAX_LINES = 150;
 const CLI_COMMANDS = ['open', 'status', 'next', 'skip', 'tick', 'close'];
 
-test('should keep SKILL.md short with the dev-workflow name and a quoted description (Skill, Name)', () => {
+test('should keep SKILL.md short with the dev-workflow name and a quoted description when SKILL.md changes (Skill, Name)', () => {
   assert.match(skill, /^---\nname: dev-workflow\ndescription: "[^"]+"\n---/);
   assert.ok(skill.split('\n').length < SKILL_MAX_LINES, `${skill.split('\n').length} lines`);
 });

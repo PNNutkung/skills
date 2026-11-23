@@ -93,6 +93,13 @@ test('should fail when an item is missing, failed, has no evidence or names an a
   assert.deepEqual(r.tickable, []);
 });
 
+test('should fail closed when the ADR yields no DoD items whatever verify.md says (Verify)', () => {
+  const r = checkVerify('', [], {});
+  assert.equal(r.ok, false);
+  assert.match(r.errors[0], /no DoD items/);
+  assert.deepEqual(adrItems('## Definition of done\n\n- [X] Works (happy): x\n'), ['Works'], 'an uppercase tick still counts');
+});
+
 test('should accept an image as evidence and require the env when a section shows a screenshot', () => {
   const ok = checkVerify('## Skill\nenv: staging\nrun: open /reports\nresult: pass\nimage: docs/verify/skill.png\n', ['Skill'], {});
   assert.deepEqual(ok.tickable, ['Skill']);

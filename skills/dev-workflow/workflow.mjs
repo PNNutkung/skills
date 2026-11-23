@@ -8,7 +8,7 @@
 //   close [--slug S]                end the run
 // Exit 0 ok, 1 gate closed or refused, 2 usage or flag error. Node 22+, no dependencies.
 import { realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FlagError, readFlags } from './flags.mjs';
 import { SLUG_RE, currentBranch, evidence, openRuns, readState, repoRoot, runDir, runsOf, writeState } from './io.mjs';
@@ -81,7 +81,7 @@ export function main(argv, { env = process.env, cwd = process.cwd(), gh, dodMjs 
     if (cmd === 'close') { writeState(run, { ...state, closed: new Date().toISOString() }); return { code: 0, out: { ok: true, closed: run } }; }
 
     if (cmd === 'next') {
-      if (v.dod) state = { ...state, dod: v.dod };
+      if (v.dod) state = { ...state, dod: resolve(cwd, v.dod) };
       if (v.pr) state = { ...state, pr: v.pr };
       writeState(run, state);
     }

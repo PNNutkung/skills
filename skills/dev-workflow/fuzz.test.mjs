@@ -42,7 +42,7 @@ test('should open a gate only when its own evidence is there when the evidence i
   }
 });
 
-test('should never skip DoD, verify or retro whatever the answer says (ShortPath)', () => {
+test('should never skip DoD, verify or retro when any answer asks to (ShortPath)', () => {
   for (let i = 0; i < RUNS; i++) {
     const step = pick(NEVER_SKIP);
     assert.equal(skip({ step, skipped: {} }, { A1: text() || 'x y' }, 'A1').ok, false);

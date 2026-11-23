@@ -12,17 +12,35 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = join(HERE, '..', 'skills', 'dev-workflow');
-const { FLAG, FlagError, readFlags } = await import(join(SKILL, 'flags.mjs'));
-const { openRuns, repoRoot } = await import(join(SKILL, 'io.mjs'));
-const { STEPS } = await import(join(SKILL, 'steps.mjs'));
+// A hook copied without its skill must not crash on import: verdict() then allows everything.
+let mods = null;
+try {
+  mods = { ...(await import(join(SKILL, 'flags.mjs'))), ...(await import(join(SKILL, 'io.mjs'))), ...(await import(join(SKILL, 'steps.mjs'))) };
+} catch { mods = null; }
 const WORKFLOW_MJS = join(SKILL, 'workflow.mjs');
 
 const FILE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-const UNLOCKED_FROM = STEPS.indexOf('tdd');
 const SEGMENT_SPLIT_RE = /&&|\|\||[;|&\n()`]|\$\(/;
 const WRAPPERS = new Set(['env', 'command', 'sudo', 'time', 'nohup', 'exec', 'builtin']);
-const REDIRECT_RE = /(?:^|[\s\d])(>>?)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g;
+const REDIRECT_RE = /(?<![<>=&-])(>>?)(?!&)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g;
 const MERGES = { gh: ['pr', 'merge'], glab: ['mr', 'merge'] };
+const VALUE_FLAGS = new Set(['-R', '--repo', '--hostname']);
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
+const COPIERS = new Set(['cp', 'mv', 'install', 'ln']);
+const HEREDOC_RE = /<<-?\s*(['"]?)([A-Za-z_]\w*)\1/g;
+
+/** The command line without heredoc bodies: a body is data, not commands or redirects. */
+export function stripHeredocs(command) {
+  const out = [];
+  let ends = [];
+  for (const line of String(command).split('\n')) {
+    if (ends.length) { if (line.replace(/^\t+/, '') === ends[0]) ends.shift(); continue; }
+    out.push(line);
+    ends = [...line.matchAll(HEREDOC_RE)].map(m => m[2]);
+  }
+  return out.join('\n');
+}
+const positionals = args => { const out = []; for (let i = 0; i < args.length; i++) { if (VALUE_FLAGS.has(args[i])) { i++; continue; } if (!args[i].startsWith('-')) out.push(args[i]); } return out; };
 
 const unquote = t => t.replace(/^(["'])(.*)\1$/s, '$2');
 const tokenize = seg => (seg.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(unquote);
@@ -42,13 +60,15 @@ function segments(command) {
 }
 
 /** 'gh pr merge' or 'glab mr merge' when the command line runs one, else null. */
-export function mergeCommand(command) {
-  for (const seg of segments(String(command))) {
+export function mergeCommand(command, depth = 0) {
+  for (const seg of segments(stripHeredocs(command))) {
     const t = stripPrefix(tokenize(seg));
     const prog = basename(t[0] ?? '');
+    const c = t.indexOf('-c');
+    if (SHELLS.has(prog) && c > 0 && t[c + 1] && depth < 2) { const inner = mergeCommand(t[c + 1], depth + 1); if (inner) return inner; continue; }
     const want = MERGES[prog];
     if (!want) continue;
-    const pos = t.slice(1).filter(x => !x.startsWith('-'));
+    const pos = positionals(t.slice(1));
     if (pos[0] === want[0] && pos[1] === want[1]) return `${prog} ${want.join(' ')}`;
   }
   return null;
@@ -57,12 +77,13 @@ export function mergeCommand(command) {
 const blankQuotes = s => s.replace(/(>>?\s*)?("[^"]*"|'[^']*')/g, (m, redirect) => (redirect ? m : ' '.repeat(m.length)));
 /** Files a command line writes: redirects, tee and sed -i. */
 export function writeTargets(command) {
-  const cleaned = String(command).replace(/\d*>&\d*-?/g, ' ').replace(/&>>?/g, '>');
+  const cleaned = stripHeredocs(command).replace(/\d*>&\d*-?/g, ' ').replace(/&>>?/g, '>');
   const targets = [...blankQuotes(cleaned).matchAll(REDIRECT_RE)].map(m => unquote(m[2]));
   for (const seg of segments(cleaned)) {
     const t = stripPrefix(tokenize(seg));
     const files = t.slice(1).filter(x => !x.startsWith('-'));
-    if (t[0] === 'tee') targets.push(...files);
+    if (t[0] === 'tee' || t[0] === 'touch') targets.push(...files);
+    if (COPIERS.has(t[0]) && files.length > 1) targets.push(files[files.length - 1]);
     if (t[0] === 'sed' && t.some(x => /^-[A-Za-z]*i|^--in-place/.test(x))) targets.push(...(t.some(x => /^-[A-Za-z]*[ef]$|^--(expression|file)/.test(x)) ? files : files.slice(1)));
   }
   return targets.filter(p => !p.startsWith('/dev/'));
@@ -83,6 +104,9 @@ const isInside = (child, parent) => child === parent || child.startsWith(parent 
 
 /** A deny reason, or null. input: the PreToolUse payload. Throws FlagError on a bad flag value. */
 export function verdict(input, env = process.env) {
+  if (!mods) return null;
+  const { FLAG, STEPS, openRuns, readFlags, repoRoot } = mods;
+  const UNLOCKED_FROM = STEPS.indexOf('tdd');
   if (!readFlags(env).guard) return null;
   const { tool_name: tool, tool_input: ti, cwd } = input ?? {};
   const isFile = FILE_TOOLS.has(tool);
@@ -113,7 +137,7 @@ async function main() {
   try {
     let reason;
     try { reason = verdict(JSON.parse(readFileSync(0, 'utf8'))); } catch (e) {
-      if (!(e instanceof FlagError)) throw e;
+      if (!(mods && e instanceof mods.FlagError)) throw e;
       reason = `dev-workflow guard: ${e.message}. Fix the flag where it is set (shell or settings.json env) and start again`;
     }
     if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));

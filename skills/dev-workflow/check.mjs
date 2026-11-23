@@ -56,7 +56,7 @@ export function boardChoice(board, answers) {
 }
 
 const DOD_HEADING_RE = /^## Definition of done\s*$/;
-const ITEM_RE = /^- \[[ x]\] ([A-Za-z][A-Za-z0-9]{0,11}) \(/;
+const ITEM_RE = /^- \[[ xX]\] ([A-Za-z][A-Za-z0-9]{0,11}) \(/;
 
 /** The DoD item ids in the ADR that definition-of-done wrote (`- [ ] <id> (kinds): text`). */
 export function adrItems(adr) {
@@ -102,7 +102,8 @@ const ACCEPTED_RE = /^accepted (A\d+)$/;
 export function checkVerify(md, items, answers) {
   const sections = parseVerify(md);
   const errors = [], tickable = [];
-  for (const id of items ?? []) {
+  if (!items?.length) return { ok: false, errors: ['no DoD items to verify: the ADR has no Definition of done items (dod.mjs adr writes them)'], tickable };
+  for (const id of items) {
     const s = sections[id];
     if (!s) { errors.push(`${id}: missing (add a "## ${id}" section)`); continue; }
     const result = s.result ?? '';
