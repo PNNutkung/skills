@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -651,14 +651,18 @@ test('should leave process.env, the cwd, argv and exitCode as they were and neve
 test('should resolve relative paths against the injected cwd, like the CLI started there, and leave the process cwd alone when cwd is given', { skip }, async t => {
   const fx = fixture(t), here = process.cwd();
   stubDir(fx);
+  // through a linked folder (rules/paths.md): a started process sees the real path as its cwd, as on macOS where /var links to /private/var
+  const links = mkdtempSync(join(tmpdir(), 'mut-link-')), linked = join(links, 'dir');
+  t.after(() => rmSync(links, { recursive: true, force: true }));
+  symlinkSync(fx.dir, linked);
   const argv = ['--repo', 'repo', '--base', fx.base, '--head', fx.head, '--scratch', 'scratch', '--cmd', 'python3 {file}', '--runner', 'stub/stub-runner', '--jobs', '2'];
-  const { spawned, inproc } = await bothWays(argv, { cwd: fx.dir });
+  const { spawned, inproc } = await bothWays(argv, { cwd: linked });
   assert.equal(spawned.code, 0, spawned.stderr);
   assert.deepEqual(inproc, spawned);
   assert.equal(process.cwd(), here);
-  const missing = await bothWays(['--repo', 'repo', '--base', 'a', '--head', 'b', '--scratch', 's', '--cmd', 'x {file}', '--runner', 'nope'], { cwd: fx.dir });
+  const missing = await bothWays(['--repo', 'repo', '--base', 'a', '--head', 'b', '--scratch', 's', '--cmd', 'x {file}', '--runner', 'nope'], { cwd: linked });
   assert.deepEqual(missing.inproc, missing.spawned);
-  assert.ok(missing.inproc.stderr.includes(`runner not found: ${join(fx.dir, 'nope')}`), missing.inproc.stderr);
+  assert.ok(missing.inproc.stderr.includes(`runner not found: ${join(realpathSync(fx.dir), 'nope')}`), missing.inproc.stderr);
   assert.equal(process.cwd(), here);
 });
 

@@ -603,8 +603,9 @@ async function command(cx, argv) {
  * One tdd.mjs command in this process: argv as after `node tdd.mjs`; env and cwd stand in for process.env and process.cwd() (their defaults; neither is ever changed).
  * -> { code, stdout, stderr, chunks }: the exit code the CLI gives, its output, and chunks ([1|2, text] in write order) so the CLI can replay stdout and stderr interleaved as before.
  */
+const realCwd = c => { try { return realpathSync(c); } catch { return c; } }; // a started process sees its cwd as a real path (macOS /var -> /private/var, rules/paths.md)
 export async function main(argv, { env = process.env, cwd } = {}) { // cwd: default process.cwd(), read lazily as the CLI always did (a deleted cwd fails only the commands that resolve a path)
-  const cx = { env: Object.fromEntries(Object.entries(env).filter(([, val]) => val !== undefined).map(([k, val]) => [k, String(val)])), cwd: cwd === undefined ? undefined : resolve(cwd), out: [], counter: 0 }; // env as a spawned process sees it
+  const cx = { env: Object.fromEntries(Object.entries(env).filter(([, val]) => val !== undefined).map(([k, val]) => [k, String(val)])), cwd: cwd === undefined ? undefined : realCwd(resolve(cwd)), out: [], counter: 0 }; // env as a spawned process sees it
   let code = 0;
   try { await command(cx, argv); } catch (e) { code = e instanceof ExitError ? e.code : 1; emit(cx, 2, `tdd: ${e.message}\n`); }
   const text = fd => cx.out.filter(([f]) => f === fd).map(([, t]) => t).join('');

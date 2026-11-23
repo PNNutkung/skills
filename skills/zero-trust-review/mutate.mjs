@@ -171,10 +171,11 @@ async function run(argv, env, cwd, write) {
 }
 
 /** The whole tool, in-process: no process.exit, no write to the real stdout/stderr, no change to process.env or the cwd once it returns. */
+const realCwd = c => { try { return realpathSync(c); } catch { return c; } }; // a started process sees its cwd as a real path (macOS /var -> /private/var, rules/paths.md)
 export async function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
   let stdout = '';
   try {
-    await run(argv, env, cwd, s => { stdout += s; });
+    await run(argv, env, realCwd(cwd), s => { stdout += s; });
     return { code: 0, stdout, stderr: '' };
   } catch (e) {
     return { code: 2, stdout, stderr: `mutate: ${e.message}\n` };
