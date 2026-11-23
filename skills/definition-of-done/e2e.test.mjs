@@ -161,6 +161,32 @@ test('should refuse a time target without its measured floor in check when the f
   cli2({}, 'close');
 });
 
+test('should name every answer whose question was never saved when questions and check run, and only once a question is saved (P7 of the issue #19 retro)', () => {
+  const env2 = { ...env, CLAUDE_CODE_SESSION_ID: 'e2e-answers', DOD_GUARD_ENABLED: 'false' };
+  const cli2 = (extra, ...args) => {
+    const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env: { ...env2, ...extra }, encoding: 'utf8' });
+    return { code: r.status, json: (() => { try { return JSON.parse(r.stdout); } catch { return null; } })() };
+  };
+  const run = cli2({}, 'open', '--repo', repo, '--slug', 'answers-check').json.run;
+  const Q = n => `Q${n}: question ${n}?\n(A) yes\n  + a\n  - b\n(B) no\n  + c\n  - d\nrecommended: A\ntime: t\n\n`;
+  writeFileSync(join(run, 'ticket.md'), TICKET);
+  writeFileSync(join(run, 'answers.md'), 'A1: A\ntime: t\nA2: REPORT_CSV_EXPORT\ntime: t\nA3: no API change\ntime: t\nA4: xlsx\ntime: t\nA5: staging\ntime: t\nA6: unit, e2e\ntime: t\n');
+  writeDod();
+  assert.equal(cli2({}, 'questions').code, 0, 'no question saved yet: left as before questions.md existed');
+  writeFileSync(join(run, 'questions.md'), [1, 2, 3, 4, 6].map(Q).join(''));
+  const saved = cli2({}, 'questions');
+  assert.equal(saved.code, 1);
+  assert.deepEqual(saved.json.errors, ['Q5 is not in questions.md: save each question with its options, pros and cons when you ask it']);
+  const gate = cli2({}, 'check', '--dod', dodFile);
+  assert.equal(gate.code, 1);
+  assert.deepEqual(gate.json.errors, saved.json.errors);
+  assert.equal(cli2({ DOD_QUESTIONS_CHECK_ENABLED: 'false' }, 'check', '--dod', dodFile).code, 0, 'the flag turns it off');
+  writeFileSync(join(run, 'questions.md'), [1, 2, 3, 4, 5, 6].map(Q).join(''));
+  assert.equal(cli2({}, 'questions').code, 0);
+  assert.equal(cli2({}, 'check', '--dod', dodFile).code, 0);
+  cli2({}, 'close');
+});
+
 test('should exit 2 when no DoD session is open for a command that needs one', () => {
   const r = cli('render', '--dod', dodFile);
   assert.equal(r.code, 2);
@@ -189,6 +215,8 @@ test('should refuse questions.md with a missing pro, con or second option when t
   assert.equal(cli2({ DOD_QUESTIONS_CHECK_ENABLED: 'no' }, 'check', '--dod', dodFile).code, 2, 'a value outside true|false stops the tool');
 
   writeFileSync(join(run, 'questions.md'), 'Q1: Which pages?\n(A) both\n  + consistent\n  - more work\n(B) sales\n  + small\n  - stock waits\nrecommended: A\ntime: t\n');
-  assert.equal(cli2({}, 'questions').code, 0);
+  const fixed = cli2({}, 'questions'); // the pros and cons are fixed; answers.md now also holds A2-A6, whose questions were never saved (P7 of the issue #19 retro)
+  assert.deepEqual(fixed.json.errors, [2, 3, 4, 5, 6].map(n => `Q${n} is not in questions.md: save each question with its options, pros and cons when you ask it`));
+  assert.equal(cli2({ DOD_QUESTIONS_CHECK_ENABLED: 'false' }, 'questions').code, 0, 'the flag turns the answers check off');
   cli2({}, 'close');
 });

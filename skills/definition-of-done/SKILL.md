@@ -53,7 +53,7 @@ Map the request as a design tree. The **frontier** is every question whose prere
 - Every DoD covers five **required sections**: feature flag and its default, backward compatibility, non-goals, the environment to verify in, and the test tiers. One that does not apply still needs the user's "not relevant".
 - `kinds` default to happy, fail, edge; narrow them only with the user's reason (`kindsReason`).
 - An item with a wall-time target (`<= 80 s`, `under 2 min`, `ไม่เกิน 60 วิ`) needs `timeFloor: {cpuSeconds, cores}` from one measured run (the shell's `time`: user+sys), and its largest target must be at least cpuSeconds / cores; `timeFloor: {none: "<why>"}` for a limit that is not a speed target, such as a timeout. `check` refuses it otherwise (`DOD_TIME_FLOOR_CHECK_ENABLED=false` turns this off; [rules/performance.md](../../rules/performance.md)).
-- Save each question when you ask it, whole, to `<run>/questions.md`: your analysis at that moment, read back into the ADR later and never rewritten. Every option needs at least one pro and one con:
+- Save each question when you ask it, whole, to `<run>/questions.md`: your analysis at that moment, read back into the ADR later and never rewritten (`dod.mjs questions` and `check` name an answer whose question is missing). Every option needs at least one pro and one con:
   ```
   Q4: Over 10,000 rows?
   context: the ticket does not say (src/reports/export.ts:40)
