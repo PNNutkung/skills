@@ -1,4 +1,6 @@
 // Tests for note.mjs, the sanctioned note writer for review agents. Run: node --test note.test.mjs
+// Most tests call main() in-process (ADR 0003 ZtInProc); the CLI itself is spawned for usage errors, the env poisoning check (exit 64), one real run
+// per subcommand and the parity/fuzz checks.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -7,7 +9,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { activate } from './runctx.mjs';
-import { checkToolEnv } from './note.mjs';
+import { checkToolEnv, main } from './note.mjs';
+import { PARALLEL, inPool, normalize, pick, processState, recordExits, rng, spawnCliAsync } from './cli-harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const NOTE = join(HERE, 'note.mjs');
@@ -21,7 +24,12 @@ const POISON = ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'DYLD_INSERT_LIBRAR
 const { ZT_RUN_DIR: _r, ...CLEAN_ENV } = Object.fromEntries(Object.entries(process.env).filter(([k]) => !POISON.includes(k)));
 const UID = process.getuid();
 const BASE = join(ISO, `zt-review-${UID}`);
-const note = (args, { env = {}, cwd } = {}) => spawnSync(process.execPath, [NOTE, ...args], { encoding: 'utf8', env: { ...CLEAN_ENV, ...env }, cwd });
+// the CLI as a process, and main() in-process with the same env and cwd; both shaped like a spawnSync result
+const noteCli = (args, { env = {}, cwd } = {}) => spawnSync(process.execPath, [NOTE, ...args], { encoding: 'utf8', env: { ...CLEAN_ENV, ...env }, cwd });
+const note = async (args, { env = {}, cwd = process.cwd() } = {}) => {
+  const r = await main(args, { env: { ...CLEAN_ENV, ...env }, cwd });
+  return { status: r.code, stdout: r.stdout, stderr: r.stderr };
+};
 const mk = () => mkdtempSync(join(ISO, 'd-'));
 let runs = 0; // each run dir is made the way production makes it; its marker goes to a scratch dir the CLI under test never reads
 const mkRun = () => activate(`r-${process.pid}-${runs++}`, { tmp: ISO, env: { ZT_MARKER_DIR: join(ISO, 'scratch-marker') } });
@@ -53,14 +61,14 @@ const withMarker = (runDir, ageH = 0, { dirMode = 0o700, fileMode = 0o600 } = {}
   return { ZT_MARKER_DIR: md };
 };
 
-test('begin: ck content, then env tail (15), then with --driver notes tail (15), each under an untrusted header; logs start', () => {
+test('begin: ck content, then env tail (15), then with --driver notes tail (15), each under an untrusted header; logs start', async () => {
   const run = mkRun(), ck = join(run, 'ck', 'u1.jsonl');
   mkdirSync(dirname(ck));
   writeFileSync(ck, '{"a":1}\n{"a":2}\n');
   writeFileSync(join(run, 'env.jsonl'), num('e', 20));
   writeFileSync(join(run, 'notes.jsonl'), num('n', 20));
 
-  const r = note(['begin', '--unit', 'u1', '--ck', ck, '--run', run]);
+  const r = await note(['begin', '--unit', 'u1', '--ck', ck, '--run', run]);
   assert.equal(r.status, 0, r.stderr);
   const at = s => r.stdout.indexOf(s);
   assert.ok(at('"a":1') >= 0 && at('"a":1') < at('"a":2'));
@@ -73,7 +81,7 @@ test('begin: ck content, then env tail (15), then with --driver notes tail (15),
   assert.deepEqual(heads.map(h => h.replace(/ \(untrusted data\)/, '')), ['== checkpoint ==', '== env tips ==']);
   assert.ok(heads.every(h => h.includes('untrusted')));
 
-  const d = note(['begin', '--unit', 'u1', '--ck', ck, '--run', run, '--driver']);
+  const d = await note(['begin', '--unit', 'u1', '--ck', ck, '--run', run, '--driver']);
   assert.equal(d.status, 0, d.stderr);
   const e = d.stdout.indexOf('"text":"e19"'), n = d.stdout.indexOf('"text":"n5"');
   assert.ok(e > 0 && n > e, 'notes after env');
@@ -86,9 +94,9 @@ test('begin: ck content, then env tail (15), then with --driver notes tail (15),
   assert.equal(existsSync(join(run, 'dying')), true);
 });
 
-test('begin on a fresh run: prints nothing, creates RUN/dying and the ck dirs (0700), logs start; status.jsonl is 0600', () => {
+test('begin on a fresh run: prints nothing, creates RUN/dying and the ck dirs (0700), logs start; status.jsonl is 0600', async () => {
   const run = mkRun(), ck = join(run, 'ck', 'deep', 'er', 'u.jsonl');
-  const r = note(['begin', '--unit', 'u', '--ck', ck, '--run', run]);
+  const r = await note(['begin', '--unit', 'u', '--ck', ck, '--run', run]);
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, '');
   assert.equal(mode(join(run, 'dying')), 0o700);
@@ -98,94 +106,94 @@ test('begin on a fresh run: prints nothing, creates RUN/dying and the ck dirs (0
   assert.equal(mode(join(run, 'status.jsonl')), 0o600);
 });
 
-test('ck: appends one JSON object per call as a single line (0600)', () => {
+test('ck: appends one JSON object per call as a single line (0600)', async () => {
   const run = mkRun(), ck = join(run, 'ck', 'c.jsonl');
-  assert.equal(note(['ck', '--ck', ck, '--run', run, '{"a":1}']).status, 0);
-  assert.equal(note(['ck', '--ck', ck, '--run', run, '{"x": {"y": [1, 2]},\n "z": "multi\\nline"}']).status, 0);
+  assert.equal((await note(['ck', '--ck', ck, '--run', run, '{"a":1}'])).status, 0);
+  assert.equal((await note(['ck', '--ck', ck, '--run', run, '{"x": {"y": [1, 2]},\n "z": "multi\\nline"}'])).status, 0);
   assert.equal(lines(readFileSync(ck, 'utf8')).length, 2);
   assert.deepEqual(jsonl(ck), [{ a: 1 }, { x: { y: [1, 2] }, z: 'multi\nline' }]);
   assert.ok(readFileSync(ck, 'utf8').endsWith('\n'));
   assert.equal(mode(ck), 0o600);
 });
 
-test('ck: rejects non-objects, malformed JSON and over 4000 chars; writes nothing', () => {
+test('ck: rejects non-objects, malformed JSON and over 4000 chars; writes nothing', async () => {
   const run = mkRun(), ck = join(run, 'ck', 'c.jsonl');
   for (const bad of ['not json', '[1]', 'null', '1', '"s"', '{"a":', '']) {
-    const r = note(['ck', '--ck', ck, '--run', run, bad]);
+    const r = await note(['ck', '--ck', ck, '--run', run, bad]);
     assert.equal(r.status, 2, JSON.stringify(bad));
     assert.match(r.stderr, /JSON object/i);
   }
   const pad = n => `{"p":"${'x'.repeat(n - 8)}"}`;
   assert.equal(pad(4001).length, 4001);
-  assert.equal(note(['ck', '--ck', ck, '--run', run, pad(4001)]).status, 2);
+  assert.equal((await note(['ck', '--ck', ck, '--run', run, pad(4001)])).status, 2);
   assert.deepEqual(ls(run), []);
-  assert.equal(note(['ck', '--ck', ck, '--run', run, pad(4000)]).status, 0);
+  assert.equal((await note(['ck', '--ck', ck, '--run', run, pad(4000)])).status, 0);
   assert.equal(jsonl(ck).length, 1);
 });
 
-test('env and notes: {u,text} lines; text over 200 chars is cut to 200 ending "..."; 4th line per unit exits 4; units and files are independent', () => {
+test('env and notes: {u,text} lines; text over 200 chars is cut to 200 ending "..."; 4th line per unit exits 4; units and files are independent', async () => {
   const run = mkRun();
   for (const [cmd, file] of [['env', 'env.jsonl'], ['notes', 'notes.jsonl']]) {
     const f = join(run, file), go = (u, text) => note([cmd, '--unit', u, '--run', run, text]);
-    assert.equal(go('u1', 'tip one').status, 0);
-    assert.equal(go('u1', 'x'.repeat(250)).status, 0);
-    assert.equal(go('u1', 'y'.repeat(200)).status, 0);
+    assert.equal((await go('u1', 'tip one')).status, 0);
+    assert.equal((await go('u1', 'x'.repeat(250))).status, 0);
+    assert.equal((await go('u1', 'y'.repeat(200))).status, 0);
     assert.deepEqual(jsonl(f)[0], { u: 'u1', text: 'tip one' });
     assert.deepEqual(Object.keys(jsonl(f)[0]), ['u', 'text']);
     assert.equal(jsonl(f)[1].text, `${'x'.repeat(197)}...`);
     assert.equal(jsonl(f)[2].text, 'y'.repeat(200));
-    const over = go('u1', 'fourth');
+    const over = await go('u1', 'fourth');
     assert.equal(over.status, 4, cmd);
     assert.match(over.stderr, /limit/i);
     assert.equal(jsonl(f).length, 3);
-    assert.equal(go('u2', 'other unit').status, 0);
+    assert.equal((await go('u2', 'other unit')).status, 0);
     assert.equal(jsonl(f).length, 4);
     assert.equal(mode(f), 0o600);
   }
   assert.equal(jsonl(join(run, 'env.jsonl')).filter(x => x.u === 'u1').length, 3, 'env and notes limits do not share a counter');
 });
 
-test('done: appends {u, s:"done", t} to status.jsonl; the tool adds the ISO timestamp', () => {
+test('done: appends {u, s:"done", t} to status.jsonl; the tool adds the ISO timestamp', async () => {
   const run = mkRun();
-  assert.equal(note(['done', '--unit', 'u1', '--run', run]).status, 0);
+  assert.equal((await note(['done', '--unit', 'u1', '--run', run])).status, 0);
   const [row] = jsonl(join(run, 'status.jsonl'));
   assert.deepEqual(Object.keys(row), ['u', 's', 't']);
   assert.equal(row.s, 'done');
   assert.ok(isIso(row.t));
 });
 
-test('dying: writes dying/ID.md (ID sanitized, 0600), logs dying, truncates past 1500 chars, overwrites an earlier note', () => {
+test('dying: writes dying/ID.md (ID sanitized, 0600), logs dying, truncates past 1500 chars, overwrites an earlier note', async () => {
   const run = mkRun();
   const md = '# stuck\n- tried `x`\n- next: y';
-  assert.equal(note(['dying', '--unit', 'a:b.c', '--run', run, md]).status, 0);
+  assert.equal((await note(['dying', '--unit', 'a:b.c', '--run', run, md])).status, 0);
   assert.equal(readFileSync(join(run, 'dying', 'a_b.c.md'), 'utf8'), md);
   assert.equal(mode(join(run, 'dying', 'a_b.c.md')), 0o600);
   assert.deepEqual(jsonl(join(run, 'status.jsonl')).map(({ t, ...s }) => s), [{ u: 'a:b.c', s: 'dying' }]);
-  assert.equal(note(['dying', '--unit', 'a:b.c', '--run', run, 'second']).status, 0);
+  assert.equal((await note(['dying', '--unit', 'a:b.c', '--run', run, 'second'])).status, 0);
   assert.equal(readFileSync(join(run, 'dying', 'a_b.c.md'), 'utf8'), 'second');
-  assert.equal(note(['dying', '--unit', 'big', '--run', run, 'z'.repeat(5000)]).status, 0);
+  assert.equal((await note(['dying', '--unit', 'big', '--run', run, 'z'.repeat(5000)])).status, 0);
   const big = readFileSync(join(run, 'dying', 'big.md'), 'utf8');
   assert.equal(big.length, 1500);
   assert.ok(big.endsWith('...'));
   assert.deepEqual(ls(join(run, 'dying')), ['a_b.c.md', 'big.md']);
 });
 
-test('unit IDs are [A-Za-z0-9._:-]{1,80}; anything else exits 2 and writes nothing', () => {
+test('unit IDs are [A-Za-z0-9._:-]{1,80}; anything else exits 2 and writes nothing', async () => {
   const run = mkRun();
   for (const bad of ['', 'a b', '../x', 'a/b', 'a;b', 'a$(x)', 'a\nb', 'é', 'x'.repeat(81)]) {
     for (const cmd of [['env', '--unit', bad, 'hi'], ['notes', '--unit', bad, 'hi'], ['done', '--unit', bad], ['dying', '--unit', bad, 'hi'], ['begin', '--unit', bad, '--ck', join(run, 'ck', 'c.jsonl')]]) {
-      const r = note([...cmd, '--run', run]);
+      const r = await note([...cmd, '--run', run]);
       assert.equal(r.status, 2, JSON.stringify([bad, cmd[0]]));
     }
   }
   assert.deepEqual(ls(run), []);
-  for (const ok of ['A-1_b.c:d', 'x'.repeat(80), '.', '..']) assert.equal(note(['done', '--unit', ok, '--run', run]).status, 0, ok);
+  for (const ok of ['A-1_b.c:d', 'x'.repeat(80), '.', '..']) assert.equal((await note(['done', '--unit', ok, '--run', run])).status, 0, ok);
 });
 
 test('usage errors exit 2: no/unknown subcommand, missing --unit/--ck/--name/value', () => {
   const run = mkRun();
   for (const args of [[], ['bogus'], ['constructor'], ['env', 'hi'], ['env', '--unit', 'u'], ['done'], ['begin', '--unit', 'u'], ['ck', '{"a":1}'], ['ck', '--ck', join(run, 'ck', 'c')], ['env', '--unit'], ['activate'], ['done', '--unit', 'u', 'extra']]) {
-    assert.equal(note([...args, '--run', run]).status, 2, JSON.stringify(args));
+    assert.equal(noteCli([...args, '--run', run]).status, 2, JSON.stringify(args));
   }
   assert.deepEqual(ls(run), []);
 });
@@ -231,13 +239,13 @@ function fixtures() {
   return { run, outside, cases };
 }
 
-test('--ck allow-list (ck and begin): anything but RUN/ck/**.jsonl exits 3; nothing written, created, followed or read', () => {
+test('--ck allow-list (ck and begin): anything but RUN/ck/**.jsonl exits 3; nothing written, created, followed or read', async () => {
   const { run, outside, cases } = fixtures();
   const before = [snap(run), snap(outside)];
   for (const [name, path] of Object.entries(cases)) {
-    const c = note(['ck', '--ck', path, '--run', run, '{"u":"x","s":"done"}']);
+    const c = await note(['ck', '--ck', path, '--run', run, '{"u":"x","s":"done"}']);
     assert.equal(c.status, 3, `ck: ${name}: ${c.stderr}`);
-    const b = note(['begin', '--unit', 'u', '--ck', path, '--run', run, '--driver']);
+    const b = await note(['begin', '--unit', 'u', '--ck', path, '--run', run, '--driver']);
     assert.equal(b.status, 3, `begin: ${name}: ${b.stderr}`);
     assert.doesNotMatch(b.stdout + b.stderr, /SECRET-CONTENT|ORIGINAL/, name);
   }
@@ -245,23 +253,23 @@ test('--ck allow-list (ck and begin): anything but RUN/ck/**.jsonl exits 3; noth
   assert.equal(existsSync('/tmp/zt-note-escape.jsonl'), false);
 });
 
-test('--ck inside RUN/ck/ with .jsonl works, nested dirs included', () => {
+test('--ck inside RUN/ck/ with .jsonl works, nested dirs included', async () => {
   const run = mkRun();
-  for (const p of ['a.jsonl', 'sub/b.jsonl', 'sub/deeper/c.jsonl']) assert.equal(note(['ck', '--ck', join(run, 'ck', p), '--run', run, '{"a":1}']).status, 0, p);
+  for (const p of ['a.jsonl', 'sub/b.jsonl', 'sub/deeper/c.jsonl']) assert.equal((await note(['ck', '--ck', join(run, 'ck', p), '--run', run, '{"a":1}'])).status, 0, p);
   assert.deepEqual(ls(join(run, 'ck')), ['a.jsonl', 'sub']);
 });
 
-test('a relative --ck resolves against the cwd: ck/x.jsonl is fine, ../ out of the run and a path outside ck/ are exit 3', () => {
+test('a relative --ck resolves against the cwd: ck/x.jsonl is fine, ../ out of the run and a path outside ck/ are exit 3', async () => {
   const run = mkRun();
-  assert.equal(note(['ck', '--ck', 'ck/rel.jsonl', '--run', run, '{"a":1}'], { cwd: run }).status, 0);
+  assert.equal((await note(['ck', '--ck', 'ck/rel.jsonl', '--run', run, '{"a":1}'], { cwd: run })).status, 0);
   assert.equal(jsonl(join(run, 'ck', 'rel.jsonl')).length, 1);
-  assert.equal(note(['ck', '--ck', '../ck.jsonl', '--run', run, '{"a":1}'], { cwd: run }).status, 3);
-  assert.equal(note(['ck', '--ck', 'rel.jsonl', '--run', run, '{"a":1}'], { cwd: run }).status, 3);
+  assert.equal((await note(['ck', '--ck', '../ck.jsonl', '--run', run, '{"a":1}'], { cwd: run })).status, 3);
+  assert.equal((await note(['ck', '--ck', 'rel.jsonl', '--run', run, '{"a":1}'], { cwd: run })).status, 3);
   assert.equal(existsSync(join(dirname(run), 'ck.jsonl')), false);
   assert.deepEqual(ls(run), ['ck']);
 });
 
-test("the tool's own files must be real files: a symlink planted at status/env/notes/dying, even one aimed inside the run, exits 3 and is never followed", () => {
+test("the tool's own files must be real files: a symlink planted at status/env/notes/dying, even one aimed inside the run, exits 3 and is never followed", async () => {
   const run = mkRun(), outside = mk(), victim = join(outside, 'victim');
   writeFileSync(victim, 'untouched\n');
   writeFileSync(join(run, 'exec.jsonl'), 'EXEC\n');
@@ -270,61 +278,61 @@ test("the tool's own files must be real files: a symlink planted at status/env/n
   symlinkSync(victim, join(run, 'notes.jsonl'));
   symlinkSync(outside, join(run, 'dying'));
   for (const args of [['done', '--unit', 'u'], ['env', '--unit', 'u', 'hi'], ['notes', '--unit', 'u', 'hi'], ['dying', '--unit', 'u', 'hi'], ['begin', '--unit', 'u', '--ck', join(run, 'ck', 'c.jsonl')]]) {
-    assert.equal(note([...args, '--run', run]).status, 3, args[0]);
+    assert.equal((await note([...args, '--run', run])).status, 3, args[0]);
   }
   assert.equal(readFileSync(victim, 'utf8'), 'untouched\n');
   assert.equal(readFileSync(join(run, 'exec.jsonl'), 'utf8'), 'EXEC\n');
   assert.deepEqual(ls(outside), ['victim']);
 });
 
-test('a symlinked run dir is not trusted: exit 3, nothing written through it', () => {
+test('a symlinked run dir is not trusted: exit 3, nothing written through it', async () => {
   const real = mkRun(), link = join(BASE, `link-${process.pid}`);
   symlinkSync(real, link);
   for (const args of [['ck', '--ck', join(link, 'ck', 'c.jsonl'), '{"a":1}'], ['done', '--unit', 'u'], ['env', '--unit', 'u', 'hi']]) {
-    assert.equal(note([...args, '--run', link]).status, 3, args[0]);
+    assert.equal((await note([...args, '--run', link])).status, 3, args[0]);
   }
   assert.deepEqual(ls(real), []);
 });
 
-test('run dir resolution: --run beats ZT_RUN_DIR beats a fresh marker; an unapproved --run (any other dir we own) is skipped; stale/open marker or none exits 3', () => {
+test('run dir resolution: --run beats ZT_RUN_DIR beats a fresh marker; an unapproved --run (any other dir we own) is skipped; stale/open marker or none exits 3', async () => {
   const [viaFlag, viaEnv] = [mkRun(), mkRun()], viaMarker = mk(), other = mk();
   const marker = withMarker(viaMarker), go = (extra, env) => note(['env', '--unit', 'u', ...extra, 'tip'], { env: { ...marker, ...env } });
-  assert.equal(go(['--run', viaFlag], { ZT_RUN_DIR: viaEnv }).status, 0);
-  assert.equal(go([], { ZT_RUN_DIR: viaEnv }).status, 0);
-  assert.equal(go([], {}).status, 0);
-  assert.equal(go(['--run', viaMarker], {}).status, 0); // outside the base, but it IS the marker's own target
+  assert.equal((await go(['--run', viaFlag], { ZT_RUN_DIR: viaEnv })).status, 0);
+  assert.equal((await go([], { ZT_RUN_DIR: viaEnv })).status, 0);
+  assert.equal((await go([], {})).status, 0);
+  assert.equal((await go(['--run', viaMarker], {})).status, 0); // outside the base, but it IS the marker's own target
   assert.deepEqual([viaFlag, viaEnv, viaMarker].map(d => jsonl(join(d, 'env.jsonl')).length), [1, 1, 2]);
 
   // skipped, not used: with a marker the write lands in the marker's run, without one it fails
-  assert.equal(go(['--run', other], { ZT_RUN_DIR: other }).status, 0);
+  assert.equal((await go(['--run', other], { ZT_RUN_DIR: other })).status, 0);
   assert.equal(jsonl(join(viaMarker, 'env.jsonl')).length, 3);
   assert.deepEqual(ls(other), []);
-  const bare = note(['env', '--unit', 'u', '--run', other, 'tip']);
+  const bare = await note(['env', '--unit', 'u', '--run', other, 'tip']);
   assert.equal(bare.status, 3);
   assert.match(bare.stderr, /run dir/i);
   assert.deepEqual(ls(other), []);
 
   for (const env of [withMarker(viaMarker, 13), withMarker(viaMarker, 0, { fileMode: 0o666 }), withMarker(viaMarker, 0, { dirMode: 0o777 }), {}]) {
-    const r = note(['done', '--unit', 'u'], { env });
+    const r = await note(['done', '--unit', 'u'], { env });
     assert.equal(r.status, 3);
     assert.match(r.stderr, /run dir/i);
   }
 });
 
-test('a world-writable run dir is never used, even under the base', () => {
+test('a world-writable run dir is never used, even under the base', async () => {
   const run = mkRun();
   chmodSync(run, 0o777);
-  assert.equal(note(['done', '--unit', 'u', '--run', run]).status, 3);
+  assert.equal((await note(['done', '--unit', 'u', '--run', run])).status, 3);
   assert.deepEqual(ls(run), []);
 });
 
-test('input is data: shell syntax in text, ids and paths is stored or rejected, never executed', () => {
+test('input is data: shell syntax in text, ids and paths is stored or rejected, never executed', async () => {
   const run = mkRun(), text = '$(touch PWNED) `touch PWNED`; touch PWNED && echo $HOME \\n "q"';
-  assert.equal(note(['env', '--unit', 'u', '--run', run, text], { cwd: run }).status, 0);
+  assert.equal((await note(['env', '--unit', 'u', '--run', run, text], { cwd: run })).status, 0);
   assert.equal(jsonl(join(run, 'env.jsonl'))[0].text, text);
-  assert.equal(note(['dying', '--unit', 'u', '--run', run, text], { cwd: run }).status, 0);
+  assert.equal((await note(['dying', '--unit', 'u', '--run', run, text], { cwd: run })).status, 0);
   assert.equal(readFileSync(join(run, 'dying', 'u.md'), 'utf8'), text);
-  assert.equal(note(['ck', '--ck', join(run, 'ck', '$(touch PWNED).jsonl'), '--run', run, '{"a":"$(touch PWNED)"}'], { cwd: run }).status, 0);
+  assert.equal((await note(['ck', '--ck', join(run, 'ck', '$(touch PWNED).jsonl'), '--run', run, '{"a":"$(touch PWNED)"}'], { cwd: run })).status, 0);
   assert.equal(existsSync(join(run, 'PWNED')), false);
   assert.equal(existsSync(join(run, 'ck', '$(touch PWNED).jsonl')), true);
 });
@@ -332,9 +340,9 @@ test('input is data: shell syntax in text, ids and paths is stored or rejected, 
 // --- activate / deactivate ---
 const act = (name, tmp, md, extra = [], env = {}) => note(['activate', '--name', name, ...extra], { env: { TMPDIR: tmp, ZT_MARKER_DIR: md, ...env } });
 
-test('activate: creates <tmp>/zt-review-<uid>/NAME (0700) and the 0600 marker, prints the run dir; later commands find it with no --run; deactivate removes the marker', () => {
+test('activate: creates <tmp>/zt-review-<uid>/NAME (0700) and the 0600 marker, prints the run dir; later commands find it with no --run; deactivate removes the marker', async () => {
   const tmp = mk(), md = join(mk(), 'marker'), env = { TMPDIR: tmp, ZT_MARKER_DIR: md };
-  const r = act('n1', tmp, md);
+  const r = await act('n1', tmp, md);
   assert.equal(r.status, 0, r.stderr);
   const dir = join(realpathSync(tmp), `zt-review-${UID}`, 'n1');
   assert.equal(r.stdout, `${dir}\n`);
@@ -344,88 +352,88 @@ test('activate: creates <tmp>/zt-review-<uid>/NAME (0700) and the 0600 marker, p
   assert.equal(mode(join(md, '.active')), 0o600);
   assert.equal(readFileSync(join(dir, '.skilldir'), 'utf8'), `${realpathSync(HERE)}\n`, 'the dir that holds note.mjs, one line');
   assert.equal(mode(join(dir, '.skilldir')), 0o600);
-  assert.equal(note(['env', '--unit', 'u', 'tip'], { env }).status, 0);
+  assert.equal((await note(['env', '--unit', 'u', 'tip'], { env })).status, 0);
   assert.equal(jsonl(join(dir, 'env.jsonl')).length, 1);
-  assert.equal(act('n1', tmp, md).stdout, `${dir}\n`, 'idempotent for the same name');
+  assert.equal((await act('n1', tmp, md)).stdout, `${dir}\n`, 'idempotent for the same name');
 
-  assert.equal(note(['deactivate', '--run', dir], { env }).status, 0);
+  assert.equal((await note(['deactivate', '--run', dir], { env })).status, 0);
   assert.equal(existsSync(join(md, '.active')), false);
   assert.equal(readFileSync(join(dir, '.skilldir'), 'utf8'), `${realpathSync(HERE)}\n`, 'deactivate leaves .skilldir');
-  assert.equal(note(['env', '--unit', 'u', 'tip'], { env }).status, 3);
+  assert.equal((await note(['env', '--unit', 'u', 'tip'], { env })).status, 3);
 });
 
-test('activate refuses a .skilldir that is a planted symlink: nothing written through it, no marker left behind', () => {
+test('activate refuses a .skilldir that is a planted symlink: nothing written through it, no marker left behind', async () => {
   const tmp = mk(), md = join(mk(), 'marker'), victim = join(mk(), 'victim');
   writeFileSync(victim, 'untouched\n');
   const dir = join(realpathSync(tmp), `zt-review-${UID}`, 'n');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
   symlinkSync(victim, join(dir, '.skilldir'));
-  const r = act('n', tmp, md);
+  const r = await act('n', tmp, md);
   assert.equal(r.status, 3);
   assert.match(r.stderr, /refused/);
   assert.equal(readFileSync(victim, 'utf8'), 'untouched\n');
   assert.equal(existsSync(join(md, '.active')), false);
 });
 
-test('activate has no --tmp or other way to choose the base: the run dir is always under os.tmpdir()', () => {
+test('activate has no --tmp or other way to choose the base: the run dir is always under os.tmpdir()', async () => {
   const [tmp, other, md] = [mk(), mk(), join(mk(), 'marker')];
-  const r = act('n', tmp, md, ['--tmp', other], { ZT_TESTS_ONLY: '1' });
+  const r = await act('n', tmp, md, ['--tmp', other], { ZT_TESTS_ONLY: '1' });
   assert.equal(r.status, 2);
   assert.deepEqual(ls(other), []);
-  assert.equal(act('n', tmp, md).stdout, `${join(realpathSync(tmp), `zt-review-${UID}`, 'n')}\n`);
+  assert.equal((await act('n', tmp, md)).stdout, `${join(realpathSync(tmp), `zt-review-${UID}`, 'n')}\n`);
 });
 
-test('activate rejects bad names (exit 2, nothing created) and refuses unsafe places (exit 3)', () => {
+test('activate rejects bad names (exit 2, nothing created) and refuses unsafe places (exit 3)', async () => {
   const tmp = mk(), md = join(mk(), 'marker');
-  for (const bad of ['../x', 'a b', 'a/b', '', '.', '..', 'x'.repeat(121), '$(x)']) assert.equal(act(bad, tmp, md).status, 2, JSON.stringify(bad));
+  for (const bad of ['../x', 'a b', 'a/b', '', '.', '..', 'x'.repeat(121), '$(x)']) assert.equal((await act(bad, tmp, md)).status, 2, JSON.stringify(bad));
   assert.deepEqual(ls(tmp), []);
   assert.equal(existsSync(md), false);
 
   const open = mk(); // base dir open to other users
   mkdirSync(join(open, `zt-review-${UID}`));
   chmodSync(join(open, `zt-review-${UID}`), 0o777);
-  const r = act('n', open, md);
+  const r = await act('n', open, md);
   assert.equal(r.status, 3);
   assert.match(r.stderr, /refused/);
 
   const linked = mk(), target = mk(); // base dir that is a symlink
   symlinkSync(target, join(linked, `zt-review-${UID}`));
-  assert.equal(act('n', linked, md).status, 3);
+  assert.equal((await act('n', linked, md)).status, 3);
   assert.deepEqual(ls(target), []);
 
   const t2 = mk(), outside = mk(); // run name pre-planted as a symlink
   mkdirSync(join(t2, `zt-review-${UID}`), { mode: 0o700 });
   symlinkSync(outside, join(t2, `zt-review-${UID}`, 'n'));
-  assert.equal(act('n', t2, md).status, 3);
+  assert.equal((await act('n', t2, md)).status, 3);
   assert.deepEqual(ls(outside), []);
   assert.equal(existsSync(md), false, 'no marker for a refused run');
 
   const t3 = mk(), openMd = mk(); // marker dir open to other users
   chmodSync(openMd, 0o777);
-  assert.equal(act('n', t3, openMd).status, 3);
+  assert.equal((await act('n', t3, openMd)).status, 3);
   assert.equal(existsSync(join(openMd, '.active')), false);
 });
 
-test('activate replaces a planted marker symlink without writing through it', () => {
+test('activate replaces a planted marker symlink without writing through it', async () => {
   const tmp = mk(), md = mk(), victim = join(mk(), 'victim');
   writeFileSync(victim, 'untouched\n');
   symlinkSync(victim, join(md, '.active'));
-  assert.equal(act('n', tmp, md).status, 0);
+  assert.equal((await act('n', tmp, md)).status, 0);
   assert.equal(readFileSync(victim, 'utf8'), 'untouched\n');
   assert.equal(lstatSync(join(md, '.active')).isSymbolicLink(), false);
 });
 
-test('deactivate removes the marker only if it still points at that run; an unsafe or missing --run exits 3', () => {
+test('deactivate removes the marker only if it still points at that run; an unsafe or missing --run exits 3', async () => {
   const tmp = mk(), md = join(mk(), 'marker'), env = { TMPDIR: tmp, ZT_MARKER_DIR: md };
-  const n1 = act('n1', tmp, md).stdout.trim(), n2 = act('n2', tmp, md).stdout.trim(); // marker now names n2
-  assert.equal(note(['deactivate', '--run', n1], { env }).status, 0);
+  const n1 = (await act('n1', tmp, md)).stdout.trim(), n2 = (await act('n2', tmp, md)).stdout.trim(); // marker now names n2
+  assert.equal((await note(['deactivate', '--run', n1], { env })).status, 0);
   assert.equal(readFileSync(join(md, '.active'), 'utf8'), `${n2}\n`);
-  assert.equal(note(['deactivate', '--run', join(tmp, 'nope')], { env }).status, 3);
+  assert.equal((await note(['deactivate', '--run', join(tmp, 'nope')], { env })).status, 3);
   assert.equal(existsSync(join(md, '.active')), true);
-  assert.equal(note(['deactivate', '--run', n2], { env }).status, 0);
+  assert.equal((await note(['deactivate', '--run', n2], { env })).status, 0);
   assert.equal(existsSync(join(md, '.active')), false);
-  assert.equal(note(['deactivate'], { env }).status, 3, 'nothing active, nothing named');
+  assert.equal((await note(['deactivate'], { env })).status, 3, 'nothing active, nothing named');
 });
 
 // values the dynamic loader / node accept at startup, so the process reaches our check (an invalid LD_PRELOAD or NODE_OPTIONS kills it before any JS runs)
@@ -444,20 +452,134 @@ test('checkToolEnv names every poisoned variable that is set; a clean env passes
   for (const k of POISON) assert.match(msgOf(() => checkToolEnv({ [k]: '1' })) ?? 'passed', new RegExp(k), k);
 });
 
-test("each poisoned variable in the tool's own env: exit 64 before anything, nothing written, for every subcommand; a clean env is normal", () => {
+test("each poisoned variable in the tool's own env: exit 64 before anything, nothing written, for every subcommand; a clean env is normal", async () => {
   const run = mkRun(), ck = join(run, 'ck', 'c.jsonl');
   const cmds = [['begin', '--unit', 'u', '--ck', ck], ['ck', '--ck', ck, '{"a":1}'], ['env', '--unit', 'u', 'hi'], ['notes', '--unit', 'u', 'hi'], ['done', '--unit', 'u'], ['dying', '--unit', 'u', 'hi'], ['deactivate'], ['bogus'], []];
-  for (const k of POISON) {
-    for (const args of cmds) {
-      const r = note([...args, '--run', run], { env: { [k]: SAFE(k) } });
-      assert.equal(r.status, 64, `${k} ${args[0]}: ${r.stderr}`);
-      assert.match(r.stderr, new RegExp(k));
-      assert.equal(r.stdout, '', k);
-    }
-    const a = act('n', mk(), join(mk(), 'marker'), [], { [k]: SAFE(k) });
-    assert.equal(a.status, 64, `${k} activate`);
-    assert.equal(a.stdout, '', k);
-  }
+  // every case is a real process (the loader vars must reach a real start); they run PARALLEL at a time
+  const jobs = POISON.flatMap(k => [...cmds.map(args => ({ k, name: `${k} ${args[0]}`, argv: [...args, '--run', run], env: { [k]: SAFE(k) } })),
+    { k, name: `${k} activate`, argv: ['activate', '--name', 'n'], env: { TMPDIR: mk(), ZT_MARKER_DIR: join(mk(), 'marker'), [k]: SAFE(k) } }]);
+  const results = await inPool(jobs, PARALLEL, j => spawnCliAsync(NOTE, j.argv, { env: { ...CLEAN_ENV, ...j.env } }));
+  jobs.forEach(({ k, name }, i) => {
+    const r = results[i];
+    assert.equal(r.code, 64, `${name}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(k));
+    assert.equal(r.stdout, '', k);
+  });
   assert.deepEqual(ls(run), []);
-  assert.equal(note(['done', '--unit', 'u', '--run', run]).status, 0);
+  assert.equal(noteCli(['done', '--unit', 'u', '--run', run]).status, 0);
+});
+
+// ---- ADR 0003 ZtInProc: the CLI and main() are the same tool
+test('should exit 0, print nothing and write the line when the CLI runs a subcommand end to end', () => {
+  const run = mkRun();
+  const r = noteCli(['env', '--unit', 'u', '--run', run, 'tip']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout + r.stderr, '');
+  assert.deepEqual(jsonl(join(run, 'env.jsonl')), [{ u: 'u', text: 'tip' }]);
+});
+
+// One side of a both-ways check: fresh dirs of its own, named so the output can be compared (<RUN>, <TMP>, <MD>, <OUT>).
+function side() {
+  const run = mkRun(), tmp = mk(), md = join(mk(), 'marker'), out = mk();
+  return { run, tmp, md, out, pairs: [[run, '<RUN>'], [realpathSync(tmp), '<TMP>'], [tmp, '<TMP>'], [md, '<MD>'], [out, '<OUT>']] };
+}
+const fill = (x, s) => (typeof x === 'string' ? x.replaceAll('{RUN}', s.run).replaceAll('{TMP}', s.tmp).replaceAll('{MD}', s.md).replaceAll('{OUT}', s.out) : x);
+// prepare(s) sets up files in the side's dirs; args and env may name them as {RUN} {TMP} {MD} {OUT}; cwd 'run' starts the tool in the run dir
+async function bothWays({ args, env = {}, prepare, cwd }) {
+  const runSide = async how => {
+    const s = side();
+    prepare?.(s);
+    await null; // the spawned and the in-process side overlap
+    const a = args.map(x => fill(x, s)), e = { ...CLEAN_ENV, ...Object.fromEntries(Object.entries(env).map(([k, v]) => [k, fill(v, s)])) };
+    const at = cwd === 'run' ? s.run : process.cwd();
+    const r = how === 'spawn' ? await spawnCliAsync(NOTE, a, { env: e, cwd: at }) : await main(a, { env: e, cwd: at });
+    return normalize(r, s.pairs);
+  };
+  const [spawned, inproc] = await Promise.all([runSide('spawn'), runSide('inproc')]);
+  return { spawned, inproc };
+}
+
+const withCk = s => { mkdirSync(join(s.run, 'ck')); writeFileSync(join(s.run, 'ck', 'c.jsonl'), '{"a":1}\n'); writeFileSync(join(s.run, 'env.jsonl'), num('e', 20)); writeFileSync(join(s.run, 'notes.jsonl'), num('n', 3)); };
+const NOTE_CASES = {
+  'begin --driver (stdout)': { args: ['begin', '--unit', 'u', '--ck', '{RUN}/ck/c.jsonl', '--run', '{RUN}', '--driver'], prepare: withCk },
+  'begin on a fresh run': { args: ['begin', '--unit', 'u', '--ck', '{RUN}/ck/c.jsonl', '--run', '{RUN}'] },
+  ck: { args: ['ck', '--ck', '{RUN}/ck/c.jsonl', '--run', '{RUN}', '{"a":1}'] },
+  'ck: not an object (2)': { args: ['ck', '--ck', '{RUN}/ck/c.jsonl', '--run', '{RUN}', '[1]'] },
+  'ck: outside ck/ (3)': { args: ['ck', '--ck', '{RUN}/exec.jsonl', '--run', '{RUN}', '{"a":1}'] },
+  'ck: relative, against the cwd': { args: ['ck', '--ck', 'ck/rel.jsonl', '--run', '{RUN}', '{"a":1}'], cwd: 'run' },
+  'ck: ck/ is a file (1)': { args: ['ck', '--ck', '{RUN}/ck/c.jsonl', '--run', '{RUN}', '{"a":1}'], prepare: s => writeFileSync(join(s.run, 'ck'), 'x') },
+  env: { args: ['env', '--unit', 'u', '--run', '{RUN}', 'tip'] },
+  'env: per-unit limit (4)': { args: ['env', '--unit', 'x', '--run', '{RUN}', 'tip'], prepare: s => writeFileSync(join(s.run, 'env.jsonl'), num('e', 3)) },
+  notes: { args: ['notes', '--unit', 'u', '--run', '{RUN}', 'n'] },
+  done: { args: ['done', '--unit', 'u', '--run', '{RUN}'] },
+  dying: { args: ['dying', '--unit', 'a:b', '--run', '{RUN}', '# stuck'] },
+  'symlinked own file (3)': { args: ['done', '--unit', 'u', '--run', '{RUN}'], prepare: s => symlinkSync(join(s.out, 'v'), join(s.run, 'status.jsonl')) },
+  'allow-post (stdout)': { args: ['allow-post', '--run', '{RUN}'] },
+  'activate (stdout)': { args: ['activate', '--name', 'n'], env: { TMPDIR: '{TMP}', ZT_MARKER_DIR: '{MD}' } },
+  'activate: bad name (2)': { args: ['activate', '--name', '../x'], env: { TMPDIR: '{TMP}', ZT_MARKER_DIR: '{MD}' } },
+  'activate: open base (3)': { args: ['activate', '--name', 'n'], env: { TMPDIR: '{TMP}', ZT_MARKER_DIR: '{MD}' },
+    prepare: s => { mkdirSync(join(s.tmp, `zt-review-${UID}`)); chmodSync(join(s.tmp, `zt-review-${UID}`), 0o777); } },
+  'deactivate --run': { args: ['deactivate', '--run', '{RUN}'] },
+  'deactivate: nothing active (3)': { args: ['deactivate'] },
+  'no trusted run dir (3)': { args: ['done', '--unit', 'u', '--run', '{OUT}'] },
+  'via ZT_RUN_DIR': { args: ['done', '--unit', 'u'], env: { ZT_RUN_DIR: '{RUN}' } },
+  'unknown subcommand (2)': { args: ['bogus'] },
+  'missing value (2)': { args: ['env', '--unit'] },
+  'poisoned env (64)': { args: ['done', '--unit', 'u', '--run', '{RUN}'], env: { PERL5OPT: '1' } },
+};
+
+test('should give byte-identical stdout, stderr and exit code spawned and in-process when each subcommand and exit class runs', async () => {
+  const codes = new Set();
+  const results = await inPool(Object.values(NOTE_CASES), PARALLEL, c => bothWays(c));
+  Object.keys(NOTE_CASES).forEach((name, i) => { assert.deepEqual(results[i].inproc, results[i].spawned, name); codes.add(results[i].spawned.code); });
+  assert.deepEqual([...codes].sort((a, b) => a - b), [0, 1, 2, 3, 4, 64], 'every exit class is covered');
+});
+
+const FUZZ_CMDS = ['begin', 'ck', 'env', 'notes', 'done', 'dying', 'activate', 'deactivate', 'allow-post', 'bogus', 'constructor', '', '--unit'];
+const FUZZ_FLAGS = [['--unit', 'u'], ['--unit', 'a b'], ['--unit', 'x'.repeat(81)], ['--unit', '.'], ['--unit'], ['--ck', '{RUN}/ck/c.jsonl'], ['--ck', '{RUN}/x.txt'],
+  ['--ck', 'rel.jsonl'], ['--ck'], ['--run', '{RUN}'], ['--run', '/nope'], ['--run', 'rel'], ['--run'], ['--name', 'n'], ['--name', '../x'], ['--name', '--driver'], ['--driver'],
+  ['{"a":1}'], ['hi'], [''], ['[1]'], ['$(touch PWNED)'], ['--tmp', '{OUT}']];
+
+test('should give the same result spawned and in-process when argv is random: unknown flags, missing values, odd values (fuzz)', async () => {
+  const rand = rng(2026);
+  const cases = Array.from({ length: 30 }, () => {
+    const args = [pick(rand, FUZZ_CMDS), ...Array.from({ length: Math.floor(rand() * 5) }, () => pick(rand, FUZZ_FLAGS)).flat()];
+    const env = { TMPDIR: '{TMP}', ZT_MARKER_DIR: '{MD}', ...(rand() < 0.15 && { [pick(rand, POISON)]: '1' }), ...(rand() < 0.2 && { ZT_RUN_DIR: '{RUN}' }) };
+    if (env.NODE_OPTIONS) env.NODE_OPTIONS = '--no-warnings';
+    if (['LD_PRELOAD', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES'].some(k => env[k])) for (const k of ['LD_PRELOAD', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES']) if (env[k]) env[k] = '';
+    return { args, env };
+  });
+  const results = await inPool(cases, PARALLEL, c => bothWays(c));
+  results.forEach((r, i) => assert.deepEqual(r.inproc, r.spawned, `case ${i}: ${JSON.stringify(cases[i])}`));
+});
+
+test('should leave process.env, the cwd, argv and exitCode as they were and never call process.exit when main runs in-process', async () => {
+  const run = mkRun(), tmp = mk(), md = join(mk(), 'marker'), before = processState();
+  const cases = [
+    [['activate', '--name', 'leak'], { env: { ...CLEAN_ENV, TMPDIR: tmp, ZT_MARKER_DIR: md }, cwd: tmp }],
+    [['done', '--unit', 'u'], { env: { ...CLEAN_ENV, ZT_RUN_DIR: run }, cwd: run }],
+    [['done', '--unit', 'u', '--run', run], { env: { ...CLEAN_ENV, NODE_OPTIONS: '--no-warnings' } }],
+    [['bogus'], { env: CLEAN_ENV }],
+    [['ck', '--ck', 'ck/x.jsonl', '--run', run, '{}'], { env: CLEAN_ENV, cwd: run }],
+  ];
+  for (const [args, opts] of cases) {
+    const { value, exits } = await recordExits(() => main(args, opts));
+    assert.deepEqual(exits, [], JSON.stringify(args));
+    assert.ok([0, 2, 64].includes(value.code), `${args[0]}: ${value.stderr}`);
+    assert.deepEqual(processState(), before, JSON.stringify(args));
+  }
+  assert.equal(existsSync(join(run, 'ck', 'x.jsonl')), true, 'the relative --ck went to the injected cwd');
+  assert.equal(existsSync(join(realpathSync(tmp), `zt-review-${UID}`, 'leak')), true, 'activate used the injected TMPDIR');
+});
+
+test('should share no state between two in-process calls when the first is poisoned or activates another run', async () => {
+  const run = mkRun(), tmpA = mk(), mdA = join(mk(), 'marker'), tmpB = mk(), mdB = join(mk(), 'marker');
+  assert.equal((await main(['done', '--unit', 'u', '--run', run], { env: { ...CLEAN_ENV, ENV: '1' } })).code, 64);
+  const clean = await main(['done', '--unit', 'u', '--run', run], { env: CLEAN_ENV });
+  assert.deepEqual(clean, { code: 0, stdout: '', stderr: '' });
+  const a = await main(['activate', '--name', 'a'], { env: { ...CLEAN_ENV, TMPDIR: tmpA, ZT_MARKER_DIR: mdA } });
+  assert.equal(a.code, 0, a.stderr);
+  const b = await main(['done', '--unit', 'u'], { env: { ...CLEAN_ENV, TMPDIR: tmpB, ZT_MARKER_DIR: mdB } });
+  assert.equal(b.code, 3, 'the run activated by the first call is not found through a marker or env the second call was not given');
+  assert.equal(b.stdout, '', 'no output carried over from the first call');
 });
