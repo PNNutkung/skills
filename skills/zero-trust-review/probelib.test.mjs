@@ -2,6 +2,7 @@
 // testprobe.mjs's unmutated run, and stopping a running command. Run: node --test probelib.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -275,4 +276,13 @@ test('should parse the given args and resolve paths against the given cwd when a
   assert.deepEqual([r.repo, r.scratch, r.runner, r.extraRo[0]], [join(dir, 'repo'), join(dir, 's'), join(dir, 'runner.mjs'), join(dir, 'ro')]);
   assert.equal(process.argv, argv);
   assert.equal(process.cwd(), here);
+});
+
+test('should let the process exit at once when the runner cannot start, instead of waiting out the backstop timer', t => {
+  const { dir, o } = runnerIn(t, 'runner.sh', SH_RUNNER, 0o644);
+  const lib = new URL('./probelib.mjs', import.meta.url).href;
+  const t0 = performance.now();
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', `const { runIn } = await import(${JSON.stringify(lib)}); const r = await runIn(${JSON.stringify(o)}, ${JSON.stringify(dir)}, 'exit 0'); console.log(r.exit);`], { encoding: 'utf8', timeout: 30000 });
+  assert.equal(r.stdout.trim(), '1', r.stderr);
+  assert.ok(performance.now() - t0 < 10000, `took ${Math.round(performance.now() - t0)} ms`);
 });

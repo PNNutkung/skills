@@ -128,8 +128,10 @@ function spawnRun(o, dir, command) {
   const argv = [o.runner, '--cwd', dir, '--rw', dir, '--timeout', String(o.timeout), ...o.ro.flatMap(p => ['--ro', p]), ...env.flatMap(e => ['--env', e]),
     '--', 'sh', '-c', command];
   return new Promise(done => {
-    // the runner enforces --timeout itself (124); this is only a backstop against a hung runner
-    const p = spawn(...runnerCommand(argv), { ...(o.procEnv ? { env: o.procEnv } : {}), ...(o.procCwd ? { cwd: o.procCwd } : {}), stdio: ['ignore', 'pipe', 'pipe'], timeout: (o.timeout + KILL_GRACE_SEC) * 1000, killSignal: 'SIGKILL' });
+    const p = spawn(...runnerCommand(argv), { ...(o.procEnv ? { env: o.procEnv } : {}), ...(o.procCwd ? { cwd: o.procCwd } : {}), stdio: ['ignore', 'pipe', 'pipe'] });
+    // the runner enforces --timeout itself (124); this is only a backstop against a hung runner. Our own timer, not spawn's timeout option:
+    // that one outlives a runner that failed to start and holds the process open until it fires
+    const hung = setTimeout(() => p.kill('SIGKILL'), (o.timeout + KILL_GRACE_SEC) * 1000);
     let tail = '', aborted = false, backstop;
     const stop = () => {
       aborted = true;
@@ -142,6 +144,7 @@ function spawnRun(o, dir, command) {
     const end = exit => {
       o.signal?.removeEventListener('abort', stop);
       clearTimeout(backstop);
+      clearTimeout(hung);
       done({ exit, sec: Math.round((performance.now() - t0) / 100) / 10, tail: tail.trim().slice(-keep), run: /ZT-RUN (\S+) exit=/.exec(tail)?.[1], ...(aborted && { aborted }) });
     };
     p.on('error', e => { tail = e.message; end(1); });
