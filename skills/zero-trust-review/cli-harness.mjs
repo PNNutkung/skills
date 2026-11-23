@@ -1,12 +1,33 @@
 // Test helper for the in-process CLIs (mutate.mjs, note.mjs; ADR 0003 ZtInProc): run a tool both ways, compare, and check that an in-process call
 // leaves the test process as it found it. Not a test file itself (node --test picks up *.test.mjs only).
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 /** The CLI as a real process: { code, stdout, stderr }. */
 export function spawnCli(file, argv, { env = process.env, cwd } = {}) {
   const r = spawnSync(process.execPath, [file, ...argv], { encoding: 'utf8', env, cwd });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
+
+/** The same, without blocking the event loop, so several runs (and in-process calls) can overlap. */
+export function spawnCliAsync(file, argv, { env = process.env, cwd } = {}) {
+  return new Promise((done, fail) => {
+    const p = spawn(process.execPath, [file, ...argv], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    p.stdout.setEncoding('utf8').on('data', d => { stdout += d; });
+    p.stderr.setEncoding('utf8').on('data', d => { stderr += d; });
+    p.on('error', fail);
+    p.on('close', code => done({ code, stdout, stderr }));
+  });
+}
+
+/** fn over items, at most n at a time; results in item order. */
+export async function inPool(items, n, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (next < items.length) { const i = next++; out[i] = await fn(items[i], i); } }));
+  return out;
+}
+export const PARALLEL = 4;
 
 /** Make two runs comparable: each [from, to] pair is replaced everywhere (longest first), then stub run ids that carry a pid are made stable. */
 export function normalize(r, pairs = []) {

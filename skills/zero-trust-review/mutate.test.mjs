@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main } from './mutate.mjs';
-import { normalize, pick, processState, recordExits, rng, spawnCli } from './cli-harness.mjs';
+import { PARALLEL, inPool, normalize, pick, processState, recordExits, rng, spawnCli, spawnCliAsync } from './cli-harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MUTATE = join(HERE, 'mutate.mjs');
@@ -573,9 +573,9 @@ test('should stop with exit 2 naming the fix for any invalid flag value, and acc
 });
 
 // ---- ADR 0003 ZtInProc: the CLI and main() are the same tool
-// stub run ids carry a pid, the rest of the output is the same bytes both ways
+// stub run ids carry a pid, the rest of the output is the same bytes both ways; the two runs overlap, and so do the cases of one test (PARALLEL at a time)
 const bothWays = async (argv, { env = process.env, cwd } = {}) => {
-  const spawned = spawnCli(MUTATE, argv, { env, cwd }), inproc = await main(argv, { env, cwd: cwd ?? process.cwd() });
+  const [spawned, inproc] = await Promise.all([spawnCliAsync(MUTATE, argv, { env, cwd }), main(argv, { env, cwd: cwd ?? process.cwd() })]);
   return { spawned: normalize(spawned), inproc: normalize(inproc) };
 };
 
@@ -613,10 +613,8 @@ test('should give byte-identical stdout, stderr and exit code spawned and in-pro
     'flag error': [run(fx, sd, []), flagEnv({ [FLAGS.max]: 'lots' })],
     'git error (bad revision)': [run({ ...fx, head: 'no-such-rev' }, sd, [])],
   };
-  for (const [name, [argv, env]] of Object.entries(cases)) {
-    const { spawned, inproc } = await bothWays(argv, { env });
-    assert.deepEqual(inproc, spawned, name);
-  }
+  const results = await inPool(Object.values(cases), PARALLEL, ([argv, env]) => bothWays(argv, { env }));
+  Object.keys(cases).forEach((name, i) => assert.deepEqual(results[i].inproc, results[i].spawned, name));
 });
 
 const FUZZ_PIECES = [['--max', '2'], ['--max', 'x'], ['--max'], ['--jobs', '0'], ['--jobs', '1'], ['--budget', '-1'], ['--budget', '0'], ['--kill-exits', '1,2'],
@@ -627,12 +625,12 @@ const FUZZ_PIECES = [['--max', '2'], ['--max', 'x'], ['--max'], ['--jobs', '0'],
 test('should give the same result spawned and in-process when argv is random: unknown flags, missing values, odd values (fuzz)', { skip }, async t => {
   const rand = rng(4242), fx = fixture(t), sd = stubDir(fx);
   const base = [['--repo', fx.repo], ['--base', fx.base], ['--head', fx.head], ['--scratch', fx.scratch], ['--cmd', 'python3 {file}'], ['--runner', join(sd, 'stub-runner')]];
-  for (let i = 0; i < 30; i++) {
+  const cases = Array.from({ length: 30 }, () => {
     const argv = [...base.filter(() => rand() < 0.85).flat(), ...Array.from({ length: Math.floor(rand() * 4) }, () => pick(rand, FUZZ_PIECES)).flat(), '--max', '2'];
-    const env = flagEnv(rand() < 0.2 ? { [FLAGS.strict]: pick(rand, ['true', 'nope', '']) } : {});
-    const { spawned, inproc } = await bothWays(argv, { env });
-    assert.deepEqual(inproc, spawned, `case ${i}: ${JSON.stringify(argv)}`);
-  }
+    return { argv, env: flagEnv(rand() < 0.2 ? { [FLAGS.strict]: pick(rand, ['true', 'nope', '']) } : {}) };
+  });
+  const results = await inPool(cases, PARALLEL, c => bothWays(c.argv, { env: c.env }));
+  results.forEach((r, i) => assert.deepEqual(r.inproc, r.spawned, `case ${i}: ${JSON.stringify(cases[i].argv)}`));
 });
 
 test('should leave process.env, the cwd, argv and exitCode as they were and never call process.exit when main runs in-process', { skip }, async t => {

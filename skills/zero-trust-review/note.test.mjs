@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { activate } from './runctx.mjs';
 import { checkToolEnv, main } from './note.mjs';
-import { normalize, pick, processState, recordExits, rng, spawnCli } from './cli-harness.mjs';
+import { PARALLEL, inPool, normalize, pick, processState, recordExits, rng, spawnCliAsync } from './cli-harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const NOTE = join(HERE, 'note.mjs');
@@ -338,9 +338,7 @@ test('input is data: shell syntax in text, ids and paths is stored or rejected, 
 });
 
 // --- activate / deactivate ---
-const actArgs = (name, tmp, md, extra, env) => [['activate', '--name', name, ...extra], { env: { TMPDIR: tmp, ZT_MARKER_DIR: md, ...env } }];
-const act = (name, tmp, md, extra = [], env = {}) => note(...actArgs(name, tmp, md, extra, env));
-const actCli = (name, tmp, md, extra = [], env = {}) => noteCli(...actArgs(name, tmp, md, extra, env));
+const act = (name, tmp, md, extra = [], env = {}) => note(['activate', '--name', name, ...extra], { env: { TMPDIR: tmp, ZT_MARKER_DIR: md, ...env } });
 
 test('activate: creates <tmp>/zt-review-<uid>/NAME (0700) and the 0600 marker, prints the run dir; later commands find it with no --run; deactivate removes the marker', async () => {
   const tmp = mk(), md = join(mk(), 'marker'), env = { TMPDIR: tmp, ZT_MARKER_DIR: md };
@@ -454,20 +452,19 @@ test('checkToolEnv names every poisoned variable that is set; a clean env passes
   for (const k of POISON) assert.match(msgOf(() => checkToolEnv({ [k]: '1' })) ?? 'passed', new RegExp(k), k);
 });
 
-test("each poisoned variable in the tool's own env: exit 64 before anything, nothing written, for every subcommand; a clean env is normal", () => {
+test("each poisoned variable in the tool's own env: exit 64 before anything, nothing written, for every subcommand; a clean env is normal", async () => {
   const run = mkRun(), ck = join(run, 'ck', 'c.jsonl');
   const cmds = [['begin', '--unit', 'u', '--ck', ck], ['ck', '--ck', ck, '{"a":1}'], ['env', '--unit', 'u', 'hi'], ['notes', '--unit', 'u', 'hi'], ['done', '--unit', 'u'], ['dying', '--unit', 'u', 'hi'], ['deactivate'], ['bogus'], []];
-  for (const k of POISON) {
-    for (const args of cmds) {
-      const r = noteCli([...args, '--run', run], { env: { [k]: SAFE(k) } });
-      assert.equal(r.status, 64, `${k} ${args[0]}: ${r.stderr}`);
-      assert.match(r.stderr, new RegExp(k));
-      assert.equal(r.stdout, '', k);
-    }
-    const a = actCli('n', mk(), join(mk(), 'marker'), [], { [k]: SAFE(k) });
-    assert.equal(a.status, 64, `${k} activate`);
-    assert.equal(a.stdout, '', k);
-  }
+  // every case is a real process (the loader vars must reach a real start); they run PARALLEL at a time
+  const jobs = POISON.flatMap(k => [...cmds.map(args => ({ k, name: `${k} ${args[0]}`, argv: [...args, '--run', run], env: { [k]: SAFE(k) } })),
+    { k, name: `${k} activate`, argv: ['activate', '--name', 'n'], env: { TMPDIR: mk(), ZT_MARKER_DIR: join(mk(), 'marker'), [k]: SAFE(k) } }]);
+  const results = await inPool(jobs, PARALLEL, j => spawnCliAsync(NOTE, j.argv, { env: { ...CLEAN_ENV, ...j.env } }));
+  jobs.forEach(({ k, name }, i) => {
+    const r = results[i];
+    assert.equal(r.code, 64, `${name}: ${r.stderr}`);
+    assert.match(r.stderr, new RegExp(k));
+    assert.equal(r.stdout, '', k);
+  });
   assert.deepEqual(ls(run), []);
   assert.equal(noteCli(['done', '--unit', 'u', '--run', run]).status, 0);
 });
@@ -492,12 +489,14 @@ async function bothWays({ args, env = {}, prepare, cwd }) {
   const runSide = async how => {
     const s = side();
     prepare?.(s);
+    await null; // the spawned and the in-process side overlap
     const a = args.map(x => fill(x, s)), e = { ...CLEAN_ENV, ...Object.fromEntries(Object.entries(env).map(([k, v]) => [k, fill(v, s)])) };
     const at = cwd === 'run' ? s.run : process.cwd();
-    const r = how === 'spawn' ? spawnCli(NOTE, a, { env: e, cwd: at }) : await main(a, { env: e, cwd: at });
+    const r = how === 'spawn' ? await spawnCliAsync(NOTE, a, { env: e, cwd: at }) : await main(a, { env: e, cwd: at });
     return normalize(r, s.pairs);
   };
-  return { spawned: await runSide('spawn'), inproc: await runSide('inproc') };
+  const [spawned, inproc] = await Promise.all([runSide('spawn'), runSide('inproc')]);
+  return { spawned, inproc };
 }
 
 const withCk = s => { mkdirSync(join(s.run, 'ck')); writeFileSync(join(s.run, 'ck', 'c.jsonl'), '{"a":1}\n'); writeFileSync(join(s.run, 'env.jsonl'), num('e', 20)); writeFileSync(join(s.run, 'notes.jsonl'), num('n', 3)); };
@@ -531,11 +530,8 @@ const NOTE_CASES = {
 
 test('should give byte-identical stdout, stderr and exit code spawned and in-process when each subcommand and exit class runs', async () => {
   const codes = new Set();
-  for (const [name, c] of Object.entries(NOTE_CASES)) {
-    const { spawned, inproc } = await bothWays(c);
-    assert.deepEqual(inproc, spawned, name);
-    codes.add(spawned.code);
-  }
+  const results = await inPool(Object.values(NOTE_CASES), PARALLEL, c => bothWays(c));
+  Object.keys(NOTE_CASES).forEach((name, i) => { assert.deepEqual(results[i].inproc, results[i].spawned, name); codes.add(results[i].spawned.code); });
   assert.deepEqual([...codes].sort((a, b) => a - b), [0, 1, 2, 3, 4, 64], 'every exit class is covered');
 });
 
@@ -546,14 +542,15 @@ const FUZZ_FLAGS = [['--unit', 'u'], ['--unit', 'a b'], ['--unit', 'x'.repeat(81
 
 test('should give the same result spawned and in-process when argv is random: unknown flags, missing values, odd values (fuzz)', async () => {
   const rand = rng(2026);
-  for (let i = 0; i < 30; i++) {
+  const cases = Array.from({ length: 30 }, () => {
     const args = [pick(rand, FUZZ_CMDS), ...Array.from({ length: Math.floor(rand() * 5) }, () => pick(rand, FUZZ_FLAGS)).flat()];
     const env = { TMPDIR: '{TMP}', ZT_MARKER_DIR: '{MD}', ...(rand() < 0.15 && { [pick(rand, POISON)]: '1' }), ...(rand() < 0.2 && { ZT_RUN_DIR: '{RUN}' }) };
     if (env.NODE_OPTIONS) env.NODE_OPTIONS = '--no-warnings';
     if (['LD_PRELOAD', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES'].some(k => env[k])) for (const k of ['LD_PRELOAD', 'LD_AUDIT', 'DYLD_INSERT_LIBRARIES']) if (env[k]) env[k] = '';
-    const { spawned, inproc } = await bothWays({ args, env });
-    assert.deepEqual(inproc, spawned, `case ${i}: ${JSON.stringify(args)} ${JSON.stringify(env)}`);
-  }
+    return { args, env };
+  });
+  const results = await inPool(cases, PARALLEL, c => bothWays(c));
+  results.forEach((r, i) => assert.deepEqual(r.inproc, r.spawned, `case ${i}: ${JSON.stringify(cases[i])}`));
 });
 
 test('should leave process.env, the cwd, argv and exitCode as they were and never call process.exit when main runs in-process', async () => {
