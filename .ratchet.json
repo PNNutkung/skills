@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "rules": {
+    "spawn-async-timeout": {},
+    "test-serial": {}
+  },
+  "patterns": {
+    "spawn-async-timeout": {
+      "regex": "\\bspawn\\([^;]*\\btimeout\\s*:",
+      "glob": "**/*.mjs"
+    },
+    "test-serial": {
+      "regex": "test-concurrency[= ]1\\b|concurrency:\\s*(1|false)\\b",
+      "glob": "**/*.{mjs,yml}"
+    }
+  },
+  "accepted": []
+}

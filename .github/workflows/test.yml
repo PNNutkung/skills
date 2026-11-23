@@ -48,6 +48,11 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         shell: bash
         run: node rules/checks/test-time.mjs test-time.jsonl
+      # The retro ratchet (.ratchet.json): no rule's count goes up in any file.
+      - name: Ratchet
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        shell: bash
+        run: node skills/retro/ratchet.mjs check --ci
 
   # The same suite with node coming from asdf shims, the way a developer machine with a version manager has it.
   asdf:

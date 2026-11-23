@@ -18,6 +18,7 @@ Skills installed with `npx skills add` get their own folder only, without `rules
 | [`tool-discipline.md`](./tool-discipline.md) | Files go through the file tools; Bash runs commands | paired-agent-tdd, qa-sweep |
 | [`test-naming.md`](./test-naming.md) | Test names say `should ... when ...` | paired-agent-tdd, `hooks/test-name-guard` |
 | [`paths.md`](./paths.md) | Compare paths by their real path; a test covers a linked folder | every skill |
+| [`performance.md`](./performance.md) | Use every core when it lowers wall time; measure the CPU floor before a speed target | every skill, definition-of-done |
 
 ## Guardrails and what enforces them
 
@@ -47,4 +48,6 @@ Every flag, its values and its default: [README, Flags](../README.md#flags).
 | qa-sweep runs e2e only against a local host unless the user confirms the URL | `target.mjs` | always |
 | A change request ships unit, integration and e2e tests, and removes or skips no test silently | `hooks/pr-test-tiers` (standalone) | install it |
 | A commit adds no test named outside `should ... when ...` | `hooks/test-name-guard` (standalone) | install it |
+| No async `spawn` with a `timeout:` option, and no `--test-concurrency=1` / `concurrency: 1` (or `false`) in a test or workflow, beyond today's counts ([`performance.md`](./performance.md)) | `.ratchet.json` rules `spawn-async-timeout` and `test-serial`, checked by `ratchet.mjs check --ci` in CI | always (CI) |
+| One test file takes at most 30 s and the suite at most 120 s ([`performance.md`](./performance.md)) | `rules/checks/test-time.mjs` (a node --test reporter plus a check), CI node 24 on Ubuntu | `CHECKS_TEST_FILE_SECONDS_MAX`, `CHECKS_TEST_SUITE_SECONDS_MAX` |
 | Every skill with a flag that defaults ON keeps an e2e test marked `flags: defaults` that runs with that skill's flags unset ([`flag-defaults-e2e.md`](./flag-defaults-e2e.md)) | `rules/checks/flag-defaults-e2e.mjs`, run by `rules/checks/flag-defaults-e2e.test.mjs` in CI | always (CI) |
