@@ -27,26 +27,10 @@ const MAX_SURVIVORS_SHOWN = 3, LINE_CUT = 40; // the lead pastes this summary in
 const PATCH_FAILED = 125;
 const BASELINE_REUSE_FLAG = 'ZT_MUTATION_BASELINE_REUSE_ENABLED', BUDGET_STRICT_FLAG = 'ZT_MUTATION_BUDGET_STRICT_ENABLED';
 
-// probelib.parseProbeArgs reads process.argv and resolves paths against process.cwd(): both are swapped in for this one synchronous call and put back
-// before anything else can run, so an in-process call sees exactly what the CLI would
-const EVAL_FLAGS = ['-e', '--eval', '-p', '--print'];
-function withArgv(argv, cwd, fn) {
-  const saved = process.argv, here = process.cwd();
-  const head = process.execArgv.some(a => EVAL_FLAGS.includes(a)) ? saved.slice(0, 1) : saved.slice(0, 2); // what util.parseArgs slices off
-  process.argv = [...head, ...argv];
-  try {
-    if (cwd !== here) process.chdir(cwd);
-    return fn();
-  } finally {
-    process.argv = saved;
-    if (process.cwd() !== here) process.chdir(here);
-  }
-}
-
 function parse(argv, env, cwd) {
-  const { values, ...common } = withArgv(argv, cwd, () => parseProbeArgs({ max: { type: 'string', default: '30' }, budget: { type: 'string', default: '600' }, 'kill-exits': { type: 'string' }, files: { type: 'string' },
+  const { values, ...common } = parseProbeArgs({ max: { type: 'string', default: '30' }, budget: { type: 'string', default: '600' }, 'kill-exits': { type: 'string' }, files: { type: 'string' },
     'baseline-from': { type: 'string' } },
-    { optional: argv.includes('--files') ? ['base'] : [] }));
+    { optional: argv.includes('--files') ? ['base'] : [], args: argv, cwd });
   if (values.files && !common.tests?.length) throw new Error('--tests is required with --files');
   const killExits = values['kill-exits']?.split(',').map(Number);
   if (killExits?.some(n => !Number.isInteger(n) || n < 1 || n > 255)) throw new Error('--kill-exits wants integers 1-255, comma separated');

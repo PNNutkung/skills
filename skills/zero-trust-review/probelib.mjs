@@ -24,17 +24,18 @@ export const intOption = (values, name, min) => {
 export const rel = p => { const n = normalize(p).replace(/\/+$/, ''); if (n === '.' || isAbsolute(n) || n.split('/').includes('..')) throw new Error(`path must stay inside the repo: ${p}`); return n; };
 
 // The options every probe takes, validated. `extra` adds the probe's own parseArgs definitions; their raw values come back in `values`. `optional` names common options this probe may omit (e.g. base).
-export function parseProbeArgs(extra = {}, { optional = [] } = {}) {
-  const str = { type: 'string' }, many = { type: 'string', multiple: true, default: [] };
-  const { values: v } = parseArgs({ options: { repo: str, base: str, head: str, scratch: str, cmd: str, tests: str, runner: str, link: many, ro: many, env: many,
+// `args` and `cwd` (ADR 0003) let an in-process caller pass its own argv and working directory; left out, they are process.argv and process.cwd() as before
+export function parseProbeArgs(extra = {}, { optional = [], args, cwd } = {}) {
+  const str = { type: 'string' }, many = { type: 'string', multiple: true, default: [] }, abs = p => (cwd === undefined ? resolve(p) : resolve(cwd, p));
+  const { values: v } = parseArgs({ ...(args === undefined ? {} : { args }), options: { repo: str, base: str, head: str, scratch: str, cmd: str, tests: str, runner: str, link: many, ro: many, env: many,
     jobs: { ...str, default: '4' }, timeout: { ...str, default: '120' }, ...extra } });
   for (const k of ['repo', 'base', 'head', 'scratch', 'cmd']) if (!v[k] && !optional.includes(k)) throw new Error(`--${k} is required`);
   if (!v.cmd.includes('{file}')) throw new Error('--cmd must contain {file}');
   for (const e of v.env) if (!/^[A-Za-z_]\w*=/.test(e)) throw new Error(`--env wants K=V, got ${e}`);
-  const runner = resolve(v.runner ?? join(dirname(fileURLToPath(import.meta.url)), 'sandbox-run.mjs'));
+  const runner = abs(v.runner ?? join(dirname(fileURLToPath(import.meta.url)), 'sandbox-run.mjs'));
   if (!existsSync(runner)) throw new Error(`runner not found: ${runner}`);
-  return { values: v, repo: resolve(v.repo), base: v.base, head: v.head, scratch: resolve(v.scratch), cmd: v.cmd, runner, env: v.env, link: v.link.map(rel),
-    extraRo: v.ro.map(p => resolve(p)), tests: v.tests?.split(',').filter(Boolean).map(rel), jobs: intOption(v, 'jobs', 1), timeout: intOption(v, 'timeout', 1) };
+  return { values: v, repo: abs(v.repo), base: v.base, head: v.head, scratch: abs(v.scratch), cmd: v.cmd, runner, env: v.env, link: v.link.map(rel),
+    extraRo: v.ro.map(p => abs(p)), tests: v.tests?.split(',').filter(Boolean).map(rel), jobs: intOption(v, 'jobs', 1), timeout: intOption(v, 'timeout', 1) };
 }
 
 // An editable install (pip -e) imports from absolute directories listed in site-packages/*.pth. The sandbox reads only what it is granted, so grant

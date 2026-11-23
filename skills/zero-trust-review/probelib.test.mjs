@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FlagError } from './flags.mjs';
-import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
+import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, parseProbeArgs, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
 
 // a seeded generator, so a failing case can be replayed
 const rng = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -264,4 +264,15 @@ test('should start the runner with o.procEnv and o.procCwd when they are given, 
   assert.equal(backendOf(o.runner, { ...process.env, ZT_PROBE_SEEN: 'yes' }), 'check:yes');
   assert.equal(backendOf(o.runner), 'check:unset');
   assert.equal(process.env.ZT_PROBE_SEEN, undefined);
+});
+
+test('should parse the given args and resolve paths against the given cwd when args and cwd are passed, leaving process.argv and cwd alone', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'plib-args-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'runner.mjs'), '');
+  const argv = process.argv, here = process.cwd();
+  const r = parseProbeArgs({}, { args: ['--repo', 'repo', '--base', 'HEAD', '--head', 'HEAD', '--scratch', 's', '--cmd', 'sh {file}', '--runner', 'runner.mjs', '--ro', 'ro'], cwd: dir });
+  assert.deepEqual([r.repo, r.scratch, r.runner, r.extraRo[0]], [join(dir, 'repo'), join(dir, 's'), join(dir, 'runner.mjs'), join(dir, 'ro')]);
+  assert.equal(process.argv, argv);
+  assert.equal(process.cwd(), here);
 });
