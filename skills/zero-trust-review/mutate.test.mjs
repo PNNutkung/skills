@@ -648,6 +648,7 @@ test('should leave process.env, the cwd, argv and exitCode as they were and neve
   }
 });
 
+// cwd: linked (rules/checks/inproc-cwd.mjs): this test runs main and the CLI through a linked folder
 test('should resolve relative paths against the injected cwd, like the CLI started there, and leave the process cwd alone when cwd is given', { skip }, async t => {
   const fx = fixture(t), here = process.cwd();
   stubDir(fx);

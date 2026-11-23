@@ -484,14 +484,15 @@ function side() {
   return { run, tmp, md, out, pairs: [[run, '<RUN>'], [realpathSync(tmp), '<TMP>'], [tmp, '<TMP>'], [md, '<MD>'], [out, '<OUT>']] };
 }
 const fill = (x, s) => (typeof x === 'string' ? x.replaceAll('{RUN}', s.run).replaceAll('{TMP}', s.tmp).replaceAll('{MD}', s.md).replaceAll('{OUT}', s.out) : x);
-// prepare(s) sets up files in the side's dirs; args and env may name them as {RUN} {TMP} {MD} {OUT}; cwd 'run' starts the tool in the run dir
+// prepare(s) sets up files in the side's dirs; args and env may name them as {RUN} {TMP} {MD} {OUT}; cwd 'run' starts the tool in the run dir, 'linked run' in a link to it
 async function bothWays({ args, env = {}, prepare, cwd }) {
   const runSide = async how => {
     const s = side();
     prepare?.(s);
     await null; // the spawned and the in-process side overlap
     const a = args.map(x => fill(x, s)), e = { ...CLEAN_ENV, ...Object.fromEntries(Object.entries(env).map(([k, v]) => [k, fill(v, s)])) };
-    const at = cwd === 'run' ? s.run : process.cwd();
+    let at = cwd === 'run' ? s.run : process.cwd();
+    if (cwd === 'linked run') { at = join(mk(), 'run'); symlinkSync(s.run, at); s.pairs.unshift([at, '<RUN>']); } // the run dir through a link, as /var is on macOS
     const r = how === 'spawn' ? await spawnCliAsync(NOTE, a, { env: e, cwd: at }) : await main(a, { env: e, cwd: at });
     return normalize(r, s.pairs);
   };
@@ -533,6 +534,18 @@ test('should give byte-identical stdout, stderr and exit code spawned and in-pro
   const results = await inPool(Object.values(NOTE_CASES), PARALLEL, c => bothWays(c));
   Object.keys(NOTE_CASES).forEach((name, i) => { assert.deepEqual(results[i].inproc, results[i].spawned, name); codes.add(results[i].spawned.code); });
   assert.deepEqual([...codes].sort((a, b) => a - b), [0, 1, 2, 3, 4, 64], 'every exit class is covered');
+});
+
+// cwd: linked (rules/checks/inproc-cwd.mjs, rules/paths.md): a started process sees its cwd as a real path, so main must too
+test('should give the same result spawned and in-process when the cwd is a linked folder and the paths are relative to it', async () => {
+  const cases = [
+    { args: ['ck', '--ck', 'ck/rel.jsonl', '--run', '.', '{"a":1}'], cwd: 'linked run' },
+    { args: ['done', '--unit', 'u', '--run', '.'], cwd: 'linked run' },
+    { args: ['ck', '--ck', '../outside.jsonl', '--run', '.', '{"a":1}'], cwd: 'linked run' },
+  ];
+  const results = await inPool(cases, PARALLEL, c => bothWays(c));
+  results.forEach((r, i) => assert.deepEqual(r.inproc, r.spawned, JSON.stringify(cases[i].args)));
+  assert.deepEqual(results.map(r => r.spawned.code), [0, 0, 3], JSON.stringify(results));
 });
 
 const FUZZ_CMDS = ['begin', 'ck', 'env', 'notes', 'done', 'dying', 'activate', 'deactivate', 'allow-post', 'bogus', 'constructor', '', '--unit'];

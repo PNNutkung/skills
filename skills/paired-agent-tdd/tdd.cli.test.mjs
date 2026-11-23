@@ -215,6 +215,19 @@ test('main: should resolve relative paths against the injected cwd when it is no
   assert.equal(miss.code, 2, 'the same relative path from another cwd is another file');
 });
 
+// cwd: linked (rules/checks/inproc-cwd.mjs, rules/paths.md): a started process sees its cwd as a real path (macOS /var -> /private/var), so main must too
+test('main: should give the same result as the CLI started there when the injected cwd is a linked folder', async t => {
+  const fx = fixture(t);
+  const linked = join(fx.tmp, 'linked');
+  symlinkSync(fx.dir, linked);
+  const env = envOf(fx, FIXED_DATES), seen = text => normalize(text, fx).replaceAll(linked, 'LINK');
+  for (const argv of [['plan', '--plan', 'plan.json', '--runner', 'stub/stub-runner'], ['plan', '--plan', 'missing.json'], ['resume', '--run', 'tmp', '--runner', 'stub/stub-runner']]) {
+    const spawned = spawnTdd(argv, env, linked), inproc = await main(argv, { env, cwd: linked });
+    assert.deepEqual({ code: inproc.code, stdout: seen(inproc.stdout), stderr: seen(inproc.stderr) },
+      { code: spawned.status, stdout: seen(spawned.out), stderr: seen(spawned.err) }, JSON.stringify(argv));
+  }
+});
+
 test('main: should give the test runner RUN as ZT_RUN_DIR in its own env when a command runs tests in-process', async t => {
   const fx = fixture(t);
   mkdirSync(join(fx.dir, 'marker'), { recursive: true });
