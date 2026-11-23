@@ -24,17 +24,18 @@ export const intOption = (values, name, min) => {
 export const rel = p => { const n = normalize(p).replace(/\/+$/, ''); if (n === '.' || isAbsolute(n) || n.split('/').includes('..')) throw new Error(`path must stay inside the repo: ${p}`); return n; };
 
 // The options every probe takes, validated. `extra` adds the probe's own parseArgs definitions; their raw values come back in `values`. `optional` names common options this probe may omit (e.g. base).
-export function parseProbeArgs(extra = {}, { optional = [] } = {}) {
-  const str = { type: 'string' }, many = { type: 'string', multiple: true, default: [] };
-  const { values: v } = parseArgs({ options: { repo: str, base: str, head: str, scratch: str, cmd: str, tests: str, runner: str, link: many, ro: many, env: many,
+// `args` and `cwd` (ADR 0003) let an in-process caller pass its own argv and working directory; left out, they are process.argv and process.cwd() as before
+export function parseProbeArgs(extra = {}, { optional = [], args, cwd } = {}) {
+  const str = { type: 'string' }, many = { type: 'string', multiple: true, default: [] }, abs = p => (cwd === undefined ? resolve(p) : resolve(cwd, p));
+  const { values: v } = parseArgs({ ...(args === undefined ? {} : { args }), options: { repo: str, base: str, head: str, scratch: str, cmd: str, tests: str, runner: str, link: many, ro: many, env: many,
     jobs: { ...str, default: '4' }, timeout: { ...str, default: '120' }, ...extra } });
   for (const k of ['repo', 'base', 'head', 'scratch', 'cmd']) if (!v[k] && !optional.includes(k)) throw new Error(`--${k} is required`);
   if (!v.cmd.includes('{file}')) throw new Error('--cmd must contain {file}');
   for (const e of v.env) if (!/^[A-Za-z_]\w*=/.test(e)) throw new Error(`--env wants K=V, got ${e}`);
-  const runner = resolve(v.runner ?? join(dirname(fileURLToPath(import.meta.url)), 'sandbox-run.mjs'));
+  const runner = abs(v.runner ?? join(dirname(fileURLToPath(import.meta.url)), 'sandbox-run.mjs'));
   if (!existsSync(runner)) throw new Error(`runner not found: ${runner}`);
-  return { values: v, repo: resolve(v.repo), base: v.base, head: v.head, scratch: resolve(v.scratch), cmd: v.cmd, runner, env: v.env, link: v.link.map(rel),
-    extraRo: v.ro.map(p => resolve(p)), tests: v.tests?.split(',').filter(Boolean).map(rel), jobs: intOption(v, 'jobs', 1), timeout: intOption(v, 'timeout', 1) };
+  return { values: v, repo: abs(v.repo), base: v.base, head: v.head, scratch: abs(v.scratch), cmd: v.cmd, runner, env: v.env, link: v.link.map(rel),
+    extraRo: v.ro.map(p => abs(p)), tests: v.tests?.split(',').filter(Boolean).map(rel), jobs: intOption(v, 'jobs', 1), timeout: intOption(v, 'timeout', 1) };
 }
 
 // An editable install (pip -e) imports from absolute directories listed in site-packages/*.pth. The sandbox reads only what it is granted, so grant
@@ -115,6 +116,7 @@ export function restore(repo, copy, srcChanges) {
 // Runs `command` (a shell line) in `dir` through the sandbox runner. -> { exit, sec, tail, run } where run = the id of the runner's ledger entry (ZT-RUN <id>)
 // o.slots (a limiter) caps how many commands run at once. o.signal (an AbortSignal) stops the command: SIGTERM makes the runner kill the command's process group;
 // a stopped or never-started command comes back with aborted: true and decides nothing.
+// o.procEnv / o.procCwd: the runner process's own environment and cwd (an in-process caller's injected ones; unset: this process's).
 export function runIn(o, dir, command) {
   return o.slots ? o.slots(() => spawnRun(o, dir, command)) : spawnRun(o, dir, command);
 }
@@ -126,8 +128,10 @@ function spawnRun(o, dir, command) {
   const argv = [o.runner, '--cwd', dir, '--rw', dir, '--timeout', String(o.timeout), ...o.ro.flatMap(p => ['--ro', p]), ...env.flatMap(e => ['--env', e]),
     '--', 'sh', '-c', command];
   return new Promise(done => {
-    // the runner enforces --timeout itself (124); this is only a backstop against a hung runner
-    const p = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'pipe'], timeout: (o.timeout + KILL_GRACE_SEC) * 1000, killSignal: 'SIGKILL' });
+    const p = spawn(...runnerCommand(argv), { ...(o.procEnv ? { env: o.procEnv } : {}), ...(o.procCwd ? { cwd: o.procCwd } : {}), stdio: ['ignore', 'pipe', 'pipe'] });
+    // the runner enforces --timeout itself (124); this is only a backstop against a hung runner. Our own timer, not spawn's timeout option:
+    // that one outlives a runner that failed to start and holds the process open until it fires
+    const hung = setTimeout(() => p.kill('SIGKILL'), (o.timeout + KILL_GRACE_SEC) * 1000);
     let tail = '', aborted = false, backstop;
     const stop = () => {
       aborted = true;
@@ -140,6 +144,7 @@ function spawnRun(o, dir, command) {
     const end = exit => {
       o.signal?.removeEventListener('abort', stop);
       clearTimeout(backstop);
+      clearTimeout(hung);
       done({ exit, sec: Math.round((performance.now() - t0) / 100) / 10, tail: tail.trim().slice(-keep), run: /ZT-RUN (\S+) exit=/.exec(tail)?.[1], ...(aborted && { aborted }) });
     };
     p.on('error', e => { tail = e.message; end(1); });
@@ -213,7 +218,11 @@ export async function pool(items, n, fn) {
   return out;
 }
 
-export function backendOf(runner) {
-  const r = spawnSync(process.execPath, [runner, '--check'], { encoding: 'utf8', timeout: 15000 });
+// ADR 0003: a node file runs under this node; any other runner (a test's sh stub) runs directly and needs its exec bit
+const NODE_FILE = /\.(mjs|js|cjs)$/i;
+const runnerCommand = argv => (NODE_FILE.test(argv[0]) ? [process.execPath, argv] : [argv[0], argv.slice(1)]);
+
+export function backendOf(runner, env) { // env: the runner's own environment (undefined: this process's)
+  const r = spawnSync(...runnerCommand([runner, '--check']), { ...(env ? { env } : {}), encoding: 'utf8', timeout: 15000 });
   return r.status === 0 ? r.stdout.trim().split('\n')[0].slice(0, 40) || 'sandbox' : 'none';
 }

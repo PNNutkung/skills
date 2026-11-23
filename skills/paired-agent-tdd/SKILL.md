@@ -35,6 +35,8 @@ TDD (RED, GREEN) as **driver/navigator pairs**, one pipeline per file group, run
 | `cmd` | The project's one-test-file command with `{file}`, e.g. `pytest -q {file}`. Agents and gates both run it. `link` (venv dir), `env`, and with the sandbox `ro` (interpreter install), as in [`probes.md`](./probes.md). |
 | options | `ticket` (path: DoD quotes are checked against it), `cover` + `coverMin` (an lcov-writing command, default minimum 80% of changed lines), `integration {file, goal}` only when the change crosses a process, DB or network boundary, `mutation {max, budget, off}`, `rounds` (repair rounds per stage, 1-4, default 3), `maxRepairs` (repairs for the first run, default 2 per group), `smoke` (1-3 tests that pass at the base, to prove the runner), `sandbox` (true = confined gates), `mode` (`"fast"` or `"paired"`, below). `src` may hold config files; never a test-like path. |
 
+Mutation covers only these source types (`mutants.mjs` in zero-trust-review): `.py`, `.js` `.jsx` `.mjs` `.cjs` `.ts` `.tsx`, and the C-like `.go` `.java` `.c` `.h` `.cc` `.cpp` `.cs` `.rs` `.kt` `.swift` `.php` `.scala`. Any other source (`.sh`, `.txt`, ...) gets 0 mutants, so a test or fixture that asserts on mutation needs one of these.
+
 Partition by file ownership, never by chore. Run the `graph-planner` (opus, one agent) only when files import one another and the groups are unclear. If a driver would need a file another group owns, the groups are wrong: merge them.
 
 ## Step 1 — Plan

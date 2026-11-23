@@ -1,6 +1,7 @@
 // End to end for "continue after a failure": the REAL workflow.js and the REAL gates in a fixture repo, scripted agents, the direct runner (E2E_REAL=1: the real sandbox). Run 1 has no repair budget and
 // a lazy GREEN pass, so its group is PAUSED. `tdd.mjs resume` writes RUN/continue.json from the gate files alone (no agent, no token). Run 2 gets that file as args.resume and
 // spends only what is left: one repair, one check, the review. Run: node e2e.resume.test.mjs
+// The fixture is POSIX sh (`sh {file}`): a fixture test run starts no node (ADR 0003 A13); mutation is off in this plan, so nothing is lost.
 import assert from 'node:assert';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -21,37 +22,40 @@ for (const d of [repo, tmp]) mkdirSync(d);
 process.env.TMPDIR = tmp;
 process.env.ZT_MARKER_DIR = join(dir, 'marker');
 Object.assign(process.env, SPEED_OFF_ENV); // the v2.0.0 pipeline these assertions describe; e2e.speed.test.mjs runs the speed flags
-const REAL = process.env.E2E_REAL === '1'; // opt-in: the zero-trust-review sandbox and this node binary instead of the direct runner (the default of a plan)
-const NODE = realpathSync(process.execPath);
+const REAL = process.env.E2E_REAL === '1'; // opt-in: the zero-trust-review sandbox instead of the direct runner (the default of a plan)
 const RUNNER = REAL ? join(HERE, '..', 'zero-trust-review', 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs');
 const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
 const put = (p, text) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), text); };
 git('init', '-q');
 put('package.json', '{"type":"module"}\n');
-put('tests/test_base.mjs', "import { test } from 'node:test';\ntest('the base still passes', () => {});\n"); // plan's preflight runs it through the sandbox first
+put('tests/test_base.sh', "true # the base still passes\n"); // plan's preflight runs it through the sandbox first
 git('add', '-A'); git('commit', '-qm', 'base');
 
 writeFileSync(join(dir, 'plan.json'), JSON.stringify({
-  repo, cmd: `${REAL ? NODE : 'node'} --test {file}`, ...(REAL ? { ro: [dirname(dirname(NODE))] } : {}), mutation: { off: true }, maxRepairs: 0,
+  repo, cmd: 'sh {file}', mutation: { off: true }, maxRepairs: 0,
   dod: [{ id: 'AC1', text: 'double(n) returns n * 2 and throws TypeError for a non-number', source: 'assumed' }],
-  groups: [{ id: 'a', goal: 'double', tests: ['tests/test_double.mjs'], src: ['src/double.mjs'], dod: ['AC1'], after: [] }],
+  groups: [{ id: 'a', goal: 'double', tests: ['tests/test_double.sh'], src: ['src/double.sh'], dod: ['AC1'], after: [] }],
 }));
 const planned = spawnSync(process.execPath, [TDD, 'plan', '--plan', join(dir, 'plan.json'), '--runner', RUNNER], { encoding: 'utf8' });
 assert.equal(planned.status, 0, planned.stderr);
-assert.match(planned.stderr, /PREFLIGHT ok=true verdict=ok: tests\/test_base\.mjs passed in the sandbox/, 'a test that passes at the base proved the sandbox and the command before any agent');
+assert.match(planned.stderr, /PREFLIGHT ok=true verdict=ok: tests\/test_base\.sh passed in the sandbox/, 'a test that passes at the base proved the sandbox and the command before any agent');
 const ARGS = JSON.parse(planned.stdout.trim().split('\n').pop()), run = ARGS.runDir;
 assert.equal(ARGS.preflight, 'ok');
 
-const TESTS = `import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { double } from '../src/double.mjs';
-test('test_ac1_happy_two', () => assert.equal(double(2), 4));
-test('test_ac1_fail_not_a_number', () => assert.throws(() => double('x'), TypeError));
-test('test_ac1_edge_zero', () => assert.equal(double(0), 0));
+// one function per test (the names tdd.mjs looks for); the file runs each test_* function it defines and exits 1 when one fails, 2 when src/double.sh is missing
+const TESTS = `. src/double.sh
+test_ac1_happy_two() { [ "$(double 2)" = 4 ]; }
+test_ac1_fail_not_a_number() { ! double x 2>/dev/null; }
+test_ac1_edge_zero() { [ "$(double 0)" = 0 ]; }
+fail=0
+for t in $(sed -n 's/^\\(test_[a-z0-9_]*\\)().*/\\1/p' "$0"); do
+  if "$t"; then echo "ok - $t"; else echo "not ok - $t"; fail=1; fi
+done
+exit "$fail"
 `;
-const LAZY = 'export const double = n => n * 2;\n'; // forgets the TypeError
-const GOOD = "export function double(n) {\n  if (typeof n !== 'number') throw new TypeError('n must be a number');\n  return n * 2;\n}\n";
-const ROWS = [['happy', 'test_ac1_happy_two'], ['fail', 'test_ac1_fail_not_a_number'], ['edge', 'test_ac1_edge_zero']].map(([kind, test]) => ({ dod: 'AC1', kind, test, file: 'tests/test_double.mjs' }));
+const LAZY = 'double() { echo $(( $1 * 2 )); }\n'; // forgets to refuse a non-number
+const GOOD = "double() {\n  case $1 in ''|*[!0-9]*) echo 'n must be a number' >&2; return 1 ;; esac\n  echo $(( $1 * 2 ))\n}\n";
+const ROWS = [['happy', 'test_ac1_happy_two'], ['fail', 'test_ac1_fail_not_a_number'], ['edge', 'test_ac1_edge_zero']].map(([kind, test]) => ({ dod: 'AC1', kind, test, file: 'tests/test_double.sh' }));
 
 const tdd = (cmd, args) => spawnSync(process.execPath, [TDD, cmd, '--run', run, '--runner', RUNNER, ...args], { encoding: 'utf8' });
 function gate(prompt) {
@@ -80,8 +84,8 @@ function launch(args, script) {
 
 // ---- run 1: no repair budget, a lazy GREEN driver -> the group is paused, nothing is retried ----
 const run1 = await launch({ ...ARGS, maxRepairs: 0 }, {
-  'red-driver:a': () => { put('tests/test_double.mjs', TESTS); return { matrix: ROWS, files: ['tests/test_double.mjs'], reuse: 'none' }; },
-  'green-driver:a': () => { put('src/double.mjs', LAZY); return { files: ['src/double.mjs'], reuse: 'none', cleanup: 'none' }; },
+  'red-driver:a': () => { put('tests/test_double.sh', TESTS); return { matrix: ROWS, files: ['tests/test_double.sh'], reuse: 'none' }; },
+  'green-driver:a': () => { put('src/double.sh', LAZY); return { files: ['src/double.sh'], reuse: 'none', cleanup: 'none' }; },
 });
 assert.deepEqual(run1.labels, ['red-driver:a', 'red-navigator:a', 'green-driver:a', 'green-navigator:a']);
 assert.equal(run1.out.groups.a.state, 'paused', JSON.stringify(run1.out.groups.a.reason));
@@ -100,11 +104,11 @@ assert.equal(cont.base, ARGS.base);
 assert.equal(cont.maxRepairs, 2, 'continuing is decided HERE: the plan\'s own maxRepairs (0, in ARGS) no longer pauses the new run at once');
 assert.equal(cont.groups.a.next, 'green-fix', 'the GREEN gate is fresh and not ok: the group continues with a repair, not from scratch');
 assert.deepEqual(cont.groups.a.matrix.map(r => r.test), ROWS.map(r => r.test), 'the matrix came back from the saved state, written by the dod command of the navigator');
-assert.ok(cont.groups.a.defects.some(d => /tests\/test_double\.mjs is fails-on-head[\s\S]*does not pass with the group's code/.test(d.what)), 'the defect is read off the gate file, next to what the navigator said');
+assert.ok(cont.groups.a.defects.some(d => /tests\/test_double\.sh is fails-on-head[\s\S]*does not pass with the group's code/.test(d.what)), 'the defect is read off the gate file, next to what the navigator said');
 
 // ---- run 2: args.resume = continue.json: RED, the first driver and the first check are skipped ----
 const run2 = await launch({ ...ARGS, resume: cont }, { // ARGS still carries the plan's maxRepairs: 0; continue.json decides the budget of this run
-  'green-driver:a:rework': prompt => { put('src/double.mjs', GOOD); const out = gate(prompt); return { files: ['src/double.mjs'], reuse: 'none', cleanup: 'none', gateOk: ok(out), gateRuns: 1 }; },
+  'green-driver:a:rework': prompt => { put('src/double.sh', GOOD); const out = gate(prompt); return { files: ['src/double.sh'], reuse: 'none', cleanup: 'none', gateOk: ok(out), gateRuns: 1 }; },
   reviewer: prompt => { gate(prompt); return { findings: [] }; },
 });
 assert.deepEqual(run2.labels, ['green-driver:a:rework', 'green-navigator:a:recheck', 'reviewer'], 'only what was left: one repair, one check, the review');

@@ -2,11 +2,12 @@
 // testprobe.mjs's unmutated run, and stopping a running command. Run: node --test probelib.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FlagError } from './flags.mjs';
-import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
+import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, parseProbeArgs, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
 
 // a seeded generator, so a failing case can be replayed
 const rng = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -192,4 +193,96 @@ test('should wait for a free slot before starting a command, and not start it wh
   const [a, b] = await Promise.all([first, second]);
   assert.deepEqual([a.aborted, b.aborted], [true, true]);
   assert.equal(groups().length, 1);
+});
+
+// RunnerExec (ADR 0003): a runner that is not a node file runs directly, so tests can use a sh stub; a .mjs/.js/.cjs runner still runs under node.
+const SH_RUNNER = `#!/bin/sh
+[ "$1" = --check ] && { echo shstub; exit 0; }
+while [ "$1" != -- ]; do case "$1" in --cwd) cd "$2";; esac; shift 2; done
+shift
+"$@"; code=$?
+echo "ZT-RUN s1 exit=$code" >&2
+exit $code
+`;
+const runnerIn = (t, name, text, mode = 0o755) => {
+  const dir = mkdtempSync(join(tmpdir(), 'plib-exec-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const runner = join(dir, name);
+  writeFileSync(runner, text, { mode });
+  return { dir, o: { runner, env: [], ro: [], timeout: 60 } };
+};
+const NODE_RUNNER = `const a = process.argv.slice(2);
+if (a[0] === '--check') { console.log('nodestub'); process.exit(0); }
+const { spawnSync } = await import('node:child_process');
+const cut = a.indexOf('--'), cwd = a[a.indexOf('--cwd') + 1], cmd = a.slice(cut + 1);
+const r = spawnSync(cmd[0], cmd.slice(1), { cwd, stdio: 'inherit' });
+process.stderr.write('ZT-RUN n1 exit=' + r.status + '\\n');
+process.exit(r.status);
+`;
+
+test('should run the runner directly when its name does not end in .mjs, .js or .cjs', async t => {
+  for (const name of ['runner.sh', 'runner']) {
+    const { dir, o } = runnerIn(t, name, SH_RUNNER);
+    const r = await runIn(o, dir, 'echo hi; exit 4');
+    assert.deepEqual([r.exit, r.run], [4, 's1'], name);
+    assert.match(r.tail, /hi/);
+    assert.equal(backendOf(o.runner), 'shstub', name);
+  }
+});
+
+test('should run the runner under node when its name ends in .mjs, .js or .cjs, even without the exec bit', async t => {
+  for (const name of ['runner.mjs', 'runner.js', 'runner.cjs']) {
+    const text = name.endsWith('.cjs') ? NODE_RUNNER.replace("const { spawnSync } = await import('node:child_process');", "const { spawnSync } = require('node:child_process');") : NODE_RUNNER;
+    const { dir, o } = runnerIn(t, name, text, 0o644);
+    if (name === 'runner.js') writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
+    const r = await runIn(o, dir, 'exit 5');
+    assert.deepEqual([r.exit, r.run], [5, 'n1'], name);
+    assert.equal(backendOf(o.runner), 'nodestub', name);
+  }
+});
+
+test('should report the runner as not started when a direct runner lacks the exec bit', async t => {
+  const { dir, o } = runnerIn(t, 'runner.sh', SH_RUNNER, 0o644);
+  const r = await runIn(o, dir, 'exit 0');
+  assert.notEqual(r.exit, 0);
+  assert.equal(backendOf(o.runner), 'none');
+});
+
+// an in-process caller (tdd.mjs main) hands the runner its own environment and cwd instead of this process's (ADR 0003, A19)
+const ENV_RUNNER = `#!/bin/sh
+[ "$1" = --check ] && { echo "check:\${ZT_PROBE_SEEN:-unset}"; exit 0; }
+echo "seen=\${ZT_PROBE_SEEN:-unset} pwd=$(pwd)"
+`;
+
+test('should start the runner with o.procEnv and o.procCwd when they are given, and with this process\'s env and cwd when they are not', async t => {
+  const { dir, o } = runnerIn(t, 'runner', ENV_RUNNER);
+  assert.equal(process.env.ZT_PROBE_SEEN, undefined);
+  const plain = await runIn(o, dir, 'true');
+  const seen = r => { const m = /seen=(\S+) pwd=(.*)/.exec(r.tail); return [m[1], realpathSync(m[2].trim())]; }; // real paths: /tmp and /var are links on macOS
+  assert.deepEqual(seen(plain), ['unset', realpathSync(process.cwd())]);
+  const given = await runIn({ ...o, procEnv: { ...process.env, ZT_PROBE_SEEN: 'yes' }, procCwd: dir }, dir, 'true');
+  assert.deepEqual(seen(given), ['yes', realpathSync(dir)]);
+  assert.equal(backendOf(o.runner, { ...process.env, ZT_PROBE_SEEN: 'yes' }), 'check:yes');
+  assert.equal(backendOf(o.runner), 'check:unset');
+  assert.equal(process.env.ZT_PROBE_SEEN, undefined);
+});
+
+test('should parse the given args and resolve paths against the given cwd when args and cwd are passed, leaving process.argv and cwd alone', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'plib-args-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'runner.mjs'), '');
+  const argv = process.argv, here = process.cwd();
+  const r = parseProbeArgs({}, { args: ['--repo', 'repo', '--base', 'HEAD', '--head', 'HEAD', '--scratch', 's', '--cmd', 'sh {file}', '--runner', 'runner.mjs', '--ro', 'ro'], cwd: dir });
+  assert.deepEqual([r.repo, r.scratch, r.runner, r.extraRo[0]], [join(dir, 'repo'), join(dir, 's'), join(dir, 'runner.mjs'), join(dir, 'ro')]);
+  assert.equal(process.argv, argv);
+  assert.equal(process.cwd(), here);
+});
+
+test('should let the process exit at once when the runner cannot start, instead of waiting out the backstop timer', t => {
+  const { dir, o } = runnerIn(t, 'runner.sh', SH_RUNNER, 0o644);
+  const lib = new URL('./probelib.mjs', import.meta.url).href;
+  const t0 = performance.now();
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', `const { runIn } = await import(${JSON.stringify(lib)}); const r = await runIn(${JSON.stringify(o)}, ${JSON.stringify(dir)}, 'exit 0'); console.log(r.exit);`], { encoding: 'utf8', timeout: 30000 });
+  assert.equal(r.stdout.trim(), '1', r.stderr);
+  assert.ok(performance.now() - t0 < 10000, `took ${Math.round(performance.now() - t0)} ms`);
 });

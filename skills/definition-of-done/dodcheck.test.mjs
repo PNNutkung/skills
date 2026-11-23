@@ -1,7 +1,7 @@
 // Unit and fuzz tests for the pure DoD checks. Run: node --test skills/definition-of-done/dodcheck.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REQUIRED, checkDod, exportPtdd, exportQa, renderMarkdown, renderTicket, sentences, ticketCheck } from './dodcheck.mjs';
+import { REQUIRED, checkDod, checkTimeFloors, exportPtdd, exportQa, renderMarkdown, renderTicket, sentences, ticketCheck, timeTargets } from './dodcheck.mjs';
 
 const ANSWERS = 'A1: A\ntime: 2026-11-21T13:20:04Z\nA2: B\ntime: 2026-11-21T13:20:04Z\nA3: REPORT_CSV_EXPORT, default off\ntime: t\nA4: ไม่เปลี่ยน API เดิม\ntime: t\nA5: ไม่ทำ xlsx\ntime: t\nA6: staging\ntime: t\nA7: unit, integration, e2e\ntime: t\nA8: accept AC9\ntime: t\n';
 const TICKET = 'title: Export reports\nผู้ใช้อยาก export รายงานเป็น CSV\nเพื่อเอาไปเปิดใน Excel\n-- comment --\nต้องมีชื่อคอลัมน์ภาษาไทยด้วยนะ\n';
@@ -199,4 +199,42 @@ test('should pass its own ticket check when a random original is rendered', () =
     const r = ticketCheck(original, renderTicket(goodDod(), original, { lang: rnd(2) ? 'th' : 'en' }), goodDod());
     assert.equal(r.ok, true, JSON.stringify({ original, r }));
   }
+});
+
+// time targets need their measured floor (rules/performance.md; retro of issue #19: a 60 s target was set before the ~84 s CPU floor was known)
+const timed = (text, timeFloor) => ({ items: [{ id: 'T1', text, ...(timeFloor !== undefined && { timeFloor }) }] });
+
+test('should read seconds and minutes in English and Thai when an item text sets a wall-time target', () => {
+  assert.deepEqual(timeTargets('full suite <= 80 s and all tdd.test files <= 40 s'), [80, 40]);
+  assert.deepEqual(timeTargets('ไม่เกิน 60 วิ; under 2 min; at most 1.5 seconds; ≤ 3 นาที'), [60, 120, 1.5, 180]);
+});
+
+test('should find no target when a number has no time unit or a longer unit word follows', () => {
+  assert.deepEqual(timeTargets('within 2 lines, under 3 sessions, < 5 ms, 80 s without a bound, capped at 10,000 rows'), []);
+});
+
+test('should pass when the largest target is at or above cpuSeconds / cores', () => {
+  assert.deepEqual(checkTimeFloors(timed('suite <= 80 s and tdd files <= 40 s', { cpuSeconds: 230, cores: 4 })), []);
+  assert.deepEqual(checkTimeFloors(timed('<= 57.5 s', { cpuSeconds: 230, cores: 4 })), [], 'exactly at the floor');
+});
+
+test('should name the target, the floor and the measurement when the largest target is below cpuSeconds / cores', () => {
+  assert.deepEqual(checkTimeFloors(timed('suite <= 60 s', { cpuSeconds: 335, cores: 4 })),
+    ['T1: target 60 s is below its floor 83.8 s (335 CPU-seconds / 4 cores); only less work can meet it, not more parallelism']);
+});
+
+test('should refuse a time target with no floor or a malformed one, and accept none with a reason when it is a limit', () => {
+  for (const f of [undefined, {}, { cpuSeconds: 0, cores: 4 }, { cpuSeconds: 100, cores: 0 }, { cpuSeconds: 100, cores: 1.5 }, { cpuSeconds: 'x', cores: 4 }, { none: '  ' }, 'fast'])
+    assert.match(checkTimeFloors(timed('<= 80 s', f)).join('\n'), /^T1: sets a time target \(80 s\) without timeFloor/, JSON.stringify(f));
+  assert.deepEqual(checkTimeFloors(timed('the probe times out within 30 s', { none: 'a timeout, not a speed target' })), []);
+});
+
+test('should check nothing and never throw when no item sets a time target or the DoD is malformed', () => {
+  assert.deepEqual(checkTimeFloors(timed('the CSV opens in Excel')), []);
+  for (const dod of [null, 'x', {}, { items: 'x' }, { items: [null, 7, { id: 'A' }] }]) assert.deepEqual(checkTimeFloors(dod), [], JSON.stringify(dod));
+});
+
+test('should leave checkDod as before when an item sets a time target without a floor (the floor is a separate check)', () => {
+  const dod = timed('<= 80 s');
+  assert.ok(!checkDod(dod, ctx()).some(e => /timeFloor/.test(e)));
 });
