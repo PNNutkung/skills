@@ -326,9 +326,40 @@ Recommended: A, ขอบเขตเปลี่ยนไปเยอะจา�
 Answer: A (เขียน description ของ issue #19 ใหม่ (เก็บข้อความเดิมครบ) + ADR ใน PR; Nut รัน approve เอง)
 Trade-off accepted: Nut ต้องรันคำสั่งเอง 1 ครั้ง
 
+### A21: จะโพสต์ description นี้ลง issue #19 ไหม
+
+Context: ticket-new.md (description ใหม่ของ issue #19) ผ่าน ticket-check แล้ว และ Nut รัน approve แล้ว
+Options considered (the agent's analysis when the question was asked):
+- (A) approve แล้วโพสต์ตามนี้ เสร็จแล้วอ่านกลับมาเทียบ
+  - pro: issue ตรงกับงานจริง
+  - con: description เดิมถูกเขียนทับ (แต่ข้อความเดิมยังอยู่ครบใต้ Background)
+- (B) แก้ข้อความบางส่วนก่อน
+  - pro: ได้ถ้อยคำตามที่ต้องการ
+  - con: ต้องขอ approve ใหม่อีกรอบ
+Recommended: A
+Answer: A (approve แล้วโพสต์ตามนี้ เสร็จแล้วอ่านกลับมาเทียบ)
+Trade-off accepted: description เดิมถูกเขียนทับ (แต่ข้อความเดิมยังอยู่ครบใต้ Background)
+
+### A22: suite 74 วิ ยังเกินเป้า 60 วิ จะทำอย่างไรต่อ
+
+Context: ทำครบทุกข้อใน DoD แล้ว: suite 172 -> 74 วิ (ค่ากลาง 3 รอบ, 2,778 ผ่าน), CPU 230 วิ บน 4 core จึงติดที่ CPU ไม่ใช่ไฟล์ช้าไฟล์เดียว. ที่เหลือคือการเปิด process ที่ DoD สั่งให้คงไว้ (direct-run.mjs ~990 ครั้งใน e2e, tdd.mjs ใน e2e 319) และ tdd.mjs gate ที่ spawn testprobe/mutate (~550 ครั้ง, เป็น non-goal Q16)
+Options considered (the agent's analysis when the question was asked):
+- (A) ยอมรับ ~74 วิ (ลด 57%) แก้เป้าใน DoD เป็น suite <= 80 วิ แล้วไป verify + retro
+  - pro: จบงานได้เลย ไม่เปลี่ยน runtime เพิ่ม
+  - con: ไม่ถึง 60 วิ ตามที่ตั้งไว้
+- (B) ทำต่อ: ให้ tdd.mjs gate เรียก testprobe/mutate แบบ in-process (ตอนนี้เป็น non-goal) คาดว่าลดอีก ~10-15 วิ
+  - pro: มีโอกาสเข้าใกล้ 60 วิ
+  - con: เปลี่ยนพฤติกรรมตอนรันจริง: probe ไม่ได้แยก process แล้ว (timeout/budget/crash กระทบ tdd.mjs)
+- (C) ทำต่อแบบ test อย่างเดียว: ลด mutation max/budget ใน fixture ที่ไม่ได้ assert จำนวน และลด sleep ใน zproc
+  - pro: ไม่แตะ runtime
+  - con: น่าจะลดได้แค่ ~5 วิ และ test ครอบคลุมน้อยลง
+Recommended: A
+Answer: A (ยอมรับ ~74 วิ (ลด 57%) แก้เป้าใน DoD เป็น suite <= 80 วิ แล้วไป verify + retro)
+Trade-off accepted: ไม่ถึง 60 วิ ตามที่ตั้งไว้
+
 ## Consequences
 
-The suite target is 60 s on 4 cores with tdd.test.mjs under 40 s. tdd.mjs, mutate.mjs and note.mjs take their environment and output through an injected context and no longer exit from inside; their CLIs stay byte-identical, checked by parity and fuzz tests that run both ways. probelib runs a runner that is not a .mjs/.js/.cjs file directly, so tests can use sh stubs; real runners are unchanged. The e2e tests still start the real CLI.
+The suite target is 80 s on 4 cores with tdd.test.mjs under 40 s. It started at 60 s; after every other item was done the suite took 74 s, held by the CPU (about 230 CPU-seconds on 4 cores) rather than by one slow file, so the target moved to 80 s (A22). tdd.mjs, mutate.mjs and note.mjs take their environment and output through an injected context and no longer exit from inside; their CLIs stay byte-identical, checked by parity and fuzz tests that run both ways. probelib runs a runner that is not a .mjs/.js/.cjs file directly, so tests can use sh stubs; real runners are unchanged. The e2e tests still start the real CLI.
 
 Trade-offs we accepted:
 
@@ -350,16 +381,18 @@ Trade-offs we accepted:
 - A18: จุดเข้าใจผิดไปเจอตอน design
 - A19: diff ใหญ่ในสามไฟล์ runtime, เสี่ยงทำ output เพี้ยนจากเดิม
 - A20: Nut ต้องรันคำสั่งเอง 1 ครั้ง
+- A21: description เดิมถูกเขียนทับ (แต่ข้อความเดิมยังอยู่ครบใต้ Background)
+- A22: ไม่ถึง 60 วิ ตามที่ตั้งไว้
 
 ## Definition of done
 
-<!-- dod: written by dod.mjs adr; do not edit; sha256:2a01ae08a5939829 -->
+<!-- dod: written by dod.mjs adr; do not edit; sha256:433ffe6ade7efd62 -->
 
 - [ ] InProc (happy, fail, edge): tdd.mjs exports its subcommand entry (main(argv, {env, cwd}) returning {code, stdout, stderr}); the CLI is a thin wrapper that runs only when tdd.mjs is the main script (T1)
 - [ ] NoLeak (happy, fail, edge): an in-process call leaves no global state behind: process.exit is never called from main, process.env (ZT_RUN_DIR, flags, TMPDIR, ZT_MARKER_DIR) and cwd are the same before and after, module caches do not carry one call into the next (T2)
 - [ ] TddFast (happy, fail, edge): tdd.test runs tdd.mjs in-process, its stub sandbox runners are sh scripts (run directly, see RunnerExec), and it is split into several files that node --test runs in parallel (A10)
 - [ ] E2ESplit (happy, fail, edge): e2e.speed.test and e2e.default.test are split so their tests run in parallel and still spawn the real tdd.mjs CLI and direct-run runner; their fixture command becomes 'node {file}' (one node per test file instead of two); if the suite is still over 60 s after that, most fixtures become sh, keeping at least one real JS fixture test in e2e.default (A13)
-- [ ] Target (happy, fail, edge): on the 4-core cloud container (median of 3 runs): full suite <= 60 s and all tdd.test files <= 40 s; the PR reports before/after and the CI test step times (A11)
+- [ ] Target (happy, fail, edge): on the 4-core cloud container (median of 3 runs): full suite <= 80 s and all tdd.test files <= 40 s; the PR reports before/after and the CI test step times (A22)
 - [ ] Spawned (happy, fail, edge): 5-8 tests still spawn the CLI (exit codes, missing ZT_DIR, env poisoning exit 64, usage), plus a parity test that runs every subcommand both spawned and in-process (A3)
 - [ ] Parity (happy, fail, edge): spawned and in-process give byte-identical stdout, stderr and exit code (after normalizing times, pids and temp paths) (A5)
 - [ ] Fuzz (happy, fail, edge): a fuzz test (about 30 random argv cases: unknown flags, missing values, odd values) gives the same result spawned and in-process (A8)
