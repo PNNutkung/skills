@@ -144,6 +144,18 @@ test('should pass the DoD gate only when the real dod.mjs check passes in an ope
   } finally { f.done(); }
 });
 
+test('should keep the run folder under the cache and write nothing in the repo when a run opens (RunDir, RunCache)', () => {
+  const f = fixture();
+  try {
+    const r = main(['open', '--slug', 'demo'], { env: f.env, cwd: f.repo, gh: noGh, dodMjs: '/none' });
+    assert.ok(r.out.run.startsWith(join(f.base, 'cache', 'dev-workflow')), r.out.run);
+    assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: f.repo, encoding: 'utf8' }), '', 'nothing written in the repo');
+    assert.ok(cacheBase({}).endsWith(join('.cache', 'dev-workflow')), cacheBase({}));
+    assert.equal(cacheBase({ XDG_CACHE_HOME: '/x' }), join('/x', 'dev-workflow'));
+    assert.ok(!cacheBase({}).startsWith(tmpdir()), 'not under /tmp');
+  } finally { f.done(); }
+});
+
 test('should keep run folders apart per repo and slug when two repos share a name', () => {
   const env = { XDG_CACHE_HOME: '/c' };
   assert.notEqual(runDir(env, '/a/repo', 's'), runDir(env, '/b/repo', 's'));
