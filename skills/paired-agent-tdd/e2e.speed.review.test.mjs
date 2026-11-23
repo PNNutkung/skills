@@ -18,11 +18,11 @@ test('pparrev: PTDD_PARALLEL_REVIEW_ENABLED alone runs the integration tester an
   done(r);
   const at = e => r.events.indexOf(e);
   assert.ok(at('start reviewer') < at('end integration-tester') && at('start integration-tester') < at('end reviewer'), r.events.join(', '));
-  assert.match(r.calls.find(c => c.label === 'reviewer').prompt, /tests\/integration\/test_flow\.mjs is being written now/);
+  assert.match(r.calls.find(c => c.label === 'reviewer').prompt, /tests\/integration\/test_flow\.sh is being written now/);
 });
 
 test('pcourier: a fixer of group a that breaks group b and still reports its own gate ok: the courier is skipped and verify reports the run not done', async () => {
-  const BREAKS_B = `export function slugify(text, { maxLength = 40 } = {}) {\n  if (typeof text !== 'string') throw new TypeError('text must be a string');\n  if (text === 'hello, world') return 'hello_world';\n  const slug = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');\n  return slug.slice(0, maxLength).replace(/-+$/, '');\n}\n`;
+  const BREAKS_B = `slugify() {\n  [ $# -ge 1 ] || { echo 'text is required' >&2; return 1; }\n  if [ "$1" = 'hello, world' ]; then printf hello_world; return 0; fi\n  s=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-*//; s/-*$//')\n  printf '%s' "$s" | cut -c1-"\${2:-40}" | sed 's/-*$//'\n}\n`;
   const r = await runWith(only(SPEED_ENV.courierSkip), ({ put, exec, cmdOf, GREEN_ANY }) => ({
     fixer: (gid, p) => {
       put(GROUPS.a.src, BREAKS_B); // the TODO is gone, and title('hello, world') no longer gives 'Hello World'; group a's own tests still pass
@@ -32,6 +32,6 @@ test('pcourier: a fixer of group a that breaks group b and still reports its own
   }));
   assert.deepEqual([r.labels.filter(l => /^final-verifier/.test(l)), r.out.courierSkipped, r.out.groups.b.state], [[], true, 'done']);
   assert.equal(r.verify.final, false, JSON.stringify(r.verify));
-  assert.ok(r.verify.notDone.some(n => /^b: final gate not ok \(its tests fail with the whole change: tests\/test_title\.mjs\)/.test(n)), JSON.stringify(r.verify.notDone));
+  assert.ok(r.verify.notDone.some(n => /^b: final gate not ok \(its tests fail with the whole change: tests\/test_title\.sh\)/.test(n)), JSON.stringify(r.verify.notDone));
   assert.deepEqual([r.verify.dod.covered, r.verify.dod.total], [5, 8], 'group b\'s stale GREEN gate covers none of its 3 pairs');
 });

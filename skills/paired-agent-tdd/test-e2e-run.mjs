@@ -69,7 +69,7 @@ export async function runE2E({ spawn, runner, plan: planRest, groups: GROUPS, pr
       'green-navigator': (gid, p) => navigator(p),
       reviewer: (gid, p) => {
         exec(cmdOf(p, FINAL), 'final');
-        const src = GROUPS.a.src, line = readFileSync(join(repo, src), 'utf8').split('\n').findIndex(l => l.includes('TODO')) + 1, quote = '// TODO: tighten the character class';
+        const src = GROUPS.a.src, lines = readFileSync(join(repo, src), 'utf8').split('\n'), line = lines.findIndex(l => l.includes('TODO')) + 1, quote = lines[line - 1].trim(); // '// TODO: ...' or '# TODO: ...'
         return { findings: [{ title: 'Leftover TODO in shipped code', severity: 'medium', file: src, startLine: line, endLine: line, hazard: 'a stale TODO', failureScenario: 'readers think the class is wrong', quote, suggestedFix: 'delete it', anchorable: true, proof: { mode: 'read', ref: `${src}:${line}-${line}`, quote } }] };
       },
       fixer: (gid, p) => {

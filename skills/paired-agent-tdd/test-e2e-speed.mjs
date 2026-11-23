@@ -1,5 +1,7 @@
 // The fixture of the e2e.speed*.test.mjs files (ADR 0001): 2 groups (b after a), an integration test, one finding, scripted agents. Each file runs some of the flag sets.
-// E2E_REAL=1: the zero-trust-review sandbox and this node binary instead of the direct runner.
+// Two languages of the same fixture (ADR 0003 A13): POSIX sh (the default: `sh {file}`, so a fixture test run starts no node; zero-trust-review mutates no .sh line,
+// so these runs have no mutants) and JavaScript (`node {file}`, mutated) for the runs that assert on mutation (runWithJs).
+// E2E_REAL=1: the zero-trust-review sandbox (and this node binary for the JS fixture) instead of the direct runner.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -44,25 +46,74 @@ const TITLES = [
   `import { slugify } from './slug.mjs';\nexport const title = text => slugify(text).split('-').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');\n`,
 ];
 const rows = (id, tests, file) => tests.map(([kind, t]) => ({ dod: id, kind, test: t, file }));
-export const GROUPS = {
-  a: { tests: 'tests/test_slug.mjs', src: 'src/slug.mjs', testText: WEAK_FREE, versions: SLUGS, rows: [...rows('AC1', [['happy', 'test_ac1_happy_words'], ['fail', 'test_ac1_fail_non_string'], ['edge', 'test_ac1_edge_empty']], 'tests/test_slug.mjs'), ...rows('AC2', [['happy', 'test_ac2_happy_cut'], ['edge', 'test_ac2_edge_no_trailing_dash']], 'tests/test_slug.mjs')] },
-  b: { tests: 'tests/test_title.mjs', src: 'src/title.mjs', testText: TITLE_TEST, versions: TITLES, rows: rows('AC3', [['happy', 'test_ac3_happy_words'], ['fail', 'test_ac3_fail_non_string'], ['edge', 'test_ac3_edge_empty']], 'tests/test_title.mjs') },
-};
-const INTEG = 'tests/integration/test_flow.mjs';
+const groupsOf = (ext, slug, title) => ({
+  a: { tests: `tests/test_slug.${ext}`, src: `src/slug.${ext}`, ...slug, rows: [...rows('AC1', [['happy', 'test_ac1_happy_words'], ['fail', 'test_ac1_fail_non_string'], ['edge', 'test_ac1_edge_empty']], `tests/test_slug.${ext}`), ...rows('AC2', [['happy', 'test_ac2_happy_cut'], ['edge', 'test_ac2_edge_no_trailing_dash']], `tests/test_slug.${ext}`)] },
+  b: { tests: `tests/test_title.${ext}`, src: `src/title.${ext}`, ...title, rows: rows('AC3', [['happy', 'test_ac3_happy_words'], ['fail', 'test_ac3_fail_non_string'], ['edge', 'test_ac3_edge_empty']], `tests/test_title.${ext}`) },
+});
+export const GROUPS_JS = groupsOf('mjs', { testText: WEAK_FREE, versions: SLUGS }, { testText: TITLE_TEST, versions: TITLES });
 
-/** One whole run in its own fixture repo with `env` over process.env. tweak(tools) -> scripted agents that replace the default ones. -> what happened, what it cost, critical-path hops */
-export async function runWith(env, tweak = () => ({})) {
+// The same fixture in POSIX sh. A test file sources the code, defines one function per test (the names tdd.mjs looks for) and runs every test_* function it
+// defines; it exits 1 when one fails, 2 when the code it sources is missing. "Throws TypeError for a non-string" becomes "fails when called without the text".
+const SH_RUN = `fail=0
+for t in $(sed -n 's/^\\(test_[a-z0-9_]*\\)().*/\\1/p' "$0"); do
+  if "$t"; then echo "ok - $t"; else echo "not ok - $t"; fail=1; fi
+done
+exit "$fail"
+`;
+const SH_SLUG_TEST = `. src/slug.sh
+test_ac1_happy_words() { [ "$(slugify 'Hello, World!')" = hello-world ]; }
+test_ac1_fail_non_string() { ! slugify 2>/dev/null; }
+test_ac1_edge_empty() { [ "$(slugify '')" = '' ]; }
+test_ac1_edge_digits() { [ "$(slugify 'Route 66')" = route-66 ]; }
+test_ac2_happy_cut() { [ "$(slugify abcdef 3)" = abc ]; }
+test_ac2_edge_no_trailing_dash() { [ "$(slugify 'ab cd' 3)" = ab ]; }
+test_ac2_edge_default_length() { s=$(slugify ${'a'.repeat(50)}); [ "\${#s}" = 40 ]; }
+${SH_RUN}`;
+const SH_LOWER = `printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-*//; s/-*$//'`;
+const SH_SLUGS = [
+  `slugify() {\n  ${SH_LOWER}\n}\n`,
+  `slugify() {\n  [ $# -ge 1 ] || { echo 'text is required' >&2; return 1; }\n  ${SH_LOWER}\n}\n`,
+  `slugify() {\n  [ $# -ge 1 ] || { echo 'text is required' >&2; return 1; }\n  # TODO: tighten the character class\n  s=$(${SH_LOWER})\n  printf '%s' "$s" | cut -c1-"\${2:-40}" | sed 's/-*$//'\n}\n`,
+];
+const SH_TITLE_TEST = `. src/title.sh
+test_ac3_happy_words() { [ "$(title 'hello, world')" = 'Hello World' ]; }
+test_ac3_fail_non_string() { ! title 2>/dev/null; }
+test_ac3_edge_empty() { [ "$(title '')" = '' ]; }
+${SH_RUN}`;
+const SH_CAPS = `awk -F- '{ for (i = 1; i <= NF; i++) if ($i != "") printf "%s%s%s", (n++ ? SEP : ""), toupper(substr($i, 1, 1)), substr($i, 2) }'`;
+const SH_TITLES = [
+  `. src/slug.sh\ntitle() {\n  s=$(slugify "$@") || return 1\n  printf '%s' "$s" | tr '-' ' '\n}\n`,
+  `. src/slug.sh\ntitle() {\n  s=$(slugify "$@") || return 1\n  printf '%s' "$s" | ${SH_CAPS.replace('SEP', '"-"')}\n}\n`,
+  `. src/slug.sh\ntitle() {\n  s=$(slugify "$@") || return 1\n  printf '%s' "$s" | ${SH_CAPS.replace('SEP', '" "')}\n}\n`,
+];
+export const GROUPS = groupsOf('sh', { testText: SH_SLUG_TEST, versions: SH_SLUGS }, { testText: SH_TITLE_TEST, versions: SH_TITLES });
+
+const LANGS = {
+  sh: { groups: GROUPS, cmd: 'sh {file}', integ: 'tests/integration/test_flow.sh', integText: `. src/title.sh\n[ "$(title 'a b')" = 'A B' ]\n` },
+  js: {
+    groups: GROUPS_JS, cmd: `${REAL ? NODE : 'node'} {file}`, ...(REAL ? { ro: [dirname(dirname(NODE))] } : {}),
+    integ: 'tests/integration/test_flow.mjs', integText: `import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { title } from '../../src/title.mjs';\ntest('flow', () => assert.equal(title('a b'), 'A B'));\n`,
+  },
+};
+
+/** One whole run in its own fixture repo with `env` over process.env, the sh fixture. tweak(tools) -> scripted agents that replace the default ones. -> what happened, what it cost, critical-path hops */
+export const runWith = (env, tweak = () => ({})) => runIn('sh', env, tweak);
+/** the same run with the JavaScript fixture: zero-trust-review mutates its source lines */
+export const runWithJs = (env, tweak = () => ({})) => runIn('js', env, tweak);
+
+async function runIn(lang, env, tweak) {
+  const L = LANGS[lang], G = L.groups;
   const plan = {
-    cmd: `${REAL ? NODE : 'node'} {file}`, ...(REAL ? { ro: [dirname(dirname(NODE))] } : {}), mutation: { max: 10, budget: 60 }, integration: { file: INTEG, goal: 'title and slugify together, through the module boundary' },
+    cmd: L.cmd, ...(L.ro ? { ro: L.ro } : {}), mutation: { max: 10, budget: 60 }, integration: { file: L.integ, goal: 'title and slugify together, through the module boundary' },
     dod: [{ id: 'AC1', text: 'slugify lowercases and hyphenates words, throws TypeError for a non-string', source: 'assumed' }, { id: 'AC2', text: 'slugify cuts to maxLength, default 40', source: 'assumed', kinds: ['happy', 'edge'] },
       { id: 'AC3', text: 'title turns a slug into Title Case', source: 'assumed' }],
-    groups: [{ id: 'a', goal: 'slugify', tests: [GROUPS.a.tests], src: [GROUPS.a.src], dod: ['AC1', 'AC2'], after: [] }, { id: 'b', goal: 'title, built on slugify', tests: [GROUPS.b.tests], src: [GROUPS.b.src], dod: ['AC3'], after: ['a'] }],
+    groups: [{ id: 'a', goal: 'slugify', tests: [G.a.tests], src: [G.a.src], dod: ['AC1', 'AC2'], after: [] }, { id: 'b', goal: 'title, built on slugify', tests: [G.b.tests], src: [G.b.src], dod: ['AC3'], after: ['a'] }],
   };
   const r = await runE2E({
     spawn: (file, args, fixtureEnv) => spawnSync(file, args, { encoding: 'utf8', env: { ...process.env, ...fixtureEnv, ...env } }),
-    runner: RUNNER, plan, groups: GROUPS, prefix: 'pat-e2e-speed-',
+    runner: RUNNER, plan, groups: G, prefix: 'pat-e2e-speed-',
     scripts: tools => ({
-      'integration-tester': () => { tools.put(INTEG, `import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { title } from '../../src/title.mjs';\ntest('flow', () => assert.equal(title('a b'), 'A B'));\n`); return { file: INTEG, exit: 0, findings: [] }; },
+      'integration-tester': () => { tools.put(L.integ, L.integText); return { file: L.integ, exit: 0, findings: [] }; },
       ...tweak(tools),
     }),
   });

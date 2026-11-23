@@ -5,7 +5,7 @@
 //   node --test e2e.speed.test.mjs        (E2E_REAL=1: the zero-trust-review sandbox instead of the direct runner)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ALL_OFF_ENV, ON_ENV, SPEED_OFF_ENV, done, runWith } from './test-e2e-speed.mjs';
+import { ALL_OFF_ENV, ON_ENV, SPEED_OFF_ENV, done, runWith, runWithJs } from './test-e2e-speed.mjs';
 
 const results = {};
 
@@ -28,7 +28,7 @@ test('vmeasure: all flags on against all off: fewer agents and hops; prints agen
 });
 
 test('fcompat: with truly every flag off (PTDD and ZT) the whole run is the v2.0.0 path end to end: same agents, no speed key, no head run, no baseline reuse, no courier skip', async () => {
-  const r = await runWith(ALL_OFF_ENV);
+  const r = await runWithJs(ALL_OFF_ENV); // the JS fixture: it asserts that every navigator GREEN gate mutated
   done(r);
   assert.equal('speed' in r.ARGS, false);
   assert.deepEqual(r.labels, ['red-driver:a', 'red-driver:b', 'red-navigator:a', 'red-navigator:b', 'green-driver:a', 'green-navigator:a', 'green-driver:b', 'green-navigator:b', 'integration-tester', 'reviewer', 'fixer:a', 'final-verifier']);

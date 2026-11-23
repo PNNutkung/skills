@@ -36,7 +36,7 @@ git('add', '-A'); git('commit', '-qm', 'base');
 const TICKET = 'slugify(text, {maxLength}) lowercases and hyphenates, cuts to maxLength (default 40), and throws TypeError for a non-string. title(text) turns a slug into Title Case.';
 writeFileSync(join(dir, 'ticket.md'), TICKET);
 const plan = {
-  repo, cmd: `${REAL ? NODE : 'node'} --test {file}`, ...(REAL ? { ro: [dirname(dirname(NODE))] } : {}), ticket: join(dir, 'ticket.md'), mutation: { max: 10, budget: 60 },
+  repo, cmd: `${REAL ? NODE : 'node'} {file}`, ...(REAL ? { ro: [dirname(dirname(NODE))] } : {}), ticket: join(dir, 'ticket.md'), mutation: { max: 10, budget: 60 },
   dod: [{ id: 'AC1', text: 'slugify lowercases and hyphenates words, throws TypeError for a non-string', source: 'lowercases and hyphenates' },
     { id: 'AC2', text: 'slugify cuts to maxLength, default 40', source: 'cuts to maxLength (default 40)', kinds: ['happy', 'edge'] },
     { id: 'AC3', text: 'title turns a slug into Title Case', source: 'Title Case' }],

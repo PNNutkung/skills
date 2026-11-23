@@ -5,7 +5,7 @@
 //   node --test e2e.speed.flags.test.mjs        (E2E_REAL=1: the zero-trust-review sandbox instead of the direct runner)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SPEED_ENV, done, only, runWith } from './test-e2e-speed.mjs';
+import { SPEED_ENV, done, only, runWith, runWithJs } from './test-e2e-speed.mjs';
 
 test('pmode: PTDD_PIPELINE_MODE=fast alone gives the group with no after one tdd-driver and one navigator over both gates', async () => {
   const r = await runWith(only(SPEED_ENV.pipeline));
@@ -16,7 +16,7 @@ test('pmode: PTDD_PIPELINE_MODE=fast alone gives the group with no after one tdd
 });
 
 test('pquick: PTDD_QUICK_DRIVER_GATE_ENABLED alone makes each driver\'s middle GREEN run quick (no mutants); the navigator\'s run mutates', async () => {
-  const r = await runWith(only(SPEED_ENV.quickDriverGate));
+  const r = await runWithJs(only(SPEED_ENV.quickDriverGate)); // the JS fixture: it asserts that the navigator's run mutates
   done(r);
   const quick = r.outputs.filter(([k]) => k === 'green-quick');
   assert.equal(quick.length, 2, 'one quick run per driver');
