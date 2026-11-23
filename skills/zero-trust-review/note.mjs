@@ -15,6 +15,7 @@
 // Env vars read (all through runctx.mjs): ZT_RUN_DIR, ZT_MARKER_DIR, XDG_RUNTIME_DIR, HOME (marker dir), TMPDIR (os.tmpdir(): where activate makes run dirs).
 // Exit: 0; 2 usage or invalid input; 3 no trusted run dir, a path outside it, or an unsafe activate; 4 per-unit line limit;
 // 64 the tool's own env has LD_*/DYLD_* loader vars, NODE_OPTIONS and friends (checkToolEnv, checked before anything else).
+// In-process (tests): main(argv, { env, cwd }) -> { code, stdout, stderr }, the same bytes the CLI prints; the CLI is a thin wrapper around it.
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +41,9 @@ export function checkToolEnv(env = process.env) {
   if (set.length) throw new Poisoned(`refusing to run: ${set.join(', ')} in the environment can change what loads or runs; unset ${set.length > 1 ? 'them' : 'it'}`);
 }
 
-const die = (code, msg) => { process.stderr.write(`note: ${msg}\n`); process.exit(code); };
+// die() ends the call with an exit code; main() turns it into { code, stderr: 'note: <msg>\n' }, the CLI wrapper into the process exit
+class Exit extends Error { constructor(code, msg) { super(msg); this.exit = code; } }
+const die = (code, msg) => { throw new Exit(code, msg); };
 const lines = s => s.split('\n').filter(Boolean);
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n - 3)}...` : s);
 const lstats = p => { try { return lstatSync(p); } catch { return null; } };
@@ -64,18 +67,21 @@ function parse(argv) {
 }
 
 // realpath of the nearest existing ancestor plus the part that does not exist yet; null when a symlink on the way dangles
-function realish(p) {
+function realish(p, cwd) {
   const rest = [];
-  let cur = resolve(p);
+  let cur = resolve(cwd, p);
   while (!lstats(cur)) { rest.unshift(basename(cur)); const up = dirname(cur); if (up === cur) return null; cur = up; }
   try { return join(realpathSync(cur), ...rest); } catch { return null; }
 }
 
-const flagRun = o => (o.run ? resolve(o.run) : '');
+const flagRun = (o, cwd) => (o.run ? resolve(cwd, o.run) : '');
 
-function makeGuard(run) {
+// os.tmpdir() on POSIX, but read from the env this call was given (runctx makes and approves run dirs under <tmp>/zt-review-<uid>)
+const tmpOf = env => { const t = env.TMPDIR || env.TMP || env.TEMP || '/tmp'; return t.length > 1 && t.endsWith('/') ? t.slice(0, -1) : t; };
+
+function makeGuard(run, cwd) {
   const inside = (p, root = run) => {
-    const r = realish(p);
+    const r = realish(p, cwd);
     return r?.startsWith(root + sep) ? r : die(EXIT.runDir, `${p} resolves outside ${root}`);
   };
   // allow-list: a checkpoint is RUN/ck/**.jsonl and nothing else, so an agent cannot reach exec.jsonl, status, obs or any log through it
@@ -106,11 +112,11 @@ function addLine(g, file, o, text) {
 }
 
 const ACTIONS = {
-  begin(g, o) {
+  begin(g, o, _, write) {
     const ck = g.ckPath(o.ck), env = g.inside('env.jsonl'), notes = g.inside('notes.jsonl'), dying = g.inside('dying');
     mkdirs(dying);
     mkdirs(dirname(ck));
-    process.stdout.write(section('checkpoint', read(ck)) + section('env tips', tail(env)) + (o.driver ? section('driver notes', tail(notes)) : ''));
+    write(section('checkpoint', read(ck)) + section('env tips', tail(env)) + (o.driver ? section('driver notes', tail(notes)) : ''));
     status(g, o.unit, 'start');
   },
   ck(g, o, raw) {
@@ -130,34 +136,51 @@ const ACTIONS = {
   },
 };
 
-function main() {
-  checkToolEnv();
-  const o = parse(process.argv.slice(2));
+function run(argv, env, cwd, write) {
+  checkToolEnv(env);
+  const o = parse(argv), ctx = { env, tmp: tmpOf(env) };
   if (o.cmd === 'activate') {
     let dir;
     try {
-      dir = activate(o.name, { env: process.env });
+      dir = activate(o.name, ctx);
       writeSafe(dir, join(dir, '.skilldir'), `${realpathSync(dirname(fileURLToPath(import.meta.url)))}\n`); // lets the plugin guard tell this skill's tools from lookalikes
     } catch (e) {
-      if (dir) deactivate(dir, { env: process.env }); // no half-activated run
+      if (dir) deactivate(dir, ctx); // no half-activated run
       die(EXIT.runDir, `activate refused: ${e.message}`);
     }
-    return process.stdout.write(`${dir}\n`);
+    return write(`${dir}\n`);
   }
   if (o.cmd === 'deactivate') {
     // an explicit --run is used alone: falling back to another candidate here would deactivate a different run
-    const run = o.run ? checkRunDir(flagRun(o)) : resolveRun({ env: process.env });
-    if (!run) die(EXIT.runDir, 'no trusted run dir to deactivate');
-    return deactivate(run, { env: process.env });
+    const dir = o.run ? checkRunDir(flagRun(o, cwd)) : resolveRun(ctx);
+    if (!dir) die(EXIT.runDir, 'no trusted run dir to deactivate');
+    return deactivate(dir, ctx);
   }
-  const run = resolveRun({ run: flagRun(o), env: process.env });
-  if (!run) die(EXIT.runDir, 'no trusted run dir: pass --run DIR (absolute, yours, not writable by others), set ZT_RUN_DIR, or run `note.mjs activate --name NAME`');
+  const dir = resolveRun({ ...ctx, run: flagRun(o, cwd) });
+  if (!dir) die(EXIT.runDir, 'no trusted run dir: pass --run DIR (absolute, yours, not writable by others), set ZT_RUN_DIR, or run `note.mjs activate --name NAME`');
   if (o.cmd === 'allow-post') {
-    writeSafe(run, join(run, '.post-ok'), `approved ${new Date().toISOString()}\n`); // O_NOFOLLOW, 0600
-    return process.stdout.write(`posting approved for ${run}\n`);
+    writeSafe(dir, join(dir, '.post-ok'), `approved ${new Date().toISOString()}\n`); // O_NOFOLLOW, 0600
+    return write(`posting approved for ${dir}\n`);
   }
-  ACTIONS[o.cmd](makeGuard(run), o, o.pos[0]);
+  ACTIONS[o.cmd](makeGuard(dir, cwd), o, o.pos[0], write);
+}
+
+/** The whole tool, in-process: no process.exit, no write to the real stdout/stderr, no change to process.env or the cwd. Async like mutate.mjs's main. */
+export async function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
+  let stdout = '';
+  try {
+    run(argv, env, cwd, s => { stdout += s; });
+    return { code: 0, stdout, stderr: '' };
+  } catch (e) {
+    const code = e instanceof Exit ? e.exit : e instanceof Poisoned ? EXIT.poisoned : 1;
+    return { code, stdout, stderr: `note: ${e.message}\n` };
+  }
 }
 
 const isMain = () => { try { return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); } catch { return false; } };
-if (isMain()) { try { main(); } catch (e) { die(e instanceof Poisoned ? EXIT.poisoned : 1, e.message); } }
+if (isMain()) {
+  main(process.argv.slice(2)).then(r => {
+    process.stdout.write(r.stdout);
+    if (r.code) { process.stderr.write(r.stderr); process.exit(r.code); }
+  });
+}
