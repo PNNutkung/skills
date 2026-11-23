@@ -76,6 +76,8 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `ZT_MUTATION_BUDGET_STRICT_ENABLED` | `true` \| `false` | `true` | when the `mutate.mjs` budget runs out, mutants already running are stopped too (process trees killed, reported `skipped`), not only those not yet started |
 | `ZT_TEST_PROCESS_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most test commands one gate runs at once: a `testprobe.mjs` or `mutate.mjs` run, or one paired-agent-tdd gate as a whole (`red`, `green` with its test probe, mutation probe and coverage, `final`); `green` splits the cap between its probes, or runs them one after the other when it is too small to split |
 | `ZT_SANDBOX_MODE` | `auto` \| `none` \| `seatbelt` \| `bwrap` \| `docker` | `auto` | which sandbox `sandbox-run.mjs` uses: `auto` takes the first that works, a name forces that one (or exit 86), `none` pretends there is none |
+| `CHECKS_TEST_FILE_SECONDS_MAX` | a whole number above 0 \| `unlimited` | `30` | `rules/checks/test-time.mjs` (CI, node 24 on Ubuntu): most seconds one test file may take |
+| `CHECKS_TEST_SUITE_SECONDS_MAX` | a whole number above 0 \| `unlimited` | `120` | `rules/checks/test-time.mjs` (CI, node 24 on Ubuntu): most seconds the whole suite may take |
 
 `true`, `false`, `unlimited` and mode names are read in any case. Old names stop the tool until they are unset: `DOD_GUARD`, `PTDD_GUARD`, `PTDD_AGENT_CAP`, `ZT_POST_GUARD`, `ZT_SELF_REVIEW_GUARD`, `ZT_AGENT_CAP`, `ZT_SANDBOX_FORCE`.
 
@@ -97,7 +99,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 git ls-files -z '*.test.mjs' | xargs -0 node --test
 ```
 
-CI runs the same command on every pull request: Node 22, 24 and 26 (the three newest LTS majors) on Ubuntu and macOS, Node 24 from asdf shims, and Node 24 in WSL on Windows. Sandbox tests run through sandbox-exec on macOS and bwrap on Linux, and skip where neither is installed.
+CI runs the same command on every pull request (adding a timings reporter, `rules/checks/test-time.mjs`, whose time caps the node 24 Ubuntu job enforces): Node 22, 24 and 26 (the three newest LTS majors) on Ubuntu and macOS, Node 24 from asdf shims, and Node 24 in WSL on Windows. Sandbox tests run through sandbox-exec on macOS and bwrap on Linux, and skip where neither is installed.
 
 ## Telemetry
 

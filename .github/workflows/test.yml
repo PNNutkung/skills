@@ -36,9 +36,18 @@ jobs:
       - name: Install ESLint and ruff
         shell: bash
         run: npm install -g eslint@9 && python -m pip install ruff
+      # The timings reporter writes each test file's wall time and the run's (rules/checks/test-time.mjs); spec stays the console output.
       - name: Run tests
         shell: bash
-        run: git ls-files -z '*.test.mjs' | xargs -0 node --test
+        run: |
+          git ls-files -z '*.test.mjs' | xargs -0 node --test --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=./rules/checks/test-time.mjs --test-reporter-destination=test-time.jsonl
+      # Time caps (rules/performance.md): 30 s per test file and 120 s for the suite, on the node 24 Ubuntu job only. Measured on this job
+      # (2026-11-23): suite 78-107 s, slowest file about 20 s; node 22 and 26 and macOS are slower (node 22: two files at about 30.5 s).
+      - name: Test time caps
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        shell: bash
+        run: node rules/checks/test-time.mjs test-time.jsonl
 
   # The same suite with node coming from asdf shims, the way a developer machine with a version manager has it.
   asdf:
