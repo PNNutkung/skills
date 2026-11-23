@@ -2,7 +2,7 @@
 // testprobe.mjs's unmutated run, and stopping a running command. Run: node --test probelib.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FlagError } from './flags.mjs';
@@ -245,4 +245,23 @@ test('should report the runner as not started when a direct runner lacks the exe
   const r = await runIn(o, dir, 'exit 0');
   assert.notEqual(r.exit, 0);
   assert.equal(backendOf(o.runner), 'none');
+});
+
+// an in-process caller (tdd.mjs main) hands the runner its own environment and cwd instead of this process's (ADR 0003, A19)
+const ENV_RUNNER = `#!/bin/sh
+[ "$1" = --check ] && { echo "check:\${ZT_PROBE_SEEN:-unset}"; exit 0; }
+echo "seen=\${ZT_PROBE_SEEN:-unset} pwd=$(pwd)"
+`;
+
+test('should start the runner with o.procEnv and o.procCwd when they are given, and with this process\'s env and cwd when they are not', async t => {
+  const { dir, o } = runnerIn(t, 'runner', ENV_RUNNER);
+  assert.equal(process.env.ZT_PROBE_SEEN, undefined);
+  const plain = await runIn(o, dir, 'true');
+  const seen = r => { const m = /seen=(\S+) pwd=(.*)/.exec(r.tail); return [m[1], realpathSync(m[2].trim())]; }; // real paths: /tmp and /var are links on macOS
+  assert.deepEqual(seen(plain), ['unset', realpathSync(process.cwd())]);
+  const given = await runIn({ ...o, procEnv: { ...process.env, ZT_PROBE_SEEN: 'yes' }, procCwd: dir }, dir, 'true');
+  assert.deepEqual(seen(given), ['yes', realpathSync(dir)]);
+  assert.equal(backendOf(o.runner, { ...process.env, ZT_PROBE_SEEN: 'yes' }), 'check:yes');
+  assert.equal(backendOf(o.runner), 'check:unset');
+  assert.equal(process.env.ZT_PROBE_SEEN, undefined);
 });
