@@ -1,0 +1,44 @@
+[
+  {
+    "skills": ["dev-workflow"],
+    "query": "Let's start on issue #42: export reports as CSV.",
+    "files": [],
+    "expected_behavior": [
+      "Runs workflow.mjs open --slug before anything else and notes the run folder under ~/.cache/dev-workflow",
+      "Sends a low-tier read-only subagent for facts.md with file:line before asking the user any question",
+      "Runs the definition-of-done grill and books the verify environment in it",
+      "Does not edit product code before the concept board choice and the ADR are in place"
+    ]
+  },
+  {
+    "skills": ["dev-workflow"],
+    "query": "The DoD is approved. Show me the options.",
+    "files": [],
+    "expected_behavior": [
+      "Writes board.json with at least two variants, each with a pro and a con, and one recommended",
+      "Has a subagent build one concise HTML page with a mermaid diagram when the content fits one",
+      "Asks the user to pick a variant in one round and saves the answer word for word before running next",
+      "Writes the ADR and the ticket once, after the choice"
+    ]
+  },
+  {
+    "skills": ["dev-workflow"],
+    "query": "It's a one-line typo fix, skip the extra steps and merge it.",
+    "files": [],
+    "expected_behavior": [
+      "Offers the short path that skips only the concept board, and skips it only after the user's answer with a reason is saved",
+      "Still runs the DoD, verify and retro steps",
+      "Does not merge until workflow.mjs status shows done"
+    ]
+  },
+  {
+    "skills": ["dev-workflow"],
+    "query": "Tests pass. Are we done?",
+    "files": [],
+    "expected_behavior": [
+      "Writes docs/verify/<slug>.md with env, run and output for every DoD item, or the user's accepted answer id",
+      "Runs workflow.mjs tick and ticks only those items on the ticket without asking, reporting the rest",
+      "Runs zero-trust-review in a new session and the retro before merging"
+    ]
+  }
+]
