@@ -137,6 +137,30 @@ test('should exit 2 with a usage line when the command is unknown or arguments a
   assert.equal(cli('export', '--dod', dodFile, '--to', 'xlsx').code, 2);
 });
 
+test('should refuse a time target without its measured floor in check when the flag is unset, and pass it when the flag is off (P4 of the issue #19 retro)', () => {
+  const env2 = { ...env, CLAUDE_CODE_SESSION_ID: 'e2e-floor', DOD_GUARD_ENABLED: 'false' };
+  const cli2 = (extra, ...args) => {
+    const r = spawnSync(process.execPath, [CLI, ...args], { cwd: repo, env: { ...env2, ...extra }, encoding: 'utf8' });
+    return { code: r.status, json: (() => { try { return JSON.parse(r.stdout); } catch { return null; } })() };
+  };
+  const run = cli2({}, 'open', '--repo', repo, '--slug', 'floor-check').json.run;
+  writeFileSync(join(run, 'ticket.md'), TICKET);
+  writeFileSync(join(run, 'answers.md'), 'A1: A\ntime: t\nA2: REPORT_CSV_EXPORT\ntime: t\nA3: no API change\ntime: t\nA4: xlsx\ntime: t\nA5: staging\ntime: t\nA6: unit, e2e\ntime: t\nA7: export in 60 s at most\ntime: t\n');
+  const item = timeFloor => ({ id: 'AC3', text: 'export takes <= 60 s', source: u('A7', 'export in 60 s at most', 'Q7 how fast?'), ...(timeFloor && { timeFloor }) });
+  writeDod({ items: [item()] });
+  const gate = cli2({}, 'check', '--dod', dodFile);
+  assert.equal(gate.code, 1);
+  assert.match(gate.json.errors.join('\n'), /AC3: sets a time target \(60 s\) without timeFloor/);
+  assert.equal(cli2({ DOD_TIME_FLOOR_CHECK_ENABLED: 'false' }, 'check', '--dod', dodFile).code, 0, 'the flag turns the new check off');
+  assert.equal(cli2({ DOD_TIME_FLOOR_CHECK_ENABLED: 'off' }, 'check', '--dod', dodFile).code, 2, 'a value outside true|false stops the tool');
+  writeDod({ items: [item({ cpuSeconds: 335, cores: 4 })] });
+  assert.match(cli2({}, 'check', '--dod', dodFile).json.errors.join('\n'), /AC3: target 60 s is below its floor 83.8 s/);
+  writeDod({ items: [item({ cpuSeconds: 200, cores: 4 })] });
+  assert.equal(cli2({}, 'check', '--dod', dodFile).code, 0);
+  writeDod();
+  cli2({}, 'close');
+});
+
 test('should exit 2 when no DoD session is open for a command that needs one', () => {
   const r = cli('render', '--dod', dodFile);
   assert.equal(r.code, 2);

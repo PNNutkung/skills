@@ -56,6 +56,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `DOD_ADR_PRECOMMIT_HOOK_ENABLED` | `true` \| `false` | `true` | `dod.mjs adr` installs the git pre-commit hook, and the hook makes ADR `touches` follow committed file moves |
 | `DOD_ADR_TOUCHES_SYNC_ENABLED` | `true` \| `false` | `true` | `hooks/dod-adr-sync.mjs`: ADR `touches` follow the agent's `mv` and `git mv` |
 | `DOD_QUESTIONS_CHECK_ENABLED` | `true` \| `false` | `true` | `dod.mjs check` also refuses a question in `questions.md` with fewer than two options or an option with no pro or no con (`dod.mjs questions` checks it alone) |
+| `DOD_TIME_FLOOR_CHECK_ENABLED` | `true` \| `false` | `true` | `dod.mjs check` also refuses an item with a wall-time target (`<= 80 s`) that has no measured `timeFloor` (user+sys CPU-seconds and cores), or whose largest target is below cpuSeconds / cores |
 | `PTDD_GUARD_ENABLED` | `true` \| `false` | `false` | paired-agent-tdd file fence (`hooks/ptdd-guard.mjs`): each subagent edits only its group's files |
 | `PTDD_ADR_AUTO_FIND_ENABLED` | `true` \| `false` | `true` | with neither `dod[]` nor `dodFile` in `plan.json`, use the ADR whose `touches` cover the groups' `src` |
 | `PTDD_AGENT_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most agents one paired-agent-tdd run may start |

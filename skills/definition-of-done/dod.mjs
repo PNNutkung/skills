@@ -4,6 +4,7 @@
 //   questions                            questions.md as adr will read it: every question has two options or more, each with a pro and a con (run it after each save)
 //   check --dod FILE                     the gate: every item and required section quoted, no open question, questions.md as `questions` checks it
 //                                        ($DOD_QUESTIONS_CHECK_ENABLED=false: not questions.md); on pass writes docs/dod/<slug>.md
+//                                        an item with a time target needs its measured floor ($DOD_TIME_FLOOR_CHECK_ENABLED=false: no)
 //                                        (<slug>.md next to FILE when FILE is in the run folder: the ADR path, nothing of the DoD in the repo)
 //   render --dod FILE [--lang en|th] [--fallback]
 //                                        write <run>/ticket-new.md (the whole new ticket description); --fallback also writes docs/dod/<slug>.ticket.md
@@ -30,13 +31,14 @@ import { parseArgs } from 'node:util';
 import { checkAdrSources, checkQuestions, renderAdr } from './adr.mjs';
 import { FlagError, enabled } from './flags.mjs';
 import { HOOK_ENV, adrTarget, findAdrsFor, installHook, repoFiles, stagedRenames, syncRepo, topLevel, writeIndex } from './adrio.mjs';
-import { checkDod, exportPtdd, exportQa, renderMarkdown, renderTicket, ticketCheck } from './dodcheck.mjs';
+import { checkDod, checkTimeFloors, exportPtdd, exportQa, renderMarkdown, renderTicket, ticketCheck } from './dodcheck.mjs';
 import { RENDERED_FILE, approve, close, open, readActive, recordAdr, toolFor, touch, trust } from './session.mjs';
 
 const COMMANDS = ['open', 'questions', 'check', 'render', 'ticket-check', 'tools', 'export', 'adr', 'adr-check', 'adrs', 'approve', 'trust', 'close'];
 const NEEDS_RUN = new Set(['questions', 'check', 'render', 'ticket-check', 'export', 'adr', 'adr-check', 'approve']);
 const DOD_MJS = fileURLToPath(import.meta.url);
 const QUESTIONS_ENV = 'DOD_QUESTIONS_CHECK_ENABLED';
+const TIME_FLOOR_ENV = 'DOD_TIME_FLOOR_CHECK_ENABLED';
 const USAGE = `usage: dod.mjs ${COMMANDS.join(' | ')} [--session ID]; see the header of dod.mjs`;
 const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -81,6 +83,7 @@ export function run(cmd, v, env = process.env) {
   const dod = loadDod(v.dod), ctx = context(active);
   const errors = checkDod(dod, ctx);
   if (cmd === 'check' && enabled(env, QUESTIONS_ENV, true)) errors.push(...checkQuestions(ctx.questions));
+  if (cmd === 'check' && enabled(env, TIME_FLOOR_ENV, true)) errors.push(...checkTimeFloors(dod));
   if (cmd === 'check') {
     if (errors.length) return { ok: false, errors };
     // a DoD JSON kept in the run folder (the ADR path) keeps its .md there; otherwise docs/dod/<slug>.md in the repo, as before
