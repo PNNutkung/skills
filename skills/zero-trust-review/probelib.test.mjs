@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FlagError } from './flags.mjs';
-import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
+import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
 
 // a seeded generator, so a failing case can be replayed
 const rng = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -192,4 +192,57 @@ test('should wait for a free slot before starting a command, and not start it wh
   const [a, b] = await Promise.all([first, second]);
   assert.deepEqual([a.aborted, b.aborted], [true, true]);
   assert.equal(groups().length, 1);
+});
+
+// RunnerExec (ADR 0003): a runner that is not a node file runs directly, so tests can use a sh stub; a .mjs/.js/.cjs runner still runs under node.
+const SH_RUNNER = `#!/bin/sh
+[ "$1" = --check ] && { echo shstub; exit 0; }
+while [ "$1" != -- ]; do case "$1" in --cwd) cd "$2";; esac; shift 2; done
+shift
+"$@"; code=$?
+echo "ZT-RUN s1 exit=$code" >&2
+exit $code
+`;
+const runnerIn = (t, name, text, mode = 0o755) => {
+  const dir = mkdtempSync(join(tmpdir(), 'plib-exec-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const runner = join(dir, name);
+  writeFileSync(runner, text, { mode });
+  return { dir, o: { runner, env: [], ro: [], timeout: 60 } };
+};
+const NODE_RUNNER = `const a = process.argv.slice(2);
+if (a[0] === '--check') { console.log('nodestub'); process.exit(0); }
+const { spawnSync } = await import('node:child_process');
+const cut = a.indexOf('--'), cwd = a[a.indexOf('--cwd') + 1], cmd = a.slice(cut + 1);
+const r = spawnSync(cmd[0], cmd.slice(1), { cwd, stdio: 'inherit' });
+process.stderr.write('ZT-RUN n1 exit=' + r.status + '\\n');
+process.exit(r.status);
+`;
+
+test('should run the runner directly when its name does not end in .mjs, .js or .cjs', async t => {
+  for (const name of ['runner.sh', 'runner']) {
+    const { dir, o } = runnerIn(t, name, SH_RUNNER);
+    const r = await runIn(o, dir, 'echo hi; exit 4');
+    assert.deepEqual([r.exit, r.run], [4, 's1'], name);
+    assert.match(r.tail, /hi/);
+    assert.equal(backendOf(o.runner), 'shstub', name);
+  }
+});
+
+test('should run the runner under node when its name ends in .mjs, .js or .cjs, even without the exec bit', async t => {
+  for (const name of ['runner.mjs', 'runner.js', 'runner.cjs']) {
+    const text = name.endsWith('.cjs') ? NODE_RUNNER.replace("const { spawnSync } = await import('node:child_process');", "const { spawnSync } = require('node:child_process');") : NODE_RUNNER;
+    const { dir, o } = runnerIn(t, name, text, 0o644);
+    if (name === 'runner.js') writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
+    const r = await runIn(o, dir, 'exit 5');
+    assert.deepEqual([r.exit, r.run], [5, 'n1'], name);
+    assert.equal(backendOf(o.runner), 'nodestub', name);
+  }
+});
+
+test('should report the runner as not started when a direct runner lacks the exec bit', async t => {
+  const { dir, o } = runnerIn(t, 'runner.sh', SH_RUNNER, 0o644);
+  const r = await runIn(o, dir, 'exit 0');
+  assert.notEqual(r.exit, 0);
+  assert.equal(backendOf(o.runner), 'none');
 });
