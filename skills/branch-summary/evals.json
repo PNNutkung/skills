@@ -1,0 +1,33 @@
+[
+  {
+    "skills": ["branch-summary"],
+    "query": "Summarize this branch before I open the merge request.",
+    "files": [],
+    "expected_behavior": [
+      "Runs the pre-flight checks and the change analysis from SKILL.md Sections 0-2 first",
+      "Reads report-format.md with the Read tool before drafting any mermaid diagram or writing the report",
+      "Writes a markdown report whose first heading is a # title and that has a ## Summary section and a ## Test Coverage section, with conditional sections omitted when empty",
+      "Builds the HTML with build-report.mjs into a fresh temp directory, never into the repo, and prints only the HTML path, the Summary paragraph and the workaround count in chat"
+    ]
+  },
+  {
+    "skills": ["branch-summary"],
+    "query": "What changed on this branch? It is just a one-line typo fix in the README.",
+    "files": [],
+    "expected_behavior": [
+      "Takes the small-change fast path for a change of 3 or fewer files and about 50 or fewer lines",
+      "Reads report-format.md before writing the report, for the output destination and workaround rules",
+      "Keeps the report condensed: a # title, a **Branch**: line, one paragraph and the file list, with no ## Summary or ## Test Coverage sections and no diagram unless the change is structural"
+    ]
+  },
+  {
+    "skills": ["branch-summary"],
+    "query": "Quick summary of this branch please, I'm in a hurry.",
+    "files": [],
+    "expected_behavior": [
+      "Still reads report-format.md before writing the report, since SKILL.md no longer holds the template, the diagram rules or the workaround severity table",
+      "Writes a report with a # title, ## Summary and ## Test Coverage (or the condensed fast-path format when the change is small) so build-report.mjs accepts it on the first run",
+      "If build-report.mjs refuses the report, reads report-format.md (Section 5, Template), rewrites the report and builds again instead of turning the check off"
+    ]
+  }
+]
