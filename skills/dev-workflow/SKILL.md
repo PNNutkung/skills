@@ -74,7 +74,7 @@ Once: `dod.mjs adr`, the ADR prose, `adr-check`, the ticket rewrite the user app
 
 ## 4. TDD
 
-`paired-agent-tdd` with the ADR as `dodFile`; unit, integration and e2e tests, fuzz inputs, and the app flow as an e2e regression test. Open a draft pull request, then `node "$SK/workflow.mjs" next --pr <url>`.
+`paired-agent-tdd` with the ADR as `dodFile`; unit, integration and e2e tests, fuzz inputs, and the app flow as an e2e regression test. Small work (one pure function plus its wiring) may run TDD in this session instead, tests first and seen failing, only when the user said so and the answer is saved (`A12: TDD here, one pure check`); say so in the PR. Open a draft pull request, then `node "$SK/workflow.mjs" next --pr <url>`.
 
 ## 5. Verify and review
 
