@@ -90,11 +90,27 @@ rules/README.md:1
 skills/dev-workflow/SKILL.md:2
 ```
 
+## Flag
+env: ci (GitHub Actions run 45343597535 attempt 2, job node 24 on ubuntu-latest, head 7019dc1; all 8 jobs green)
+run: git ls-files -z '*.test.mjs' | xargs -0 node --test (the CI "Run tests" step)
+result: pass
+```
+✔ should read only its own flag when WORKFLOW_VERIFY_ENV_CHECK_ENABLED is not valid (the CLI reports that flag, not the hook)
+✔ should ignore env names entirely when the check is off (flags: off) (Flag)
+✔ should exit 2 with the fix when the flag value is not valid (flags: invalid) (Flag)
+✔ should keep the verify env check on when WORKFLOW_VERIFY_ENV_CHECK_ENABLED is unset, and read true or false (Flag)
+✔ should throw a FlagError naming the fix when WORKFLOW_VERIFY_ENV_CHECK_ENABLED is not true or false (Flag)
+ℹ tests 2943
+ℹ pass 2939
+ℹ fail 0
+```
+
 ## Dogfood
 env: cloud container (Linux)
-run: node skills/dev-workflow/workflow.mjs tick --slug verify-env-check (before the [ci] section was written; then with WORKFLOW_VERIFY_ENV_CHECK_ENABLED=false)
+run: node skills/dev-workflow/workflow.mjs tick --slug verify-env-check (before the [ci] Flag section was written; then with WORKFLOW_VERIFY_ENV_CHECK_ENABLED=false). After it was written, tick printed the line below
 ```
 {"ok":false,"errors":["Flag: missing (add a \"## Flag\" section)","booked env [ci] has no passing item: run at least one DoD item there (env: ci ...)"]}
 {"ok":false,"errors":["Flag: missing (add a \"## Flag\" section)"]}
+{"ok":true,"tick":["EnvNames","EnvMatch","Mismatch","EnvCoverage","NoNames","TrustText","Flag","Docs"],"warnings":[]}
 ```
 
