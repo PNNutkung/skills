@@ -70,11 +70,11 @@ At least two variants, each with a pro and a con, one recommended. A subagent tu
 
 ## 3. Lock
 
-Once: `dod.mjs adr`, the ADR prose, `adr-check`, the ticket rewrite the user approves, then commit the ADR. `next` checks the ADR whose front matter says `dod: <slug>`. Close the DoD session.
+Before `dod.mjs adr`, look at the open pull requests (`gh pr list`, then their files): take the next ADR number and plugin version none of them already claims. Once: `dod.mjs adr`, the ADR prose, `adr-check`, the ticket rewrite the user approves, then commit the ADR. `next` checks the ADR whose front matter says `dod: <slug>`. Close the DoD session.
 
 ## 4. TDD
 
-`paired-agent-tdd` with the ADR as `dodFile`; unit, integration and e2e tests, fuzz inputs, and the app flow as an e2e regression test. Small work (one pure function plus its wiring) may run TDD in this session instead, tests first and seen failing, only when the user said so and the answer is saved (`A12: TDD here, one pure check`); say so in the PR. Open a draft pull request, then `node "$SK/workflow.mjs" next --pr <url>`.
+`paired-agent-tdd` with the ADR as `dodFile`; unit, integration and e2e tests, fuzz inputs, and the app flow as an e2e regression test. Small work (one pure function plus its wiring) may run TDD in this session instead, tests first and seen failing, only when the user said so and the answer is saved (`A12: TDD here, one pure check`); say so in the PR. When `paired-agent-tdd` cannot run (no Workflow tool), write the tests in a subagent and run `zero-trust-review`'s `mutate.mjs --files <changed source> --tests <their tests>` before the pull request; add a test for every surviving mutant. Open a draft pull request, then `node "$SK/workflow.mjs" next --pr <url>`.
 
 ## 5. Verify and review
 
