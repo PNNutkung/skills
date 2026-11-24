@@ -158,6 +158,11 @@ test('should not take a fast path when the Branch line has no title above it (Ga
   assert.deepEqual(checkReport('**Branch**: `x`\ntext\n'), { ok: false, missing: ['# <title>', '## Summary', '## Test Coverage'] });
 });
 
+test('should not take a fast path when a report with a Branch line also has a level-two section (Gate)', () => {
+  assert.deepEqual(checkReport(FAST + '\n## Diagrams\n'), { ok: false, missing: ['## Summary', '## Test Coverage'] });
+  assert.deepEqual(checkReport(FAST + '\n### Architecture\n'), { ok: true, missing: [] });
+});
+
 test('should ignore headings and Branch lines inside fenced code blocks when it looks for the required parts (Gate)', () => {
   const fenced = '# T\n\n```markdown\n## Summary\n**Branch**: x\n## Test Coverage\n```\n';
   assert.deepEqual(checkReport(fenced), { ok: false, missing: ['## Summary', '## Test Coverage'] });
@@ -252,7 +257,7 @@ function oracle(parts) {
   const title = first === 1;
   const missing = [];
   if (!title) missing.push('# <title>');
-  if (!(title && branch)) {
+  if (!(title && branch && names.size === 0)) {
     if (!names.has('Summary')) missing.push('## Summary');
     if (!names.has('Test Coverage')) missing.push('## Test Coverage');
   }
