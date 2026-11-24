@@ -7,6 +7,8 @@
 //   - denies creating a ticket at all (the skill only updates the ticket the work is linked to),
 //   - denies a third-party ticket CLI the user has not trusted on this machine (dod.mjs trust),
 //   - denies the agent running `dod.mjs approve` or `dod.mjs trust`: only the user runs them (own terminal or the ! prefix).
+// It also warns, never denies, when a write to <run>/answers.md names an answer A<n> whose Q<n> is not saved in <run>/questions.md (the ADR
+// needs every question with its options; the retro of issue #19 found Q21 missing only at `dod.mjs adr`).
 // The close command is always allowed and named in every deny. Like qa-guard it catches agent mistakes, not a determined attacker:
 // pattern matching on the command text, no shell evaluation. Otherwise fail open: it always exits 0 and denies only through the JSON decision.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -144,6 +146,26 @@ export function mcpVerdict(name, input, ctx) {
   return null;
 }
 
+/** answers.md as it will be after this file tool call, or null when the call cannot be read. Pure. */
+export function answersAfter(tool, ti, current) {
+  if (tool === 'Write') return typeof ti?.content === 'string' ? ti.content : null;
+  const apply = (text, e) => {
+    if (typeof e?.old_string !== 'string' || typeof e?.new_string !== 'string') return null;
+    if (e.old_string === '') return text + e.new_string;
+    return e.replace_all ? text.split(e.old_string).join(e.new_string) : text.replace(e.old_string, () => e.new_string);
+  };
+  if (tool === 'Edit') return apply(current ?? '', ti);
+  if (tool === 'MultiEdit' && Array.isArray(ti?.edits)) return ti.edits.reduce((t, e) => (t === null ? null : apply(t, e)), current ?? '');
+  return null;
+}
+
+/** The warning for a write to answers.md that names an answer whose question is not saved, or null. */
+export function answersWarning(missing, run) {
+  if (!missing.length) return null;
+  const ids = missing.map(n => `Q${n}`).join(', ');
+  return `definition-of-done: answers.md will name ${missing.map(n => `A${n}`).join(', ')}, but ${join(run, 'questions.md')} has no ${ids}. Save each question with its options, pros and cons when you ask it (dod.mjs questions checks it; dod.mjs adr refuses an answer without its question). Not blocked.`;
+}
+
 async function decide(input) {
   const { FlagError, enabled } = await import(join(SKILL, 'flags.mjs'));
   try {
@@ -166,7 +188,17 @@ async function decide(input) {
   let why = null;
   if (isFile) {
     const p = ti?.file_path ?? ti?.notebook_path;
-    if (typeof p === 'string' && !allowedPath(realPathLoose(isAbsolute(p) ? p : join(cwd ?? process.cwd(), p)))) why = `${p} is outside docs/dod and the run folder`;
+    const abs = typeof p === 'string' ? realPathLoose(isAbsolute(p) ? p : join(cwd ?? process.cwd(), p)) : null;
+    if (abs !== null && !allowedPath(abs)) why = `${p} is outside docs/dod and the run folder`;
+    else if (abs === join(run, 'answers.md')) {
+      const read = f => (existsSync(f) ? readFileSync(f, 'utf8') : '');
+      const next = answersAfter(tool, ti, read(abs));
+      if (next !== null) {
+        const { unsavedQuestions } = await import(join(SKILL, 'adr.mjs'));
+        const warn = answersWarning(unsavedQuestions(next, read(join(run, 'questions.md'))), run);
+        if (warn) return { warn };
+      }
+    }
   } else if (isMcp) why = mcpVerdict(tool, ti, { approved });
   else why = bashVerdict(String(ti?.command ?? ''), { approved, trusted: cli => s.isTrusted(cli, process.env), allowedPath, cwd: cwd ?? active.repo });
   return why ? `definition-of-done session ${active.run} is open (DOD_GUARD_ENABLED=true): ${why}. To close the session: node "${DOD_MJS}" close --session ${session}` : null;
@@ -175,7 +207,8 @@ async function decide(input) {
 async function main() {
   try {
     const reason = await decide(JSON.parse(readFileSync(0, 'utf8')));
-    if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
+    if (reason?.warn) process.stdout.write(JSON.stringify({ systemMessage: reason.warn, hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: reason.warn } })); // no decision: never blocks
+    else if (reason) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
   } catch { /* fail open: no output */ }
   process.exit(0);
 }

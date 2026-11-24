@@ -1,8 +1,8 @@
 // Integration: workflow.mjs main() in-process on a temp git repo, with the real definition-of-done dod.mjs for the DoD gate.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -179,4 +179,22 @@ test('should keep run folders apart per repo and slug when two repos share a nam
   assert.notEqual(runDir(env, '/a/repo', 's'), runDir(env, '/b/repo', 's'));
   assert.ok(runDir(env, '/a/repo', 's').startsWith(join('/c', 'dev-workflow')));
   assert.ok(HERE);
+});
+
+// cwd: linked (rules/checks/inproc-cwd.mjs, rules/paths.md): a started process sees its cwd as a real path, so main must too
+test('should give the same run folder and dod path spawned and in-process when the cwd is a linked folder', () => {
+  const f = fixture();
+  try {
+    const linked = join(f.base, 'linked');
+    symlinkSync(f.repo, linked);
+    const opened = main(['open', '--slug', 'lnk'], { env: f.env, cwd: linked });
+    assert.equal(opened.code, 0, JSON.stringify(opened.out));
+    const r = spawnSync(process.execPath, [join(HERE, 'workflow.mjs'), 'status', '--slug', 'lnk'], { cwd: linked, env: f.env, encoding: 'utf8' });
+    assert.equal(JSON.parse(r.stdout).run, opened.out.run);
+    writeFileSync(join(opened.out.run, 'facts.md'), 'a.js:1 exports a\n');
+    main(['next', '--slug', 'lnk'], { env: f.env, cwd: linked });
+    main(['next', '--slug', 'lnk', '--dod', 'dod.json'], { env: f.env, cwd: linked });
+    const state = JSON.parse(readFileSync(join(opened.out.run, 'state.json'), 'utf8'));
+    assert.equal(state.dod, join(realpathSync(f.repo), 'dod.json'));
+  } finally { f.done(); }
 });

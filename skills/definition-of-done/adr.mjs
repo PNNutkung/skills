@@ -69,6 +69,20 @@ export function checkQuestions(text) {
   return [...parseQuestions(text).entries()].sort(([a], [b]) => a - b).flatMap(([n, q]) => questionProblems(q, n));
 }
 
+/**
+ * The answer ids in answers.md (A<n>) with no Q<n> saved in questions.md, sorted. [] while questions.md holds no question at all: a run that
+ * never saved questions (as before questions.md existed) is left as it was; once one is saved, every answer needs its question.
+ */
+export function unsavedQuestions(answers, questions) {
+  const qs = parseQuestions(questions);
+  return qs.size ? answerIds(answers).filter(n => !qs.has(n)) : [];
+}
+
+/** Every answer in answers.md has its question in questions.md, as adr will need, so a missing record shows when the answer is saved. -> errors */
+export function checkAnswersHaveQuestions(answers, questions) {
+  return unsavedQuestions(answers, questions).map(n => questionProblems(null, n)[0]);
+}
+
 // ---------------------------------------------------------------- the DoD section
 /** T<n> per distinct ticket quote and S<n> per distinct spec quote, in the order the DoD cites them. */
 function citations(dod) {

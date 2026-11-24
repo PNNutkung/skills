@@ -14,8 +14,10 @@
 // Flags: ZT_MUTATION_BASELINE_REUSE_ENABLED (default true) allows --baseline-from; ZT_MUTATION_BUDGET_STRICT_ENABLED (default true) also stops the mutants still
 // running when --budget runs out (reported skipped, never killed or survived); ZT_TEST_PROCESS_MAX caps how many test commands run at once (default unlimited).
 // Prints one JSON object and exits 0 (results are data); usage errors exit 2.
+// In-process (tests): main(argv, { env, cwd }) -> { code, stdout, stderr }, the same bytes the CLI prints; the CLI is a thin wrapper around it.
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { changedLines, fileRanges, generateMutants, sample } from './mutants.mjs';
 import { enabled } from './flags.mjs';
 import { DOC, NO_SANDBOX, TEST, TIMEOUT, backendOf, changes, clear, editableRoots, extract, gitOut, intOption, isSource, parseProbeArgs, pool, readBaseline, runIdentity, runIn, shq,
@@ -25,16 +27,16 @@ const MAX_SURVIVORS_SHOWN = 3, LINE_CUT = 40; // the lead pastes this summary in
 const PATCH_FAILED = 125;
 const BASELINE_REUSE_FLAG = 'ZT_MUTATION_BASELINE_REUSE_ENABLED', BUDGET_STRICT_FLAG = 'ZT_MUTATION_BUDGET_STRICT_ENABLED';
 
-function parse() {
+function parse(argv, env, cwd) {
   const { values, ...common } = parseProbeArgs({ max: { type: 'string', default: '30' }, budget: { type: 'string', default: '600' }, 'kill-exits': { type: 'string' }, files: { type: 'string' },
     'baseline-from': { type: 'string' } },
-    { optional: process.argv.includes('--files') ? ['base'] : [] });
+    { optional: argv.includes('--files') ? ['base'] : [], args: argv, cwd });
   if (values.files && !common.tests?.length) throw new Error('--tests is required with --files');
   const killExits = values['kill-exits']?.split(',').map(Number);
   if (killExits?.some(n => !Number.isInteger(n) || n < 1 || n > 255)) throw new Error('--kill-exits wants integers 1-255, comma separated');
-  const reuse = enabled(process.env, BASELINE_REUSE_FLAG, true), strict = enabled(process.env, BUDGET_STRICT_FLAG, true), slots = testProcessSlots(process.env);
+  const reuse = enabled(env, BASELINE_REUSE_FLAG, true), strict = enabled(env, BUDGET_STRICT_FLAG, true), slots = testProcessSlots(env);
   return { ...common, max: intOption(values, 'max', 1), budget: intOption(values, 'budget', 0), killExits, files: values.files && fileRanges(values.files),
-    baselineFrom: reuse ? values['baseline-from'] : undefined, strict, slots };
+    baselineFrom: reuse ? values['baseline-from'] : undefined, strict, slots, procEnv: env }; // procEnv: the env the runner starts with (probelib.runIn)
 }
 
 // A pristine tree: HEAD extracted by git (symlink-safe), plus the linked dirs (venv ...) as symlinks to the real ones.
@@ -106,15 +108,15 @@ function wholeFiles(o) {
   return touched;
 }
 
-async function main() {
-  const o = parse();
+async function run(argv, env, cwd, write) {
+  const o = parse(argv, env, cwd);
   const identity = o.baselineFrom && runIdentity(o); // the caller's environment, as testprobe.mjs saw it
   if (!o.env.some(e => e.startsWith('PYTHONDONTWRITEBYTECODE='))) o.env.push('PYTHONDONTWRITEBYTECODE=1'); // a same-size edit in the same second would run stale .pyc
-  const backend = backendOf(o.runner);
+  const backend = backendOf(o.runner, env);
   const done = extra => {
     const out = { backend, available: 0, mutants: [], ...extra };
     out.score = tally(out.mutants);
-    process.stdout.write(`${JSON.stringify({ ...out, summary: summarize(out) })}\n`);
+    write(`${JSON.stringify({ ...out, summary: summarize(out) })}\n`);
   };
   let tests = o.tests, touched;
   if (o.files) touched = wholeFiles(o); // no diff: the named files at --head
@@ -168,4 +170,22 @@ async function main() {
   done({ available: all.length, tests: { run: usable, notUsable: tests.filter(t => !usable.includes(t)) }, mutants: results, ...(baseline && { baseline }) });
 }
 
-main().catch(e => { console.error(`mutate: ${e.message}`); process.exit(2); });
+/** The whole tool, in-process: no process.exit, no write to the real stdout/stderr, no change to process.env or the cwd once it returns. */
+const realCwd = c => { try { return realpathSync(c); } catch { return c; } }; // a started process sees its cwd as a real path (macOS /var -> /private/var, rules/paths.md)
+export async function main(argv, { env = process.env, cwd = process.cwd() } = {}) {
+  let stdout = '';
+  try {
+    await run(argv, env, realCwd(cwd), s => { stdout += s; });
+    return { code: 0, stdout, stderr: '' };
+  } catch (e) {
+    return { code: 2, stdout, stderr: `mutate: ${e.message}\n` };
+  }
+}
+
+const isMain = () => { try { return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); } catch { return false; } };
+if (isMain()) {
+  main(process.argv.slice(2)).then(r => {
+    process.stdout.write(r.stdout);
+    if (r.code) { process.stderr.write(r.stderr); process.exit(r.code); }
+  });
+}

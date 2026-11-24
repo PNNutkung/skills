@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const OWNERS = { DOD: 'definition-of-done', PTDD: 'paired-agent-tdd', QA: 'qa-sweep', RETRO: 'retro', WORKFLOW: 'dev-workflow', ZT: 'zero-trust-review' };
+export const OWNERS = { CHECKS: 'rules/checks', DOD: 'definition-of-done', PTDD: 'paired-agent-tdd', QA: 'qa-sweep', RETRO: 'retro', WORKFLOW: 'dev-workflow', ZT: 'zero-trust-review' };
 export const MARKER = /\bflags:\s*defaults\b/;
 const SPAWN = /\b(?:spawnSync|spawn|execFileSync|execFile|fork)\s*\(/;
 

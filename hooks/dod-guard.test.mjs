@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bashVerdict, mcpVerdict } from './dod-guard.mjs';
+import { answersAfter, bashVerdict, mcpVerdict } from './dod-guard.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, 'dod-guard.mjs');
@@ -209,6 +209,48 @@ test('should never throw when MCP tool names and inputs are random', () => {
     const v = mcpVerdict(name, [null, {}, { method: 'create' }, 'x'][rnd(4)], { approved: !!rnd(2) });
     assert.ok(v === null || typeof v === 'string');
   }
+});
+
+// answers.md: a warning, never a deny, for an answer whose question is not saved (P7 of the issue #19 retro)
+const Q = ns => ns.map(n => `Q${n}: q${n}?\n(A) a\n  + p\n  - c\n(B) b\n  + p\n  - c\ntime: t\n\n`).join('');
+const A = ns => ns.map(n => `A${n}: A\ntime: t\n`).join('');
+
+test('should allow a write to answers.md without a warning when every answer has its question saved', () => {
+  const fx = fixture();
+  writeFileSync(join(fx.run, 'questions.md'), Q([1, 2]));
+  const out = hook(fx, 'Write', { file_path: join(fx.run, 'answers.md'), content: A([1, 2]) });
+  assert.deepEqual(out, { permissionDecision: 'allow' });
+});
+
+test('should warn, naming the answer and the missing question, and never deny when answers.md names an unsaved question', () => {
+  const fx = fixture();
+  writeFileSync(join(fx.run, 'questions.md'), Q([1, 20, 22]));
+  writeFileSync(join(fx.run, 'answers.md'), A([1, 20]));
+  const write = hook(fx, 'Write', { file_path: join(fx.run, 'answers.md'), content: A([1, 20, 21, 22]) });
+  assert.equal(write.permissionDecision, undefined, 'no decision: the normal permission flow goes on');
+  assert.match(write.additionalContext, /answers\.md will name A21, but \S+questions\.md has no Q21\. Save each question .* Not blocked\.$/);
+  const edit = hook(fx, 'Edit', { file_path: join(fx.run, 'answers.md'), old_string: 'A20: A\ntime: t\n', new_string: 'A20: A\ntime: t\nA21: B\ntime: t\n' });
+  assert.match(edit.additionalContext, /will name A21,/);
+  const multi = hook(fx, 'MultiEdit', { file_path: join(fx.run, 'answers.md'), edits: [{ old_string: 'A1: A', new_string: 'A1: B' }, { old_string: '', new_string: 'A23: A\ntime: t\n' }] });
+  assert.match(multi.additionalContext, /will name A23,/);
+});
+
+test('should not warn when questions.md holds no question yet, the guard is off, or the file is not answers.md in the run', () => {
+  const fx = fixture();
+  assert.deepEqual(hook(fx, 'Write', { file_path: join(fx.run, 'answers.md'), content: A([1, 2]) }), { permissionDecision: 'allow' }, 'no questions saved');
+  writeFileSync(join(fx.run, 'questions.md'), Q([1]));
+  assert.deepEqual(hook(fx, 'Write', { file_path: join(fx.run, 'answers.md'), content: A([1, 2]) }, { DOD_GUARD_ENABLED: 'false' }), { permissionDecision: 'allow' }, 'guard off');
+  assert.deepEqual(hook(fx, 'Write', { file_path: join(fx.run, 'notes.md'), content: A([1, 2]) }), { permissionDecision: 'allow' }, 'another file');
+  assert.equal(decision(fx, 'Write', { file_path: join(fx.repo, 'src', 'answers.md'), content: A([2]) }), 'deny', 'outside the run: the usual deny');
+});
+
+test('should compute answers.md after a Write, an Edit or a MultiEdit, and give null when the call is not readable', () => {
+  assert.equal(answersAfter('Write', { content: 'x' }, 'old'), 'x');
+  assert.equal(answersAfter('Edit', { old_string: 'a', new_string: 'b' }, 'a a'), 'b a');
+  assert.equal(answersAfter('Edit', { old_string: 'a', new_string: '$&b', replace_all: true }, 'a a'), '$&b $&b');
+  assert.equal(answersAfter('Edit', { old_string: 'a', new_string: '$&' }, 'a'), '$&', 'no replacement patterns');
+  assert.equal(answersAfter('MultiEdit', { edits: [{ old_string: 'a', new_string: 'b' }, { old_string: '', new_string: 'c' }] }, 'a'), 'bc');
+  for (const [tool, ti] of [['Write', {}], ['Edit', { old_string: 1 }], ['MultiEdit', { edits: 'x' }], ['MultiEdit', { edits: [{}] }], ['NotebookEdit', {}]]) assert.equal(answersAfter(tool, ti, ''), null, tool);
 });
 
 test('should be registered in the plugin hooks for edits, Bash and MCP tools', () => {

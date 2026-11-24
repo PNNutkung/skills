@@ -96,6 +96,40 @@ export function checkDod(dod, ctx = {}) {
   }
 }
 
+// A wall-time target in an item's text: "<= 80 s", "under 2 min", "ไม่เกิน 60 วิ". Its floor is the CPU the work needs spread over every core
+// (user+sys CPU-seconds / cores, from one measured run): a target below it cannot be met by running more in parallel (rules/performance.md).
+const TIME_TARGET = /(?:<=|≤|<|\bunder|\bwithin|\bat most|ไม่เกิน|ภายใน)\s*(\d+(?:\.\d+)?)\s*(s|secs?|seconds?|min|mins|minutes?|วิ|วินาที|นาที)(?![A-Za-z\u0E00-\u0E7F])/gi;
+const UNIT_SECONDS = u => (/^(min|mins|minutes?|นาที)$/i.test(u) ? 60 : 1);
+
+/** The wall-time targets in a text, in seconds. */
+export function timeTargets(text) {
+  return [...String(text ?? '').matchAll(TIME_TARGET)].map(m => Number(m[1]) * UNIT_SECONDS(m[2]));
+}
+
+/**
+ * -> list of error strings. An item whose text sets a wall-time target needs timeFloor: {cpuSeconds, cores} measured before the target was
+ * set, and its largest target must be at least cpuSeconds / cores; or timeFloor: {none: "<why>"} when the time is a limit, not a speed target
+ * (a timeout). dod.mjs check runs it unless DOD_TIME_FLOOR_CHECK_ENABLED=false. Never throws.
+ */
+export function checkTimeFloors(dod) {
+  const errors = [];
+  for (const item of isObj(dod) && Array.isArray(dod.items) ? dod.items : []) {
+    if (!isObj(item)) continue;
+    const targets = timeTargets(item.text);
+    if (!targets.length) continue;
+    const f = item.timeFloor, id = item.id;
+    if (isObj(f) && norm(f.none) !== '') continue;
+    const cpu = isObj(f) ? Number(f.cpuSeconds) : NaN, cores = isObj(f) ? Number(f.cores) : NaN;
+    if (!(cpu > 0) || !Number.isInteger(cores) || cores < 1) {
+      errors.push(`${id}: sets a time target (${targets.map(t => `${t} s`).join(', ')}) without timeFloor: measure one run first (user+sys CPU-seconds and cores) and add timeFloor: {cpuSeconds, cores}, or timeFloor: {none: "<why>"} when it is a limit, not a speed target`);
+      continue;
+    }
+    const floor = Math.round((cpu / cores) * 10) / 10, top = Math.max(...targets);
+    if (top < floor) errors.push(`${id}: target ${top} s is below its floor ${floor} s (${cpu} CPU-seconds / ${cores} cores); only less work can meet it, not more parallelism`);
+  }
+  return errors;
+}
+
 const mustPass = (dod, ctx) => {
   const errors = checkDod(dod, ctx);
   if (errors.length) throw new Error(`check failed: ${errors.join('; ')}`);

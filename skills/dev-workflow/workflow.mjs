@@ -48,9 +48,13 @@ function pick(env, root, slug) {
 
 const summary = ev => ({ facts: ev.facts, measure: ev.measure, dod: ev.dod.ok, board: ev.board.ok, choice: ev.board.choice, adr: ev.adr, pr: ev.pr, verify: ev.verify.ok, retro: ev.retro });
 
+// A started process sees its cwd as a real path (macOS /var -> /private/var, rules/paths.md); in-process callers get the same.
+const realCwd = p => { try { return realpathSync(p); } catch { return p; } };
+
 /** The CLI as a function: { code, out } where out is the JSON object printed. deps: { env, cwd, gh, dodMjs }. */
 export function main(argv, { env = process.env, cwd = process.cwd(), gh, dodMjs } = {}) {
   try {
+    cwd = realCwd(cwd);
     readFlags(env);
     const { cmd, v } = parse(argv);
     const root = repoRoot(cwd);

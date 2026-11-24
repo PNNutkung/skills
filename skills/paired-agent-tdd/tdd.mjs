@@ -23,7 +23,6 @@
 // Exit: 0 (results are data, read `ok`); 2 usage or invalid plan; 3 no trusted run dir; 1 other error.
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -32,8 +31,15 @@ import { changedCoverage, classifyRed, closure, closureMarkdown, defectsFromGree
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ZT = resolve(process.env.ZT_DIR ?? join(HERE, '..', 'zero-trust-review'));
-const fail = (code, msg) => { process.stderr.write(`tdd: ${msg}\n`); process.exit(code); };
-if (!existsSync(join(ZT, 'probelib.mjs'))) fail(2, `the zero-trust-review skill is not at ${ZT} (set ZT_DIR): its sandbox runner and probes are required`);
+// ZT is fixed when the module loads (ZT_DIR of this process): without it there is nothing to import, so this one check still exits here
+if (!existsSync(join(ZT, 'probelib.mjs'))) { process.stderr.write(`tdd: the zero-trust-review skill is not at ${ZT} (set ZT_DIR): its sandbox runner and probes are required\n`); process.exit(2); }
+// Every command runs inside main(argv, { env, cwd }) with ONE call context `cx`: the injected env and cwd, the output in write order, and per-call state (the snapshot counter).
+// Nothing in a call reads or writes process.env, process.cwd() or process.exitCode, or exits: fail() throws an ExitError that main turns into the exit code and `tdd: <msg>`.
+export class ExitError extends Error { constructor(code, message) { super(message); this.code = code; } }
+const fail = (code, msg) => { throw new ExitError(code, msg); };
+const emit = (cx, fd, text) => { cx.out.push([fd, text]); };
+const abs = (cx, p) => (cx.cwd === undefined ? resolve(p) : resolve(cx.cwd, p)); // a path the user gave, against the injected cwd (none given: this process's, read only when needed)
+const tmpOf = env => { const t = env.TMPDIR || env.TMP || env.TEMP || '/tmp'; return t.length > 1 && t.endsWith('/') ? t.slice(0, -1) : t; }; // os.tmpdir() of a process started with env
 const imp = f => import(pathToFileURL(join(ZT, f)).href);
 const lib = await imp('probelib.mjs');
 const { createRunDir, markerDir, readMarker, resolveRun, writeSafe } = await imp('runctx.mjs');
@@ -52,25 +58,24 @@ const FLAKE_RUNS = 2; // the GREEN probe's flake sample, and what a reused GREEN
 const QUICK_REASON = 'skipped (--quick)';
 const short = sha => String(sha).slice(0, 8);
 // zero-trust-review's probe flags (its own reader: each skill owns its flags), resolved where a gate starts: a value that is not valid stops the tool with the fix, never a GREEN
-const readZt = () => { try { return ztFlags.probeFlags(process.env); } catch (e) { if (e instanceof ztFlags.FlagError) fail(2, e.message); throw e; } };
+const readZt = cx => { try { return ztFlags.probeFlags(cx.env); } catch (e) { if (e instanceof ztFlags.FlagError) fail(2, e.message); throw e; } };
 // every flag off (no plan.speed, both zero-trust-review switches false, no process cap): the v2.0.0 gate, which read no mutation probe error
 const legacyGate = ctx => !ctx.plan.speed && ctx.zt.budgetStrict === false && ctx.zt.baselineReuse === false && ctx.zt.testProcessMax === null;
 
-function git(repo, args, env = {}) {
-  try { return execFileSync('git', ['-C', repo, '-c', 'core.quotePath=false', ...args], { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env }, maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }); }
+function git(cx, repo, args, env = {}) {
+  try { return execFileSync('git', ['-C', repo, '-c', 'core.quotePath=false', ...args], { env: { ...cx.env, GIT_OPTIONAL_LOCKS: '0', ...env }, maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }); }
   catch (e) { throw new Error(`git ${args[0]}: ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
 }
 const names = text => text.split('\0').filter(Boolean); // git ... -z: names stay raw (a quoted "caf\\303\\251.py" would never match the plan)
-const has = (repo, rev, path) => { try { git(repo, ['cat-file', '-e', `${rev}:${path}`]); return true; } catch { return false; } };
-const showText = (repo, rev, path) => (has(repo, rev, path) ? git(repo, ['show', `${rev}:${path}`]) : '');
+const has = (cx, repo, rev, path) => { try { git(cx, repo, ['cat-file', '-e', `${rev}:${path}`]); return true; } catch { return false; } };
+const showText = (cx, repo, rev, path) => (has(cx, repo, rev, path) ? git(cx, repo, ['show', `${rev}:${path}`]) : '');
 
 // ---------------------------------------------------------------- snapshots
-let counter = 0;
 const inside = (root, p) => { try { const r = realpathSync(dirname(p)); return r === root || r.startsWith(root + sep); } catch { return false; } };
 
 /** commit of `on` + the given working-tree files (undefined = every non-ignored file). Refuses links and anything that resolves outside the repo. */
-function snapshot(scratch, repo, on, files) {
-  const index = join(scratch, `idx-${process.pid}-${counter++}`), env = { ...COMMIT_ENV, GIT_INDEX_FILE: index }, g = (...a) => git(repo, a, env).trim();
+function snapshot(cx, scratch, repo, on, files) { // cx.counter: per call, never carried from one main() into the next
+  const index = join(scratch, `idx-${process.pid}-${cx.counter++}`), env = { ...COMMIT_ENV, GIT_INDEX_FILE: index }, g = (...a) => git(cx, repo, a, env).trim();
   const parent = g('rev-parse', '--verify', `${on}^{commit}`), root = realpathSync(repo);
   try {
     g('read-tree', parent);
@@ -84,7 +89,7 @@ function snapshot(scratch, repo, on, files) {
     return g('commit-tree', g('write-tree'), '-p', parent, '-m', 'paired-agent-tdd snapshot');
   } finally { rmSync(index, { force: true }); }
 }
-const baseSnapshot = (scratch, repo) => (git(repo, ['status', '--porcelain']).trim() ? snapshot(scratch, repo, 'HEAD') : git(repo, ['rev-parse', '--verify', 'HEAD^{commit}']).trim());
+const baseSnapshot = (cx, scratch, repo) => (git(cx, repo, ['status', '--porcelain']).trim() ? snapshot(cx, scratch, repo, 'HEAD') : git(cx, repo, ['rev-parse', '--verify', 'HEAD^{commit}']).trim());
 
 // ---------------------------------------------------------------- plan and run folder
 const group = (plan, id) => plan.groups.find(g => g.id === id) ?? fail(2, `unknown group ${id}`);
@@ -97,38 +102,39 @@ function needs(plan, g) { // every group g waits for, directly or not
 }
 
 // where the test commands run: direct (no confinement) unless plan.sandbox asks for the zero-trust-review sandbox; --runner overrides both
-const runnerOf = (plan, o) => resolve(o.runner ?? (plan.sandbox ? join(ZT, 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs')));
-const trustedRun = dir => { // the explicit flag alone: another candidate (env, marker) must never stand in for a bad one
+const runnerOf = (cx, plan, o) => abs(cx, o.runner ?? (plan.sandbox ? join(ZT, 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs')));
+const trustedRun = (cx, dir) => { // the explicit flag alone: another candidate (env, marker) must never stand in for a bad one
   let real = '';
-  try { real = realpathSync(resolve(dir ?? '')); } catch { /* missing */ }
-  return real && resolveRun({ run: real, env: process.env }) === real ? real : '';
+  try { real = realpathSync(abs(cx, dir ?? '')); } catch { /* missing */ }
+  return real && resolveRun({ run: real, env: cx.env, tmp: tmpOf(cx.env) }) === real ? real : '';
 };
-function load(o, testing = false) {
-  const run = trustedRun(o.run);
+/** the run context: cx (env, cwd, output) plus the run folder, its plan and the probe settings. The runner and the probes get RUN as ZT_RUN_DIR in their own env. */
+function load(cx, o, testing = false) {
+  const run = trustedRun(cx, o.run);
   if (!run) fail(3, '--run must be the run folder `tdd.mjs plan` created (under the per-user zt-review base; yours and closed to others)');
   let plan;
   try { plan = JSON.parse(readFileSync(join(run, 'plan.json'), 'utf8')); } catch { fail(3, `no ${join(run, 'plan.json')}: run \`tdd.mjs plan\` first`); }
-  process.env.ZT_RUN_DIR = run; // the runner appends its ledger (one entry per command, ZT-RUN <id>) to RUN/exec.jsonl
+  cx.env = { ...cx.env, ZT_RUN_DIR: run }; // the runner appends its ledger (one entry per command, ZT-RUN <id>) to RUN/exec.jsonl: this call's env, never process.env
   const linked = (plan.link ?? []).map(n => realpathSync(join(plan.repo, n)));
   const env = [...(plan.env ?? []), ...(plan.env ?? []).some(e => e.startsWith('PYTHONDONTWRITEBYTECODE=')) ? [] : ['PYTHONDONTWRITEBYTECODE=1']];
-  const ro = [...linked, ...lib.editableRoots(linked, plan.repo), ...(plan.ro ?? []).map(p => resolve(p))];
-  const runner = runnerOf(plan, o), zt = testing ? readZt() : null;
+  const ro = [...linked, ...lib.editableRoots(linked, plan.repo), ...(plan.ro ?? []).map(p => abs(cx, p))];
+  const runner = runnerOf(cx, plan, o), zt = testing ? readZt(cx) : null;
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   mkdirSync(join(run, 'diff'), { recursive: true, mode: 0o700 });
   // ZT_TEST_PROCESS_MAX caps the whole gate: this process's own test commands share one limiter, and `green` splits the cap with the probes it starts (processShares)
   const slots = zt?.testProcessMax ? { slots: lib.limiter(zt.testProcessMax) } : {};
-  return { run, plan, linked, zt, jobs: plan.jobs ?? 4, probe: { runner, env, ro, timeout: plan.timeout ?? 120, tail: TAIL_KEPT, ...slots } };
+  return Object.assign(cx, { run, plan, linked, zt, jobs: plan.jobs ?? 4, probe: { runner, env, ro, timeout: plan.timeout ?? 120, tail: TAIL_KEPT, ...slots, procEnv: cx.env, procCwd: cx.cwd } });
 }
 const gatePath = (ctx, name) => join(ctx.run, 'gates', name);
 const writeGate = (ctx, name, obj) => writeSafe(ctx.run, gatePath(ctx, name), `${JSON.stringify(obj)}\n`);
 const readGate = (ctx, name) => { try { return JSON.parse(readFileSync(gatePath(ctx, name), 'utf8')); } catch { return null; } };
 const storeGate = (ctx, gate, key, result) => writeEntry(gatePath(ctx, cacheName(gate)), key, result, (f, text) => writeSafe(ctx.run, f, text));
-const treeOf = (ctx, rev) => git(ctx.plan.repo, ['rev-parse', `${rev}^{tree}`]).trim();
+const treeOf = (ctx, rev) => git(ctx, ctx.plan.repo, ['rev-parse', `${rev}^{tree}`]).trim();
 const bytesOf = (ctx, files) => files.map(f => { try { return [f, readFileSync(join(ctx.plan.repo, f))]; } catch { return [f, null]; } }); // a missing file is part of the key too
 // the mutation policy and the sandbox image decide a result as much as the command does: resolved values, so `TRUE` and `true` are one key
 const runArgs = ctx => JSON.stringify({ cmd: ctx.plan.cmd, base: ctx.plan.base, runner: ctx.probe.runner, env: ctx.probe.env, ro: ctx.probe.ro, link: ctx.plan.link ?? [], timeout: ctx.probe.timeout, jobs: ctx.jobs,
-  zt: ctx.zt && { ...ctx.zt, sandboxImage: process.env.ZT_SANDBOX_IMAGE ?? '' } });
-const writeDiff = (ctx, name, args) => { const f = join(ctx.run, 'diff', name); writeSafe(ctx.run, f, git(ctx.plan.repo, args)); return f; };
+  zt: ctx.zt && { ...ctx.zt, sandboxImage: ctx.env.ZT_SANDBOX_IMAGE ?? '' } });
+const writeDiff = (ctx, name, args) => { const f = join(ctx.run, 'diff', name); writeSafe(ctx.run, f, git(ctx, ctx.plan.repo, args)); return f; };
 
 async function tree(ctx, rev, tag) {
   const dir = mkdtempSync(join(ctx.plan.scratch, `${tag}-`));
@@ -138,10 +144,10 @@ async function tree(ctx, rev, tag) {
 }
 const discard = d => { try { rmSync(d, { recursive: true, force: true }); } catch { /* untrusted code may have locked it: scratch is disposable */ } };
 const runFile = (ctx, dir, file) => lib.runIn(ctx.probe, dir, ctx.plan.cmd.replaceAll('{file}', () => lib.shq(file)));
-const snapOf = (ctx, files, on = ctx.plan.base) => snapshot(ctx.plan.scratch, ctx.plan.repo, on, files);
+const snapOf = (ctx, files, on = ctx.plan.base) => snapshot(ctx, ctx.plan.scratch, ctx.plan.repo, on, files);
 // Files that differ from the base and that no group or the integration test owns. A scan that fails (a file vanished mid-add) is `unknown`, never a gate failure.
 function strayFiles(ctx) {
-  try { return { files: outOfScope(names(git(ctx.plan.repo, ['diff', '--name-only', '-z', ctx.plan.base, snapOf(ctx, undefined)])), new Set(planFiles(ctx.plan))) }; }
+  try { return { files: outOfScope(names(git(ctx, ctx.plan.repo, ['diff', '--name-only', '-z', ctx.plan.base, snapOf(ctx, undefined)])), new Set(planFiles(ctx.plan))) }; }
   catch (e) { return { files: [], error: e.message.slice(0, 160) }; }
 }
 
@@ -151,7 +157,7 @@ function child(ctx, script, base, head, tests, tag, extra = [], max = null) { //
   const argv = [join(ZT, script), '--repo', plan.repo, '--base', base, '--head', head, '--scratch', scratch, '--cmd', plan.cmd, '--tests', tests.join(','), '--runner', ctx.probe.runner,
     '--jobs', String(ctx.jobs), '--timeout', String(ctx.probe.timeout), ...(plan.link ?? []).flatMap(n => ['--link', n]), ...(plan.ro ?? []).flatMap(p => ['--ro', p]), ...ctx.probe.env.flatMap(e => ['--env', e]), ...extra];
   return new Promise(done => {
-    const p = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'pipe'], ...(max === null ? {} : { env: { ...process.env, ZT_TEST_PROCESS_MAX: String(max) } }) });
+    const p = spawn(process.execPath, argv, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: max === null ? ctx.env : { ...ctx.env, ZT_TEST_PROCESS_MAX: String(max) } });
     let out = '', err = '';
     p.stdout.on('data', d => (out += d));
     p.stderr.on('data', d => (err += d));
@@ -159,7 +165,7 @@ function child(ctx, script, base, head, tests, tag, extra = [], max = null) { //
   });
 }
 
-const say = rows => process.stdout.write(`${rows.join('\n').slice(0, SUMMARY_MAX)}\n`);
+const say = (cx, rows) => emit(cx, 1, `${rows.join('\n').slice(0, SUMMARY_MAX)}\n`);
 const clipTail = t => (t ?? '').replace(/\s+/g, ' ').trim().slice(-TAIL_SHOWN);
 const spread = (map, n = 6) => map.slice(0, n).map(([f, ls]) => `${f}:${ls.slice(0, 6).join(',')}`).join(' ');
 
@@ -175,7 +181,7 @@ const TEST_NAME = /(^|\/)(test_[^/]*|[^/]*[_.-](test|tests|spec)\.[^/.]+|[^/]*Te
 const NOT_A_TEST = /(^|\/)(__init__|conftest|setup|helpers?|fixtures?|mocks?|utils?|common)(\.[^/]*)?$|\/(fixtures?|mocks?|__snapshots__)\//i; // under tests/ but never one
 async function preflight(ctx) {
   const { plan } = ctx, mine = new Set(planFiles(plan));
-  const listed = names(git(plan.repo, ['ls-tree', '-r', '-l', '-z', plan.base])).map(l => { const [meta, ...p] = l.split('\t'); return { size: Number(meta.trim().split(/\s+/)[3]) || 0, path: p.join('\t') }; });
+  const listed = names(git(ctx, plan.repo, ['ls-tree', '-r', '-l', '-z', plan.base])).map(l => { const [meta, ...p] = l.split('\t'); return { size: Number(meta.trim().split(/\s+/)[3]) || 0, path: p.join('\t') }; });
   const exts = new Set(plan.groups.flatMap(g => g.tests.map(f => extname(f)))); // the runner of plan.cmd runs the groups' kind of file, not any file under tests/
   const rank = p => (TEST_NAME.test(p) ? 0 : 1); // a file that is named like a test first, then the other candidates: smallest first
   const found = listed.filter(f => lib.TEST.test(f.path) && !lib.DOC.test(f.path) && !NOT_A_TEST.test(f.path) && exts.has(extname(f.path)) && !mine.has(f.path))
@@ -183,7 +189,7 @@ async function preflight(ctx) {
   const candidates = (plan.smoke ?? found).slice(0, SMOKE_TRIES), tried = [], dir = candidates.length ? await tree(ctx, plan.base, 'pre') : null;
   try {
     for (const file of candidates) {
-      if (!has(plan.repo, plan.base, file)) { tried.push({ file, exit: null, tail: 'not a file at the base' }); continue; }
+      if (!has(ctx, plan.repo, plan.base, file)) { tried.push({ file, exit: null, tail: 'not a file at the base' }); continue; }
       const r = await runFile(ctx, dir, file);
       tried.push({ file, exit: r.exit, sec: r.sec, run: r.run, tail: clipTail(r.tail), ...(r.exit !== 0 && classifyRed(r) === 'no-tests' ? { empty: true } : {}) });
       if (r.exit === 0 || r.exit === 86 || r.exit === 127) break; // it works, or it cannot start: another file would say the same
@@ -204,7 +210,7 @@ async function red(ctx, gid) {
   const ready = needs(plan, g).filter(d => readGate(ctx, `${d.id}.green.json`)?.ok); // a group still in flight is not part of this one's world
   const snap = snapOf(ctx, [...g.tests, ...filesOf(ready)]), dir = await tree(ctx, snap, 'red');
   const tests = await lib.pool(g.tests, ctx.jobs, async file => {
-    if (!has(plan.repo, snap, file)) return { file, verdict: 'missing' };
+    if (!has(ctx, plan.repo, snap, file)) return { file, verdict: 'missing' };
     const r = await runFile(ctx, dir, file), verdict = classifyRed(r);
     return { file, verdict, exit: r.exit, sec: r.sec, run: r.run, ...(verdict === 'fails' ? {} : { tail: clipTail(r.tail) }) };
   });
@@ -214,10 +220,10 @@ async function red(ctx, gid) {
   // source exists (any src file differs from the base) or a GREEN gate has run: a driver that edits a test to get green and re-runs RED cannot re-bless it, because the RED snapshot
   // holds no source and the weakened test still fails there; `green` compares against firstSnapshot. Before the first source the reference moves with every run (the RED loop).
   const prev = plan.mode === 'fast' ? readGate(ctx, `${gid}.red.json`) : null;
-  const built = prev && (readGate(ctx, `${gid}.green.json`) || parseNumstat(git(plan.repo, ['diff', '--numstat', plan.base, snapOf(ctx, g.src), '--', ...g.src])).changed.length > 0);
+  const built = prev && (readGate(ctx, `${gid}.green.json`) || parseNumstat(git(ctx, plan.repo, ['diff', '--numstat', plan.base, snapOf(ctx, g.src), '--', ...g.src])).changed.length > 0);
   const out = { kind: 'red', group: gid, base: plan.base, snapshot: snap, ...(plan.mode === 'fast' ? { firstSnapshot: built ? prev.firstSnapshot ?? prev.snapshot : snap } : {}), ok: redOk(tests), tests };
   writeGate(ctx, `${gid}.red.json`, out);
-  say([`RED ${gid} ok=${out.ok} snapshot ${short(snap)} patch ${patch}`, '  (a new test must FAIL now; a load error is only right when the code under test does not exist yet)',
+  say(ctx, [`RED ${gid} ok=${out.ok} snapshot ${short(snap)} patch ${patch}`, '  (a new test must FAIL now; a load error is only right when the code under test does not exist yet)',
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.exit === undefined ? '' : ` exit ${t.exit}, ${t.sec}s, run ${t.run}`}${t.tail ? `\n    ...${t.tail}` : ''}`)]);
 }
 
@@ -239,7 +245,7 @@ async function green(ctx, gid, retest, { quick = false, reuse = false } = {}) {
   const baseDeps = deps.length ? snapOf(ctx, filesOf(deps)) : plan.base; // the tests must need THIS group's code, with the groups it waits for already in place
   const snap = snapOf(ctx, [...g.tests, ...g.src], baseDeps); // a CHILD of baseDeps: the probes diff `base...head` (merge base), so it must hold exactly this group's files
   const redGate = readGate(ctx, `${gid}.red.json`);
-  const frozen = redGate ? parseNumstat(git(plan.repo, ['diff', '--numstat', redGate.firstSnapshot ?? redGate.snapshot, snap, '--', ...g.tests])) : null;
+  const frozen = redGate ? parseNumstat(git(ctx, plan.repo, ['diff', '--numstat', redGate.firstSnapshot ?? redGate.snapshot, snap, '--', ...g.tests])) : null;
   const stray = strayFiles(ctx); // shared tree: a stray file cannot be pinned on this group, so it is a note here and blocks only at `final`
   const patch = writeDiff(ctx, `${gid}.green.patch`, ['diff', '-U10', baseDeps, snap, '--', ...g.tests, ...g.src]);
   const mut = plan.mutation ?? {}, kill = plan.killExits ? ['--kill-exits', plan.killExits.join(',')] : [];
@@ -272,7 +278,7 @@ async function green(ctx, gid, retest, { quick = false, reuse = false } = {}) {
   if (cover?.pct != null && cover.pct < cover.min) reasons.push(`changed-line coverage ${cover.pct}% < ${cover.min}%`);
   const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, retest: !!retest, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors, ...(mutants.baseline ? { baseline: mutants.baseline } : {}) }, coverage: cover, ...(quick ? { quick } : {}), ...(hit ? { reused: true } : {}) };
   writeGate(ctx, `${gid}.green.json`, out);
-  say([`GREEN ${gid} ok=${out.ok}${quick ? ' (quick: no mutants; the last run and the navigator\'s run mutate)' : ''} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
+  say(ctx, [`GREEN ${gid} ok=${out.ok}${quick ? ' (quick: no mutants; the last run and the navigator\'s run mutate)' : ''} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
     ...(hit ? [`  reused: test probe, mutants and coverage of the last full run on these exact files; flake check re-run (${FLAKE_RUNS} run(s) per test file)`] : []),
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.reason ? ` (${t.reason})` : ''}, exit on HEAD ${t.head}, with the group's code reverted ${t.base}${t.nondeterministic ? ', FLAKY' : ''}`),
     stray.files.length ? `  note: files outside the plan exist in the shared tree: ${stray.files.slice(0, 5).join(', ')} (judge from the patch whether this group made them; \`final\` blocks on them)` : '',
@@ -283,13 +289,13 @@ async function green(ctx, gid, retest, { quick = false, reuse = false } = {}) {
 }
 
 const escapeRe = t => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const isNamed = (repo, rev, r) => typeof r.test === 'string' && r.test !== '' && new RegExp(`(?<![A-Za-z0-9_])${escapeRe(r.test)}(?![A-Za-z0-9_])`).test(showText(repo, rev, r.file));
+const isNamed = (cx, repo, rev, r) => typeof r.test === 'string' && r.test !== '' && new RegExp(`(?<![A-Za-z0-9_])${escapeRe(r.test)}(?![A-Za-z0-9_])`).test(showText(cx, repo, rev, r.file));
 
 /** A gate file only speaks for the tree it ran on: the files it judged, as they are now, against the snapshot it ran. -> { gate, cur (a snapshot of those files now), stale (the files edited since) } */
 function gateAge(ctx, g, stage) {
   const { plan } = ctx, gate = readGate(ctx, `${g.id}.${stage}.json`), files = stage === 'red' ? g.tests : [...g.tests, ...g.src], cur = snapOf(ctx, files);
   let stale = [];
-  if (gate?.snapshot) { try { stale = parseNumstat(git(plan.repo, ['diff', '--numstat', gate.snapshot, cur, '--', ...files])).changed; } catch { stale = ['(the gate snapshot is gone)']; } } // a pruned snapshot is a stale gate, not a crash
+  if (gate?.snapshot) { try { stale = parseNumstat(git(ctx, plan.repo, ['diff', '--numstat', gate.snapshot, cur, '--', ...files])).changed; } catch { stale = ['(the gate snapshot is gone)']; } } // a pruned snapshot is a stale gate, not a crash
   return { gate, cur, stale };
 }
 const isTimeout = t => t.verdict === 'timeout' || (t.verdict === 'unverifiable' && t.reason === 'timeout'); // the GREEN probe reports a timeout as unverifiable (timeout)
@@ -304,7 +310,7 @@ function dodCheck(ctx, gid, stage, rowTexts) {
   const { plan } = ctx, g = group(plan, gid);
   if (stage !== 'red' && stage !== 'green') fail(2, 'dod needs --stage red|green');
   const parsed = rowTexts.map(parseRow), { gate, cur, stale } = gateAge(ctx, g, stage), reasons = [], phantom = [];
-  const rows = parsed.filter(Boolean).filter(r => isNamed(plan.repo, cur, r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
+  const rows = parsed.filter(Boolean).filter(r => isNamed(ctx, plan.repo, cur, r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
   const verdicts = name => Object.fromEntries((readGate(ctx, name)?.tests ?? []).map(t => [t.file, t.verdict]));
   const greenGate = readGate(ctx, `${gid}.green.json`);
   const c = groupClosure(plan, gid, rows, verdicts(`${gid}.red.json`), verdicts(`${gid}.green.json`), greenGate?.ok === true && !greenGate.quick, stage); // a quick run skipped the mutants: it closes nothing
@@ -322,10 +328,10 @@ const rowKey = r => [r.file, r.test, r.dod, r.kind].join('::');
 function dod(ctx, gid, stage, rowTexts) {
   const { ok, reasons, c, rows, cur } = dodCheck(ctx, gid, stage, rowTexts);
   if (rows.length) { // the matrix survives an agent that dies or a run that is killed: `resume` reads it back. Only rows that name a real test, merged with the earlier rows that still do (a partial call must not shrink it)
-    const kept = (readGate(ctx, `${gid}.rows.json`)?.rows ?? []).filter(r => isNamed(ctx.plan.repo, cur, r)), seen = new Set();
+    const kept = (readGate(ctx, `${gid}.rows.json`)?.rows ?? []).filter(r => isNamed(ctx, ctx.plan.repo, cur, r)), seen = new Set();
     writeGate(ctx, `${gid}.rows.json`, { stage, rows: [...kept, ...rows].filter(r => !seen.has(rowKey(r)) && seen.add(rowKey(r))) });
   }
-  say([`DOD ${gid} stage=${stage} ok=${ok} covered ${c.covered}/${c.total}${c.shared.length ? ` (also owned by another group: ${c.shared.join(', ')})` : ''}`, ...(ok ? [] : [`  not ok: ${reasons.join('; ')}`]),
+  say(ctx, [`DOD ${gid} stage=${stage} ok=${ok} covered ${c.covered}/${c.total}${c.shared.length ? ` (also owned by another group: ${c.shared.join(', ')})` : ''}`, ...(ok ? [] : [`  not ok: ${reasons.join('; ')}`]),
     ...c.items.map(i => `  ${i.id}: ${Object.entries(i.kinds).map(([k, v]) => `${k} ${v.status}${v.tests.length ? ` (${v.tests.join(', ')})` : ''}`).join(', ')}`)]);
 }
 
@@ -344,14 +350,14 @@ function resume(ctx, retPath, only, flags = {}) {
   for (const id of [...retry, ...escalate, ...Object.keys(hints)]) group(plan, id);
   const preOk = readGate(ctx, 'preflight.json')?.verdict === 'ok'; // plan proved the sandbox runs this repo's tests: a timeout after that is the code's
   let ret = null;
-  const retTime = retPath ? mtime(resolve(retPath)) : 0;
-  if (retPath) { try { ret = JSON.parse(readFileSync(resolve(retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); } }
+  const retTime = retPath ? mtime(abs(ctx, retPath)) : 0;
+  if (retPath) { try { ret = JSON.parse(readFileSync(abs(ctx, retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); } }
   const groups = {}, lines = [], warnings = [];
   const merge = (...lists) => { const seen = new Set(); return lists.flat().filter(d => !seen.has(d.what) && seen.add(d.what)).slice(0, 6); };
   for (const g of only ? [group(plan, only)] : plan.groups) {
     const prev = ret?.groups?.[g.id], red = gateAge(ctx, g, 'red'), green = gateAge(ctx, g, 'green');
     // the matrix: what the gates saw (rows.json, refreshed by every dod call) and the last return's rows (late ones too), each only while its test still exists in its file
-    const seenRows = new Set(), matrix = [...(readGate(ctx, `${g.id}.rows.json`)?.rows ?? []), ...(prev?.matrix ?? [])].filter(r => (r.late || isNamed(plan.repo, green.cur, r)) && !seenRows.has(rowKey(r)) && seenRows.add(rowKey(r)));
+    const seenRows = new Set(), matrix = [...(readGate(ctx, `${g.id}.rows.json`)?.rows ?? []), ...(prev?.matrix ?? [])].filter(r => (r.late || isNamed(ctx, plan.repo, green.cur, r)) && !seenRows.has(rowKey(r)) && seenRows.add(rowKey(r)));
     const fz = green.gate?.frozen, retest = !!prev?.retest || !!green.gate?.retest || (!!fz?.changed?.length && fz.removed === 0); // tests only GREW since RED: a strengthening, which --retest sanctions
     // what the last NAVIGATOR said is evidence the gates cannot give (a tautology, a token edge test): it stands while the files the gate judged have not changed since
     const knownRed = prev?.red?.verdict === 'FAIL' ? prev.red.defects ?? [] : [], knownGreen = prev?.green?.verdict === 'FAIL' ? prev.green.defects ?? [] : [], redPassed = prev?.red?.verdict === 'PASS';
@@ -369,7 +375,7 @@ function resume(ctx, retPath, only, flags = {}) {
       else { next = 'green-check'; why = 'gates fresh and ok, not judged yet'; }
     } else if (!red.gate.ok) {
       if (staleRed) { next = staleRed; why = `tests edited since the RED gate: ${red.stale.join(', ')}`; } else { next = 'red-fix'; why = 'the RED gate is not ok'; defects = merge(knownRed, defectsFromRed(red.gate)); }
-    } else if (parseNumstat(git(plan.repo, ['diff', '--numstat', plan.base, snapOf(ctx, g.src), '--', ...g.src])).changed.length > 0) { next = 'green-check'; why = 'code exists, no fresh GREEN gate'; }
+    } else if (parseNumstat(git(ctx, plan.repo, ['diff', '--numstat', plan.base, snapOf(ctx, g.src), '--', ...g.src])).changed.length > 0) { next = 'green-check'; why = 'code exists, no fresh GREEN gate'; }
     else if (staleRed) { next = staleRed; why = `tests edited since the RED gate: ${red.stale.join(', ')}`; }
     else if (knownRed.length) { next = 'red-fix'; why = 'the last navigator reported defects the gate cannot see'; defects = merge(knownRed); }
     else if (redPassed) { next = 'green'; why = 'RED passed (a navigator said so), no code yet'; }
@@ -393,7 +399,7 @@ function resume(ctx, retPath, only, flags = {}) {
   const todo = Object.entries(groups).filter(([, v]) => v.next !== 'done').length, working = Object.values(groups).filter(v => !['done', 'env', 'hold'].includes(v.next)).length;
   const maxRepairs = flags.maxRepairs ?? LIM.repairs * working;
   if (!only) writeSafe(ctx.run, join(ctx.run, 'continue.json'), `${JSON.stringify({ version: 1, base: plan.base, run: ctx.run, maxRepairs, groups, warnings })}\n`);
-  say([`RESUME ${only ?? 'run'}: ${todo} of ${Object.keys(groups).length} group(s) need work${only ? '' : `; ${join(ctx.run, 'continue.json')} written: pass its content as args.resume to the Workflow`}`,
+  say(ctx, [`RESUME ${only ?? 'run'}: ${todo} of ${Object.keys(groups).length} group(s) need work${only ? '' : `; ${join(ctx.run, 'continue.json')} written: pass its content as args.resume to the Workflow`}`,
     ...(only ? [] : [working ? `  next run: repair budget ${maxRepairs}${flags.maxRepairs === undefined ? ` (${LIM.repairs} for each of the ${working} group(s) that still work)` : ''}, at most ${worst(working, plan.rounds ?? LIM.rounds, maxRepairs)} build agents; the plan's own maxRepairs no longer applies; change it: --max-repairs N` : '  next run: no group spends an agent until a hold or an env stop is cleared']),
     ...lines]);
 }
@@ -406,7 +412,7 @@ async function coverage(ctx, g, snap, base) {
   const f = join(dir, out), st = lstatSync(f, { throwIfNoEntry: false });
   const cleanup = () => discard(dir);
   if (!st?.isFile()) return cleanup(), { error: `cover command wrote no ${out} (exit ${r.exit}, run ${r.run})`, min, noData: [], uncovered: {} };
-  const changed = changedLines(git(plan.repo, ['diff', '-U0', '--no-color', '--no-ext-diff', base, snap, '--', ...g.src]));
+  const changed = changedLines(git(ctx, plan.repo, ['diff', '-U0', '--no-color', '--no-ext-diff', base, snap, '--', ...g.src]));
   const cov = { ...changedCoverage(parseLcov(readFileSync(f, 'utf8')), changed), min, run: r.run };
   cleanup();
   return cov;
@@ -427,7 +433,7 @@ async function final(ctx, quiet, again, reuse = false) {
   const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing, outOfScope: stray.files, strayScan: stray.error };
   writeGate(ctx, 'final.json', out);
   if (!quiet && !again && !readGate(ctx, 'reviewed.json')) writeGate(ctx, 'reviewed.json', out); // the FIRST final run is the reviewer's view: its proofs are checked against that tree, not the post-fix one (--again: a re-run after fixes never is)
-  if (!quiet) say([`FINAL ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
+  if (!quiet) say(ctx, [`FINAL ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
     `  group tests together: ${together.filter(r => r.exit === 0).length}/${together.length} pass`,
     `  existing tests that mention the changed modules: ${existing.ran.length} run${existing.more ? ` (+${existing.more} not run)` : ''}, ${regressions.length} broken by this change, ${existing.preexisting.length} already failing before`,
     ...regressions.slice(0, 3).map(r => `    ${r.file} exit ${r.exit} run ${r.run}: ...${r.tail}`)]);
@@ -438,8 +444,8 @@ async function finalTests(ctx, snap, own) {
   const { plan } = ctx;
   // the integration test needs its real dependency, which the sandbox has not: its agent runs it for real and reports the exit code (verify reads it)
   const skip = new Set([...own, ...(plan.integration?.file ? [plan.integration.file] : [])]);
-  const listed = names(git(plan.repo, ['ls-tree', '-r', '--name-only', '-z', snap])).filter(f => lib.TEST.test(f) && !lib.DOC.test(f));
-  const texts = new Map(), textOf = p => { if (!texts.has(p)) texts.set(p, showText(plan.repo, snap, p)); return texts.get(p); };
+  const listed = names(git(ctx, plan.repo, ['ls-tree', '-r', '--name-only', '-z', snap])).filter(f => lib.TEST.test(f) && !lib.DOC.test(f));
+  const texts = new Map(), textOf = p => { if (!texts.has(p)) texts.set(p, showText(ctx, plan.repo, snap, p)); return texts.get(p); };
   const affected = pickAffected(listed.filter(p => !skip.has(p)), textOf, plan.groups.flatMap(g => g.src), skip);
   const dir = await tree(ctx, snap, 'fin');
   const verdict = async file => { const r = await runFile(ctx, dir, file); return { file, exit: r.exit, run: r.run, tail: clipTail(r.tail) }; };
@@ -464,9 +470,9 @@ function fastReport(ret) {
 
 async function verify(ctx, retPath) {
   const { plan } = ctx;
-  clearFence(ctx.run, markerDir(process.env)); // the run's agents are done: lift the file fence
+  clearFence(ctx.run, markerDir(ctx.env)); // the run's agents are done: lift the file fence
   let ret;
-  try { ret = JSON.parse(readFileSync(resolve(retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); }
+  try { ret = JSON.parse(readFileSync(abs(ctx, retPath), 'utf8')); } catch (e) { fail(2, `--ret must be the Workflow return as JSON: ${e.message}`); }
   const fileMap = (gid, stage) => Object.fromEntries((readGate(ctx, `${gid}.${stage}.json`)?.tests ?? []).map(t => [t.file, t.verdict]));
   // the post-fix state first (tests together, regressions, scope): with the courier skipped it decides which GREEN gates still count
   const reviewed = readGate(ctx, 'reviewed.json')?.snapshot;
@@ -474,7 +480,7 @@ async function verify(ctx, retPath) {
   const fin = readGate(ctx, 'final.json'), untrusted = untrustedByFinal(plan, speedOf(plan.speed), ret.courierSkipped, fin);
   const rows = {}, redMap = {}, greenMap = {}, greenOk = {}, phantom = [];
   const snapNow = snapOf(ctx, planFiles(plan)); // a claimed test must exist by name in its file now: a row is a claim, the file is the fact
-  const named = r => isNamed(plan.repo, snapNow, r);
+  const named = r => isNamed(ctx, plan.repo, snapNow, r);
   for (const g of plan.groups) {
     rows[g.id] = (ret.groups?.[g.id]?.matrix ?? []).filter(r => named(r) || (phantom.push(`${r.dod}/${r.kind}: ${r.test} is not in ${r.file}`), false));
     redMap[g.id] = fileMap(g.id, 'red'); greenMap[g.id] = fileMap(g.id, 'green');
@@ -489,12 +495,12 @@ async function verify(ctx, retPath) {
     return !gate ? [`${g.id}/${stage}: PASS with no gate on record`] : gate.ok ? [] : [`${g.id}/${stage}: PASS although the gate said not ok (${(gate.reasons ?? []).join('; ') || 'a test file did not fail'})`];
   }));
   const squash = s => String(s ?? '').replace(/\s+/g, ' ').trim();
-  const stillThere = cl => { const q = squash(cl.quote); return q !== '' && squash(showText(plan.repo, snap, cl.file)).includes(q); };
+  const stillThere = cl => { const q = squash(cl.quote); return q !== '' && squash(showText(ctx, plan.repo, snap, cl.file)).includes(q); };
   const open = (ret.clusters ?? []).filter(cl => !/^(refuted|out-of-scope|unverified-nit)$/.test(cl.status)); // a nit is reported, never sent to a fixer
   const unfixed = open.filter(stillThere).map(cl => `${cl.id} ${cl.severity} ${cl.file}:${cl.startLine} ${cl.title}`);
   let proof = null;
   if ((ret.clusters ?? []).length && existsSync(join(ZT, 'proofcheck.mjs'))) {
-    const text = await new Promise(done => { const p = spawn(process.execPath, [join(ZT, 'proofcheck.mjs'), '--ret', resolve(retPath), '--repo', plan.repo, '--head', reviewed ?? snap, '--run', ctx.run], { stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; p.stdout.on('data', d => (out += d)); p.stderr.on('data', d => (err += d)); p.on('close', code => done({ out, err, code })); });
+    const text = await new Promise(done => { const p = spawn(process.execPath, [join(ZT, 'proofcheck.mjs'), '--ret', abs(ctx, retPath), '--repo', plan.repo, '--head', reviewed ?? snap, '--run', ctx.run], { cwd: ctx.cwd, env: ctx.env, stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; p.stdout.on('data', d => (out += d)); p.stderr.on('data', d => (err += d)); p.on('close', code => done({ out, err, code })); });
     try { const parsed = JSON.parse(text.out); proof = (parsed.clusters ?? parsed).reduce((m, x) => ({ ...m, [x.status]: (m[x.status] ?? 0) + 1 }), {}); } catch { proof = `proofcheck exited ${text.code}: ${text.err.trim().split('\n')[0]}`; }
   }
   const integration = plan.integration?.file ? (ret.integration ? (ret.integration.exit === 0 ? 'ok' : `${plan.integration.file} exited ${ret.integration.exit}`) : 'not run') : undefined;
@@ -504,64 +510,64 @@ async function verify(ctx, retPath) {
     : untrusted.groups.map(id => `${id}: final gate not ok (its tests fail with the whole change: ${fin.together.filter(r => r.exit !== 0 && group(plan, id).tests.includes(r.file)).map(r => r.file).join(', ')})`);
   const res = { integration, dod: { covered: c.covered, total: c.total, gaps: c.gaps, phantom }, final: readGate(ctx, 'final.json')?.ok, overridden, unfixed, notDone: Object.entries(ret.groups ?? {}).filter(([, v]) => v.state !== 'done').map(([k, v]) => `${k}: ${v.state}`).concat(integration && integration !== 'ok' ? [`integration: ${integration}`] : [], finalLeft), ...(fast ? { fast } : {}), ...(finalReused ? { finalReused } : {}), proofcheck: proof, snapshot: snap, report: join(ctx.run, 'dod-matrix.md') };
   writeGate(ctx, 'verify.json', res);
-  process.stdout.write(`${JSON.stringify(res)}\n`);
+  emit(ctx, 1, `${JSON.stringify(res)}\n`);
 }
 
 // ---------------------------------------------------------------- plan command
-async function cmdPlan(o) {
+async function cmdPlan(cx, o) {
   // flags first: a value that is not valid, or an old name, stops the plan before any work
   let fence, cap, speed;
   try {
-    speed = readSpeed(process.env); // ADR 0001: PTDD_PIPELINE_MODE and the four speed switches, read once here and carried in the args and plan.json
-    fence = enabled(process.env, FENCE_ENV, false, { renamedFrom: OLD_FENCE_ENV }); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
-    cap = positiveInt(process.env, 'PTDD_AGENT_MAX', { renamedFrom: 'PTDD_AGENT_CAP' }); // opt-in hard ceiling, enforced by workflow.js
+    speed = readSpeed(cx.env); // ADR 0001: PTDD_PIPELINE_MODE and the four speed switches, read once here and carried in the args and plan.json
+    fence = enabled(cx.env, FENCE_ENV, false, { renamedFrom: OLD_FENCE_ENV }); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
+    cap = positiveInt(cx.env, 'PTDD_AGENT_MAX', { renamedFrom: 'PTDD_AGENT_CAP' }); // opt-in hard ceiling, enforced by workflow.js
   } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; }
-  readZt(); // and zero-trust-review's probe flags, which every gate passes on to its probes
+  readZt(cx); // and zero-trust-review's probe flags, which every gate passes on to its probes
   let plan;
-  try { plan = JSON.parse(readFileSync(resolve(o.plan ?? ''), 'utf8')); } catch (e) { fail(2, `--plan must be a plan.json file: ${e.message}`); }
-  const fromDod = await resolveDod(plan, { env: process.env, here: HERE }); // a plan with dod[] comes back untouched
+  try { plan = JSON.parse(readFileSync(abs(cx, o.plan ?? ''), 'utf8')); } catch (e) { fail(2, `--plan must be a plan.json file: ${e.message}`); }
+  const fromDod = await resolveDod(plan, { env: cx.env, here: HERE }); // a plan with dod[] comes back untouched
   if (fromDod.error) fail(2, `invalid plan:\n  ${fromDod.error}`);
   plan = fromDod.plan;
-  for (const w of fromDod.warnings ?? []) process.stderr.write(`plan warning: ${w}\n`);
+  for (const w of fromDod.warnings ?? []) emit(cx, 2, `plan warning: ${w}\n`);
   let ticket;
   // with an ADR, checkAdr already checked its quotes and ticket.md would not hold them
-  if (plan.ticket && !fromDod.fromAdr) { try { ticket = readFileSync(resolve(plan.ticket), 'utf8'); } catch (e) { fail(2, `ticket not readable: ${e.message}`); } }
+  if (plan.ticket && !fromDod.fromAdr) { try { ticket = readFileSync(abs(cx, plan.ticket), 'utf8'); } catch (e) { fail(2, `ticket not readable: ${e.message}`); } }
   const errors = validatePlan(plan, ticket);
   if (errors.length) fail(2, `invalid plan:\n  ${errors.join('\n  ')}`);
   let repo;
-  try { repo = realpathSync(plan.repo); git(repo, ['rev-parse', '--git-dir']); } catch { fail(2, `repo is not a git repository: ${plan.repo}`); }
-  if (git(repo, ['rev-parse', '--show-prefix']).trim()) fail(2, `repo must be the top level of its work tree, not a subdirectory (${plan.repo}): snapshots are tree-relative`);
+  try { repo = realpathSync(abs(cx, plan.repo)); git(cx, repo, ['rev-parse', '--git-dir']); } catch { fail(2, `repo is not a git repository: ${plan.repo}`); }
+  if (git(cx, repo, ['rev-parse', '--show-prefix']).trim()) fail(2, `repo must be the top level of its work tree, not a subdirectory (${plan.repo}): snapshots are tree-relative`);
   const testLike = plan.groups.flatMap(g => g.src.filter(f => lib.TEST.test(f)).map(f => `${g.id}: ${f}`)); // config and data files are fine as src (green passes them to the probe); a test-like path would be counted as a test
   if (testLike.length) fail(2, `src files with a test-like path: ${testLike.join(', ')}; the probes would count them as tests and the group could never be judged green. Move them out of src.`);
-  const marker = readMarker({ env: process.env });
+  const marker = readMarker({ env: cx.env });
   if (marker) fail(3, `a zero-trust-review run is still active (${marker}): its guard hook would deny the test commands of the agents that write code. Finish it or run: node ${join(ZT, 'note.mjs')} deactivate`);
-  const runner = runnerOf(plan, o), backend = lib.backendOf(runner);
+  const runner = runnerOf(cx, plan, o), backend = lib.backendOf(runner, cx.env);
   if (backend === 'none') fail(3, `no usable runner (${runner} --check failed): every gate would be unverifiable.${plan.sandbox ? ' plan.sandbox is true: fix the sandbox (see zero-trust-review) or drop plan.sandbox to run the tests directly.' : ''} Fix it and run plan again`);
-  const scratch = plan.scratch ? resolve(plan.scratch) : join(realpathSync(tmpdir()), `pat-${process.pid}-${Date.now().toString(36)}`);
+  const scratch = plan.scratch ? abs(cx, plan.scratch) : join(realpathSync(tmpOf(cx.env)), `pat-${process.pid}-${Date.now().toString(36)}`);
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   const real = realpathSync(scratch);
   if (real === repo || real.startsWith(repo + sep)) fail(2, 'scratch must be outside the repo');
   let base;
-  try { base = plan.base ? git(repo, ['rev-parse', '--verify', `${plan.base}^{commit}`]).trim() : baseSnapshot(real, repo); } catch (e) { fail(2, `base is not a commit: ${e.message}`); } // a full sha: a branch name would move when an agent commits
+  try { base = plan.base ? git(cx, repo, ['rev-parse', '--verify', `${plan.base}^{commit}`]).trim() : baseSnapshot(cx, real, repo); } catch (e) { fail(2, `base is not a commit: ${e.message}`); } // a full sha: a branch name would move when an agent commits
   let run;
-  if (o.run) { run = trustedRun(o.run); if (!run) fail(3, '--run must be a run folder under the per-user zt-review base; omit it and plan creates one'); }
-  else { try { run = createRunDir(`pat-${short(base)}-${Date.now().toString(36)}`); } catch (e) { fail(3, `cannot create the run folder: ${e.message}`); } }
+  if (o.run) { run = trustedRun(cx, o.run); if (!run) fail(3, '--run must be a run folder under the per-user zt-review base; omit it and plan creates one'); }
+  else { try { run = createRunDir(`pat-${short(base)}-${Date.now().toString(36)}`, { tmp: tmpOf(cx.env) }); } catch (e) { fail(3, `cannot create the run folder: ${e.message}`); } }
   const { speed: _userSpeed, ...userPlan } = plan; // only the flags set the speed policy, never a key of the user's plan.json
   const mode = pipelineOf(speed.pipeline, plan.mode), spArgs = speedForArgs(speed);
   const full = { ...userPlan, ...(mode === 'fast' ? { mode } : {}), repo, scratch: real, base, run, ...(spArgs ? { speed: spArgs } : {}) };
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   writeSafe(run, join(run, 'plan.json'), `${JSON.stringify(full)}\n`);
-  const pre = o['skip-preflight'] ? { ok: true, verdict: 'skipped', rows: ['PREFLIGHT skipped (--skip-preflight): a broken environment can look like a valid RED'] } : await preflight(load({ run, runner: o.runner }, true));
-  process.stderr.write(`${pre.rows.join('\n')}\n`);
+  const pre = o['skip-preflight'] ? { ok: true, verdict: 'skipped', rows: ['PREFLIGHT skipped (--skip-preflight): a broken environment can look like a valid RED'] } : await preflight(load(cx, { run, runner: o.runner }, true));
+  emit(cx, 2, `${pre.rows.join('\n')}\n`);
   if (!pre.ok) fail(3, `the sandbox cannot run this repo's tests, so no gate could be trusted. Fix it and run plan again (--run ${run} reuses this folder), or pass --skip-preflight to go on unproven`);
   // `fast` is set here and nowhere else, and only for mode "fast" (it survives the Workflow's own mode: "plan", a dry run, replaces args.mode). A `fast` key of the user's plan.json is
   // dropped from the args: it would switch the one-driver pipeline on while the gates stay standard (no firstSnapshot). Without mode "fast" the args are what they always were.
   const { fast: _userFast, ...fullArgs } = full;
   const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(mode === 'fast' ? { fast: true } : {}), ...(cap ? { agentCap: cap } : {}), ...(spArgs ? { speed: spArgs } : {}) };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
-  if (fence) writeFence(run, full, markerDir(process.env));
-  process.stderr.write(`plan ok: ${plan.groups.length} group(s), ${fromDod.note ?? `${plan.dod.length} DoD item(s)`}, base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${mode === 'fast' ? 'fast' : 'standard'};${spArgs ? ` speed flags ${Object.entries(spArgs).map(([k, v]) => `${k}=${v}`).join(' ')};` : ''} Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
-  process.stdout.write(`${JSON.stringify(args)}\n`);
+  if (fence) writeFence(run, full, markerDir(cx.env));
+  emit(cx, 2, `plan ok: ${plan.groups.length} group(s), ${fromDod.note ?? `${plan.dod.length} DoD item(s)`}, base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${mode === 'fast' ? 'fast' : 'standard'};${spArgs ? ` speed flags ${Object.entries(spArgs).map(([k, v]) => `${k}=${v}`).join(' ')};` : ''} Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
+  emit(cx, 1, `${JSON.stringify(args)}\n`);
 }
 
 function resumeFlags(v) {
@@ -573,15 +579,17 @@ function resumeFlags(v) {
 }
 
 // ---------------------------------------------------------------- main
-try {
-  const { values: v } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, quick: { type: 'boolean' }, reuse: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true },
-    'skip-preflight': { type: 'boolean' }, 'max-repairs': { type: 'string' }, retry: { type: 'string', multiple: true }, escalate: { type: 'string', multiple: true }, hint: { type: 'string', multiple: true } }, args: process.argv.slice(3), strict: true });
-  const cmd = process.argv[2];
-  if (cmd === 'plan') await cmdPlan(v);
+const OPTIONS = { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, quick: { type: 'boolean' }, reuse: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true },
+  'skip-preflight': { type: 'boolean' }, 'max-repairs': { type: 'string' }, retry: { type: 'string', multiple: true }, escalate: { type: 'string', multiple: true }, hint: { type: 'string', multiple: true } };
+
+async function command(cx, argv) {
+  const { values: v } = parseArgs({ options: OPTIONS, args: argv.slice(1), strict: true });
+  const cmd = argv[0];
+  if (cmd === 'plan') await cmdPlan(cx, v);
   else if (['red', 'green', 'final', 'verify', 'snap', 'dod', 'resume', 'preflight'].includes(cmd)) {
-    const ctx = load(v, ['red', 'green', 'final', 'verify', 'preflight'].includes(cmd)); // the commands that run tests read zero-trust-review's probe flags
-    if (cmd === 'snap') process.stdout.write(`${snapOf(ctx, v.files === undefined ? undefined : v.files.split(',').filter(Boolean), v.on ?? ctx.plan.base)}\n`);
-    else if (cmd === 'preflight') say((await preflight(ctx)).rows);
+    const ctx = load(cx, v, ['red', 'green', 'final', 'verify', 'preflight'].includes(cmd)); // the commands that run tests read zero-trust-review's probe flags
+    if (cmd === 'snap') emit(ctx, 1, `${snapOf(ctx, v.files === undefined ? undefined : v.files.split(',').filter(Boolean), v.on ?? ctx.plan.base)}\n`);
+    else if (cmd === 'preflight') say(ctx, (await preflight(ctx)).rows);
     else if (cmd === 'resume') resume(ctx, v.ret, v.group, resumeFlags(v));
     else if (cmd === 'dod') dod(ctx, v.group ?? fail(2, 'dod needs --group'), v.stage, v.row ?? []);
     else if (cmd === 'final') await final(ctx, false, v.again);
@@ -589,4 +597,25 @@ try {
     else if (cmd === 'red') await red(ctx, v.group ?? fail(2, 'red needs --group'));
     else await green(ctx, v.group ?? fail(2, 'green needs --group'), v.retest, { quick: !!v.quick, reuse: !!v.reuse });
   } else fail(2, 'usage: tdd.mjs plan|preflight|red|green|dod|final|verify|resume|snap (see the header of tdd.mjs)');
-} catch (e) { fail(1, e.message); }
+}
+
+/**
+ * One tdd.mjs command in this process: argv as after `node tdd.mjs`; env and cwd stand in for process.env and process.cwd() (their defaults; neither is ever changed).
+ * -> { code, stdout, stderr, chunks }: the exit code the CLI gives, its output, and chunks ([1|2, text] in write order) so the CLI can replay stdout and stderr interleaved as before.
+ */
+const realCwd = c => { try { return realpathSync(c); } catch { return c; } }; // a started process sees its cwd as a real path (macOS /var -> /private/var, rules/paths.md)
+export async function main(argv, { env = process.env, cwd } = {}) { // cwd: default process.cwd(), read lazily as the CLI always did (a deleted cwd fails only the commands that resolve a path)
+  const cx = { env: Object.fromEntries(Object.entries(env).filter(([, val]) => val !== undefined).map(([k, val]) => [k, String(val)])), cwd: cwd === undefined ? undefined : realCwd(resolve(cwd)), out: [], counter: 0 }; // env as a spawned process sees it
+  let code = 0;
+  try { await command(cx, argv); } catch (e) { code = e instanceof ExitError ? e.code : 1; emit(cx, 2, `tdd: ${e.message}\n`); }
+  const text = fd => cx.out.filter(([f]) => f === fd).map(([, t]) => t).join('');
+  return { code, stdout: text(1), stderr: text(2), chunks: cx.out };
+}
+
+// the CLI: only when this file is the script node runs (an import, as the tests do, runs nothing)
+const isMain = () => { try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } };
+if (isMain()) {
+  const r = await main(process.argv.slice(2));
+  for (const [fd, t] of r.chunks) (fd === 1 ? process.stdout : process.stderr).write(t);
+  if (r.code) process.exit(r.code);
+}

@@ -8,9 +8,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = readFileSync(join(HERE, 'workflow.js'), 'utf8');
 const POOL = JSON.parse(/const LIM = (\{.*\})/.exec(SRC)[1]).pool;  // generated from graph.mjs
 const wf = new (Object.getPrototypeOf(async () => {}).constructor)('agent', 'parallel', 'pipeline', 'phase', 'log', 'args', 'budget', SRC.replace('export ', ''));
+// the skill folder as installed (not this checkout: a long worktree path made the prompt budget below fail only there, retro of issue #19)
+const SKILL_DIR = '/Users/someone/.claude/skills/zero-trust-review';
 const grp = (id, files, points, agentType = 'python-reviewer') => ({ id, label: id, files, lines: 100, points, agentType });
 const BASE = {
-  base: 'origin/main', head: 'a'.repeat(40), repo: '/repo', scratch: '/scratch', runDir: '/tmp/zt-test', skillDir: HERE, facts: 'drift: none', mode: 'standard', points: { always: [1], fired: [13, 18], skipped: [9] },
+  base: 'origin/main', head: 'a'.repeat(40), repo: '/repo', scratch: '/scratch', runDir: '/tmp/zt-test', skillDir: SKILL_DIR, facts: 'drift: none', mode: 'standard', points: { always: [1], fired: [13, 18], skipped: [9] },
   groups: [grp('src', ['superset/a.py'], [1, 4, 13]), grp('tests', ['tests/test_a.py'], [2, 3]), grp('frontend', ['web/x.tsx'], [2, 24], 'typescript-reviewer'), grp('docs', ['UPDATING.md'], [1, 27])],
 };
 const F = (title, severity, file, s, e) => ({ title, points: [13], severity, file, startLine: s, endLine: e, hazard: 'h ' + title, failureScenario: 's', evidence: 'e', quote: 'code of ' + title, verifiedBy: 'read', anchorable: true });
@@ -46,6 +48,11 @@ let r = await play({ mode: 'plan', as: 'standard' }, () => null);
 assert.equal(r.calls.length, 0);
 assert.ok(r.out.units.every(u => u.promptChars < 4608), 'reviewer prompt over 4.5 KB');
 assert.deepEqual([r.out.plan.counts.reviewer, r.out.plan.total], [4, 11]);   // 4 groups + 6 refute + 1 reproduce; lows are checked in code, no agent
+// 1b the budget does not depend on where the skill lives: from a 200-char path each prompt grows only by the path's extra length, once per mention
+{
+  const long = '/' + 'd'.repeat(199), far = await play({ mode: 'plan', as: 'standard', skillDir: long }, () => null), extra = long.length - SKILL_DIR.length;
+  far.out.units.forEach((u, i) => { const grew = u.promptChars - r.out.units[i].promptChars; assert.ok(grew >= 0 && grew % extra === 0, `${u.id} grew by ${grew}, not a multiple of ${extra}`); });
+}
 
 // 2 standard: dedupe, split -> adjudicator, medium escalation, 2 batches of lows, null group, nit never verified, no checklist in prompts
 const canned = {

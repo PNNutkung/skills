@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DOD_HEADING, adrFileName, checkAdr, checkAdrSources, checkQuestions, matchGlob, nextNumber, parseAdr, parseFrontmatter, parseQuestions,
-  renderAdr, setTouches, syncTouches, toPlanDod, toRequirements, upsertIndex,
+  renderAdr, setTouches, syncTouches, toPlanDod, toRequirements, upsertIndex, checkAnswersHaveQuestions, unsavedQuestions,
 } from './adr.mjs';
 
 const QUESTIONS = `Q1: Which pages get the button?
@@ -304,4 +304,23 @@ test('should list every question that adr would refuse when questions.md is chec
   assert.deepEqual(checkQuestions('Q3: Only one?\n(A) yes\n  + quick\n  - none\n\nQ1: Half?\n(A) a\n  + p\n(B) b\n  - c\n'),
     ['Q1 (A) needs at least one pro and one con', 'Q1 (B) needs at least one pro and one con', 'Q3 needs at least two options']);
   assert.deepEqual(checkQuestions(''), []);
+});
+
+// every answer has its question saved (P7 of the issue #19 retro: Q21's record was missing and only adr found it)
+const Qtext = ns => ns.map(n => `Q${n}: q${n}?\n(A) a\n  + p\n  - c\n(B) b\n  + p\n  - c\ntime: t\n`).join('\n');
+const Atext = ns => ns.map(n => `A${n}: A\ntime: t\n`).join('');
+
+test('should find nothing when every answer has its question saved', () => {
+  assert.deepEqual(unsavedQuestions(Atext([1, 2, 3]), Qtext([1, 2, 3, 4])), []);
+  assert.deepEqual(checkAnswersHaveQuestions(Atext([1, 2, 3]), Qtext([1, 2, 3])), []);
+});
+
+test('should name each answer with no saved question in order, once, when some are missing', () => {
+  assert.deepEqual(unsavedQuestions(Atext([22, 21, 1, 21]), Qtext([1, 20, 22])), [21]);
+  assert.deepEqual(checkAnswersHaveQuestions(Atext([3, 1, 2]), Qtext([2])), ['Q1 is not in questions.md: save each question with its options, pros and cons when you ask it', 'Q3 is not in questions.md: save each question with its options, pros and cons when you ask it']);
+});
+
+test('should leave a run alone when questions.md holds no question yet, or answers.md is empty or missing', () => {
+  for (const q of ['', undefined, 'notes only\n']) assert.deepEqual(unsavedQuestions(Atext([1, 2]), q), [], JSON.stringify(q));
+  for (const a of ['', undefined, 'A1 without the colon\n']) assert.deepEqual(unsavedQuestions(a, Qtext([1])), [], JSON.stringify(a));
 });
