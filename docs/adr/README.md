@@ -8,4 +8,5 @@
 | [3](0003-tdd-test-speed.md) | Speed up the test suite (issue #19) | Accepted | `skills/paired-agent-tdd/tdd.mjs`, `skills/paired-agent-tdd/*.test.mjs`, `skills/paired-agent-tdd/test-*.mjs`, `skills/zero-trust-review/probelib.mjs`, `skills/zero-trust-review/mutate.mjs`, `skills/zero-trust-review/note.mjs`, `skills/zero-trust-review/mutate.test.mjs`, `skills/zero-trust-review/note.test.mjs`, `skills/zero-trust-review/probelib.test.mjs` |
 | [4](0004-dev-workflow.md) | Dev workflow | Accepted | `skills/dev-workflow/**`, `hooks/workflow-guard.mjs`, `hooks/workflow-guard.test.mjs`, `hooks/hooks.json`, `README.md`, `rules/README.md`, `.claude-plugin/*.json`, `docs/adr/**` |
 | [5](0005-verify-env-check.md) | Verify env check | Accepted | `skills/dev-workflow/**`, `README.md`, `.claude-plugin/*.json`, `docs/**` |
+| [5](0005-branch-summary-split.md) | Branch summary split | Accepted | `skills/branch-summary/**`, `README.md`, `.claude-plugin/plugin.json` |
 <!-- /adr-index -->
