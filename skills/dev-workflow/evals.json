@@ -1,6 +1,8 @@
 [
   {
-    "skills": ["dev-workflow"],
+    "skills": [
+      "dev-workflow"
+    ],
     "query": "Let's start on issue #42: export reports as CSV.",
     "files": [],
     "expected_behavior": [
@@ -11,7 +13,9 @@
     ]
   },
   {
-    "skills": ["dev-workflow"],
+    "skills": [
+      "dev-workflow"
+    ],
     "query": "The DoD is approved. Show me the options.",
     "files": [],
     "expected_behavior": [
@@ -22,7 +26,9 @@
     ]
   },
   {
-    "skills": ["dev-workflow"],
+    "skills": [
+      "dev-workflow"
+    ],
     "query": "It's a one-line typo fix, skip the extra steps and merge it.",
     "files": [],
     "expected_behavior": [
@@ -32,13 +38,27 @@
     ]
   },
   {
-    "skills": ["dev-workflow"],
+    "skills": [
+      "dev-workflow"
+    ],
     "query": "Tests pass. Are we done?",
     "files": [],
     "expected_behavior": [
       "Writes docs/verify/<slug>.md with env, run and output for every DoD item, or the user's accepted answer id",
       "Runs workflow.mjs tick and ticks only those items on the ticket without asking, reporting the rest",
       "Runs zero-trust-review in a new session and the retro before merging"
+    ]
+  },
+  {
+    "skills": [
+      "dev-workflow"
+    ],
+    "query": "Verify is done, run next.",
+    "files": [],
+    "expected_behavior": [
+      "Writes each verify.md env: so it starts with a name booked in brackets in the ADR's verify env (for example env: cloud container for [cloud])",
+      "Runs at least one passing item in every booked env, or asks the user to accept an item that cannot run there",
+      "Reports a 'no env names booked' warning from status or tick instead of hiding it"
     ]
   }
 ]

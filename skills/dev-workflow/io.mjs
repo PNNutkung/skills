@@ -6,7 +6,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { adrItems, boardChoice, checkBoard, checkVerify, parseAnswers } from './check.mjs';
+import { adrItems, boardChoice, bookedEnvs, checkBoard, checkVerify, parseAnswers } from './check.mjs';
+import { readFlags } from './flags.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SIBLING_DOD = join(HERE, '..', 'definition-of-done', 'dod.mjs');
@@ -129,7 +130,7 @@ export function evidence(state, run, root, { env = process.env, dodMjs, gh } = {
   const verifyText = readOr(verifyPath(root, state.slug), null);
   const verify = verifyText === null ? { ok: false, errors: [`${verifyPath(root, state.slug)} is missing`], tickable: [] }
     : !adr ? { ok: false, errors: ['no ADR to verify against'], tickable: [] }
-      : checkVerify(verifyText, adrItems(adr.text), answers);
+      : checkVerify(verifyText, adrItems(adr.text), answers, { booked: readFlags(env).verifyEnv ? bookedEnvs(adr.text) : null });
   const branch = state.branch;
   const retro = Boolean(branch) && readOr(retroLog(root)).split('\n').some(l => l.split('|').map(c => c.trim())[2] === branch);
   return {
