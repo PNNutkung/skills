@@ -1,6 +1,6 @@
 {
   "name": "pnnutkung-skills",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Personal agent skills (dev-workflow, definition-of-done, retro, zero-trust-review, paired-agent-tdd, ai-code-delivery, qa-sweep, branch-summary) plus the zero-trust-review guard, the qa-sweep qa-guard, the dev-workflow guard, the opt-in definition-of-done guard, the retro-collect hook and telemetry-capture hooks.",
   "author": {
     "name": "PNNutkung",

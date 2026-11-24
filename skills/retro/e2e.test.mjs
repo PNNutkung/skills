@@ -81,6 +81,12 @@ test('should leave a ratchet that guards later commits when a whole retro runs o
   ]));
   assert.equal(s.node('retro.mjs', ['check', '--run', run]).code, 0);
 
+  writeFileSync(join(run, 'answers.md'), 'A1: P1 C, P2 B\ntime: 2026-11-22T09:00:00Z\n');
+  const wrongLetter = s.node('retro.mjs', ['applied-check', '--run', run]);
+  assert.equal(wrongLetter.code, 1);
+  assert.deepEqual(wrongLetter.out.errors, ['P1: C is not an option (A, B)']);
+  writeFileSync(join(run, 'answers.md'), 'A1: P1 A, P2 B\ntime: 2026-11-22T09:00:00Z\n');
+  assert.deepEqual(s.node('retro.mjs', ['applied-check', '--run', run]).out.approved, ['P1']);
   writeFileSync(join(run, 'answers.md'), 'A1: P1 ok, P2 no\ntime: 2026-11-22T09:00:00Z\n');
   assert.equal(s.node('ratchet.mjs', ['add', '--rule', 'retro:ts-as-cast']).code, 0);
   assert.equal(s.node('retro.mjs', ['applied-check', '--run', run]).code, 0);

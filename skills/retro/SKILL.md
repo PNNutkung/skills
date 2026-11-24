@@ -64,11 +64,11 @@ Write `<run>/findings.json` with the Write tool. Every finding cites evidence; k
                {"kind": "metric", "ref": "guardrail.finding", "quote": "true"}]}]
 ```
 
-Write `<run>/proposals.json`: `[{"id": "P1", "finding": "F1", "text": "ratchet retro:ts-as-cast", "files": [".ratchet.json"]}]`. `files` lists every path (globs allowed) the proposal may change. Then `node "$SK/retro.mjs" check --run <run>`: each finding gets `verify` = `passed`, `not-passed` (what it cites does not match) or `no-evidence`. A proposal for a finding that did not pass fails the check. It writes `<run>/report.md`.
+Write `<run>/proposals.json`: `[{"id": "P1", "finding": "F1", "text": "ratchet retro:ts-as-cast", "files": [".ratchet.json"]}]`. `files` lists every path (globs allowed) the proposal may change. Offer more than apply/skip with `"options": {"A": "apply", "B": "skip", "C": "apply"}` (one capital letter each, apply or skip); without it A = apply, B = skip. Then `node "$SK/retro.mjs" check --run <run>`: each finding gets `verify` = `passed`, `not-passed` (what it cites does not match) or `no-evidence`. A proposal for a finding that did not pass fails the check. It writes `<run>/report.md`.
 
 ## 4. Ask
 
-Show the report in the user's language, most severe first, `not-passed` and `no-evidence` findings with their reasons and without proposals. Ask for a decision on each proposal id. Save each answer word for word with the Write tool to `<run>/answers.md` (`A1: P1 ok, P2 no` then `time: <ISO time>`). Never decide for the user.
+Show the report in the user's language, most severe first, `not-passed` and `no-evidence` findings with their reasons and without proposals. Ask for a decision on each proposal id. Save each answer word for word with the Write tool to `<run>/answers.md` (`A1: P1 ok, P2 no` or by option letter `A1: P1 A, P2 B`, then `time: <ISO time>`). A letter the proposal does not offer fails applied-check. Never decide for the user.
 
 ## 5. Apply only what was approved
 
