@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Tests a branch adds are named `should ... when ...` (rules/test-naming.md). Only added lines count, so legacy names never fail it.
 //   node rules/checks/test-names.mjs [--base <ref>] [--root <repo>]
-// Compares the merge base of <ref> (default origin/main) and HEAD. Prints one JSON line. Exit 0 ok, 1 bad names, 2 usage or git error.
+// Compares the merge base of <ref> (default origin/main) with the working tree: commits, uncommitted edits and untracked files,
+// so a run before commit sees new tests too (CI has a clean checkout, so it reads the commits). Prints one JSON line. Exit 0 ok, 1 bad names, 2 usage or git error.
 // The same patterns as hooks/test-name-guard, so CI catches what that standalone hook would have caught.
 import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const JS_FILE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$|(^|\/)__tests__\/.*\.(ts|tsx|js|jsx)$/;
@@ -47,7 +49,11 @@ function main(argv) {
   let diff;
   try {
     const mb = git('merge-base', base, 'HEAD').trim();
-    diff = git('diff', '--unified=0', '--no-color', '--no-ext-diff', '--diff-filter=AMR', mb, 'HEAD');
+    diff = git('diff', '--unified=0', '--no-color', '--no-ext-diff', '--diff-filter=AMR', mb);
+    for (const file of git('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(f => JS_FILE.test(f) || PY_FILE.test(f))) {
+      const lines = readFileSync(join(root, file), 'utf8').split('\n');
+      diff += `+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}\n`;
+    }
   } catch {
     console.log(JSON.stringify({ ok: false, error: `cannot diff against ${base}: fetch it first (actions/checkout with fetch-depth: 0)` }));
     return 2;

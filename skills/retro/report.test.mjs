@@ -32,3 +32,9 @@ test('should create the log with a header and append one line when a retro is lo
   assert.match(second, /PR \\\| 18/);
   assert.ok(second.startsWith(first));
 });
+
+test('should list the answer letters when a proposal offers options (RLetter)', () => {
+  const out = renderReport({ work: 'w', findings: [], proposals: [{ id: 'P1', finding: 'F1', text: 't', files: ['a'], options: { A: 'apply', B: 'skip', C: 'apply' } }, { id: 'P2', finding: 'F1', text: 'u', files: ['b'] }] });
+  assert.match(out, /- P1 \(F1\): t \[a\] options: A apply, B skip, C apply\n/);
+  assert.match(out, /- P2 \(F1\): u \[b\] options: A apply, B skip\n/);
+});

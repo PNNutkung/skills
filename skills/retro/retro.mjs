@@ -2,14 +2,14 @@
 // The retro CLI. Every command prints one JSON line on stdout.
 //   collect       [--repo .] [--pr <n> | --base <ref> | --since 7d] [--session <id>...] [--lang th|en]   facts -> <run>/collect.json
 //   check         --run <run>        verify each finding's evidence (passed, not-passed, no-evidence), check proposals, write report.md
-//   applied-check --run <run>        every file changed since collect is named by an approved proposal (answers.md)
+//   applied-check --run <run>        every file changed since collect is named by an approved proposal (answers.md: "P1 ok" or "P1 A")
 //   log           --run <run>        append one line to docs/retro/log.md
-// Exit: 0 ok, 1 the check did not pass (a bad proposal, an unapproved change), 2 usage error or a flag that is not valid.
+// Exit: 0 ok, 1 the check did not pass (a bad proposal, an unapproved change, a letter answer no proposal offers), 2 usage error or a flag that is not valid.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { appliedCheck, checkProposals, parseApprovals } from './approvals.mjs';
+import { answerErrors, appliedCheck, checkProposals, parseApprovals } from './approvals.mjs';
 import { collect } from './collect.mjs';
 import { verifyAll } from './evidence.mjs';
 import { FlagError, readFlags } from './flags.mjs';
@@ -38,6 +38,7 @@ const readJson = (file, what) => {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new UsageError(`${what} is not JSON: ${e.message}`); }
 };
 const readText = p => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
+const readProposals = run => (existsSync(join(run, 'proposals.json')) ? readJson(join(run, 'proposals.json'), 'proposals.json') : []);
 function runFolder(opts) {
   if (!opts.run || !isAbsolute(opts.run)) throw new UsageError('--run needs the absolute run folder that collect printed');
   const collected = readJson(join(opts.run, 'collect.json'), 'collect.json');
@@ -54,7 +55,7 @@ function check(opts) {
   const { run, collected } = runFolder(opts);
   const repo = collected.repo;
   const findings = readJson(join(run, 'findings.json'), 'findings.json');
-  const proposals = existsSync(join(run, 'proposals.json')) ? readJson(join(run, 'proposals.json'), 'proposals.json') : [];
+  const proposals = readProposals(run);
   const sessionPaths = new Set((collected.sessions ?? []).map(s => s.path));
   const ctx = {
     readFile: p => readText(join(repo, p)),
@@ -79,16 +80,20 @@ function changedSince(repo, ref) {
 function appliedCheckCmd(opts) {
   const { run, collected } = runFolder(opts);
   if (!collected.startRef) throw new UsageError('collect.json has no startRef (the repo had no commit)');
-  const proposals = existsSync(join(run, 'proposals.json')) ? readJson(join(run, 'proposals.json'), 'proposals.json') : [];
-  const approvals = parseApprovals(readText(join(run, 'answers.md')) ?? '');
+  const proposals = readProposals(run);
+  const answers = readText(join(run, 'answers.md')) ?? '';
+  const approvals = parseApprovals(answers, proposals);
+  const errors = answerErrors(answers, proposals);
   const r = appliedCheck({ proposals, approvals, changed: changedSince(collected.repo, collected.startRef) });
-  return { code: r.ok ? 0 : 1, out: { ok: r.ok, unapproved: r.unapproved, approved: [...approvals].filter(([, y]) => y).map(([id]) => id) } };
+  const ok = r.ok && !errors.length;
+  return { code: ok ? 0 : 1, out: { ok, errors, unapproved: r.unapproved, approved: [...approvals].filter(([, y]) => y).map(([id]) => id) } };
 }
 
 function logCmd(opts) {
   const { run, collected } = runFolder(opts);
   const verified = readJson(join(run, 'verified.json'), 'verified.json (run check first)');
-  const approvals = parseApprovals(readText(join(run, 'answers.md')) ?? '');
+  const proposals = readProposals(run);
+  const approvals = parseApprovals(readText(join(run, 'answers.md')) ?? '', proposals);
   const before = new Set(collected.ratchet?.rules ?? []);
   const now = Object.keys(readBaseline(collected.repo).baseline?.rules ?? {});
   const row = { date: new Date().toISOString().slice(0, 10), work: collected.work?.label ?? '', sessions: collected.totals?.sessions ?? 0, tokens: collected.totals?.tokens ?? 0,

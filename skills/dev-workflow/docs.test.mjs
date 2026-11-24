@@ -69,7 +69,8 @@ test('should register the hook and list the skill when the plugin ships it (Skil
   assert.match(root('README.md'), /\[`dev-workflow`\]\(skills\/dev-workflow\)/);
   assert.match(root('README.md'), /--skill dev-workflow/);
   const plugin = JSON.parse(root('.claude-plugin/plugin.json'));
-  assert.equal(plugin.version, '2.3.0');
+  const [major, minor] = plugin.version.split('.').map(Number);
+  assert.ok(major > 2 || (major === 2 && minor >= 3), `dev-workflow shipped in 2.3.0; plugin is ${plugin.version}`);
   assert.match(plugin.description, /dev-workflow/);
   assert.match(JSON.parse(root('.claude-plugin/marketplace.json')).plugins[0].description, /dev-workflow/);
 });
