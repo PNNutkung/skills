@@ -32,7 +32,7 @@ test('should close the gate and name the item, its env and the booked names when
   assert.deepEqual(r.tickable, ['Gate'], 'a mismatched item is never ticked');
 });
 
-test('should not match a booked name that is only the start of a longer word (EnvMatch edge)', () => {
+test('should not match a booked name when it is only the start of a longer word (EnvMatch edge)', () => {
   const r = checkVerify(section('Skill', 'cloudy staging') + section('Gate', 'ci'), ['Skill', 'Gate'], {}, { booked: ['cloud', 'ci'] });
   assert.ok(r.errors.some(e => e.startsWith('Skill: env "cloudy staging"')));
   const ok = checkVerify(section('Skill', 'cloud-1 runner') + section('Gate', 'ci:linux'), ['Skill', 'Gate'], {}, { booked: ['cloud', 'ci'] });
@@ -40,13 +40,13 @@ test('should not match a booked name that is only the start of a longer word (En
   assert.ok(!ok.errors.some(e => e.startsWith('Gate:')), ok.errors.join('\n'));
 });
 
-test('should let the user accept a mismatched item by answer id (Mismatch)', () => {
+test('should let the user accept an item by answer id when its env is not booked (Mismatch)', () => {
   const md = section('Skill', 'cloud') + section('Gate', 'staging', 'accepted A9');
   const r = checkVerify(md, ['Skill', 'Gate'], { A9: 'accept, staging is down' }, { booked: ['cloud'] });
   assert.deepEqual(r, { ok: true, errors: [], tickable: ['Skill'], warnings: [] });
 });
 
-test('should fail and name each booked env that no passing item used (EnvCoverage)', () => {
+test('should fail and name each booked env when no passing item used it (EnvCoverage)', () => {
   const md = section('Skill', 'cloud') + section('Gate', 'cloud box', 'accepted A9');
   const r = checkVerify(md, ['Skill', 'Gate'], { A9: 'ok' }, { booked: ['cloud', 'ci', 'nut-wsl'] });
   assert.equal(r.ok, false);
@@ -54,7 +54,7 @@ test('should fail and name each booked env that no passing item used (EnvCoverag
   assert.deepEqual(r.tickable, ['Skill']);
 });
 
-test('should not count a mismatched or failing item as using a booked env (EnvCoverage edge)', () => {
+test('should not count an item as using a booked env when it is mismatched or failing (EnvCoverage edge)', () => {
   const md = section('Skill', 'ci-staging') + section('Gate', 'ci', 'fail');
   const r = checkVerify(md, ['Skill', 'Gate'], {}, { booked: ['ci'] });
   assert.ok(r.errors.some(e => /booked env \[ci\] has no passing item/.test(e)), r.errors.join('\n'));
