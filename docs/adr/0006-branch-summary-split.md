@@ -5,7 +5,7 @@ touches:
   - ".claude-plugin/plugin.json"
 dod: branch-summary-split
 ---
-# 5. Branch summary split
+# 6. Branch summary split
 
 Date: 2026-11-24
 Status: Accepted
