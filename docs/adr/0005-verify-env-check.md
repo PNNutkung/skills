@@ -17,6 +17,8 @@ Quoted verbatim from the ticket and the specs this decision rests on:
 
 (no ticket or spec quotes)
 
+ADR 0004 (A12, item Verify) says verify evidence must come "from the DoD's verify env", but `checkVerify` only checks that each section's `env:` is not empty. The booked verify env is free text that often names several places (cloud, CI, Nut's WSL), so a skipped or wrong environment passes the gate unnoticed. This follow-up of PR #25 makes the gate compare the two. No ticket: the ADR and the PR carry it (A10).
+
 ## Decision
 
 ### A1: How does the gate compare verify.md env: with the DoD's booked verify env (free text today)?
