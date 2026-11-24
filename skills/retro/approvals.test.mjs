@@ -48,18 +48,18 @@ test('should look the letter up in the proposal options when it lists them (RLet
   assert.deepEqual(Object.fromEntries(parseApprovals('P3 B', withOptions)), { P3: false });
 });
 
-test('should not approve and should report a letter the proposal does not offer (RLetter)', () => {
+test('should approve nothing and report the letter when the proposal does not offer it (RLetter)', () => {
   assert.deepEqual(Object.fromEntries(parseApprovals('P1 C, P3 D', withOptions)), { P1: false, P3: false });
   assert.deepEqual(answerErrors('P1 C, P3 D, P2 A, P9 A', withOptions), ['P1: C is not an option (A, B)', 'P3: D is not an option (A, B, C)', 'P9: no such proposal']);
   assert.deepEqual(answerErrors('P1 ok, P2 B', withOptions), []);
 });
 
-test('should not read a lower-case letter or a letter that starts a word as an option (RLetter)', () => {
+test('should read no option when the letter is lower case or starts a word (RLetter)', () => {
   assert.equal(parseApprovals('P1 a good idea, P2 Apply later, P3 Bx').size, 0);
   assert.deepEqual(Object.fromEntries(parseApprovals('P1 agree, P2 A.')), { P1: true, P2: true });
 });
 
-test('should refuse options that are not single capital letters mapped to apply or skip (RLetter)', () => {
+test('should refuse the options when they are not single capital letters set to apply or skip (RLetter)', () => {
   const f = [{ id: 'F1', verify: 'passed' }];
   const errors = checkProposals([{ id: 'P1', finding: 'F1', files: ['a'], options: { a: 'apply' } }, { id: 'P2', finding: 'F1', files: ['a'], options: { A: 'yes' } }, { id: 'P3', finding: 'F1', files: ['a'], options: [] }, { id: 'P4', finding: 'F1', files: ['a'], options: { A: 'apply', B: 'skip' } }], f);
   assert.deepEqual(errors.map(e => e.split(':')[0]), ['P1', 'P2', 'P3']);
