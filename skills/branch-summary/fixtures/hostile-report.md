@@ -1,5 +1,7 @@
 # Hostile branch report
 
+## Summary
+
 ```mermaid
 flowchart LR
   A["benign"] --> B["diagram [added]"]
@@ -26,6 +28,8 @@ flowchart LR
 flowchart LR
   A["<img src=x onerror=window.__xss=(window.__xss||[]).concat('mermaid-init')>"] --> B["y"]
 ```
+
+## Test Coverage
 
 | Column | Value |
 | --- | --- |
