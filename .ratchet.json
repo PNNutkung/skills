@@ -1,10 +1,15 @@
 {
   "version": 1,
   "rules": {
+    "plugin-version-pin": {},
     "spawn-async-timeout": {},
     "test-serial": {}
   },
   "patterns": {
+    "plugin-version-pin": {
+      "regex": "version,\\s*['\"]\\d+\\.\\d+\\.\\d+['\"]",
+      "glob": "**/*.test.mjs"
+    },
     "spawn-async-timeout": {
       "regex": "\\bspawn\\([^;]*\\btimeout\\s*:",
       "glob": "**/*.mjs"

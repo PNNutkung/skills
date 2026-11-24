@@ -49,3 +49,21 @@ test('should exit 1 on a bad added name and 0 on legacy names when run on a git 
     assert.equal(spawnSync(process.execPath, [CHECK, '--root', repo, '--base', 'nope'], { encoding: 'utf8' }).status, 2);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
+
+test('should see added tests that are not committed yet when run on a working tree', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'tn-'));
+  const git = (...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: repo, stdio: 'ignore' });
+  const run = () => { const r = spawnSync(process.execPath, [CHECK, '--root', repo, '--base', 'main'], { encoding: 'utf8' }); return { code: r.status, out: JSON.parse(r.stdout) }; };
+  try {
+    git('init', '-q', '-b', 'main');
+    writeFileSync(join(repo, 'a.test.mjs'), "test('should work when ready', () => {});\n");
+    git('add', '.'); git('commit', '-q', '-m', 'base');
+    writeFileSync(join(repo, 'a.test.mjs'), "test('should work when ready', () => {});\ntest('edited', () => {});\n");
+    mkdirSync(join(repo, 't'));
+    writeFileSync(join(repo, 't', 'new.test.mjs'), "test('should pass when fine', () => {});\ntest('untracked', () => {});\n");
+    writeFileSync(join(repo, 'notes.md'), "test('not a test file', () => {});\n");
+    const r = run();
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.out.bad.map(b => b.split(' ')[0]), ['a.test.mjs:2', 't/new.test.mjs:2']);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
