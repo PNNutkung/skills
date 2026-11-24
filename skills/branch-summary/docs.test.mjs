@@ -102,7 +102,7 @@ test('should find each heading the gate requires in report-format.md when the ga
   const text = formatText();
   assert.ok(Array.isArray(report.REQUIRED_HEADINGS) && report.REQUIRED_HEADINGS.length === 3, 'REQUIRED_HEADINGS is exported');
   for (const h of report.REQUIRED_HEADINGS) {
-    if (h.level === 1) assert.match(text, /^# \S/m, h.label);
+    if (h.level === 1) assert.match(text, /^# <short-brief-title/m, `${h.label}: the template's own title line`);
     else assert.ok(text.split('\n').includes(h.label), `${h.label} is in report-format.md`);
   }
   assert.deepEqual(report.REQUIRED_HEADINGS.map((h) => h.label), ['# <title>', '## Summary', '## Test Coverage']);

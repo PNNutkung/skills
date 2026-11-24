@@ -53,7 +53,8 @@ export function checkReport(markdown) {
   let first = null;
   let branch = false;
   const seen = new Set();
-  for (const line of String(markdown ?? '').split(/\r?\n/)) {
+  // A byte order mark (a file saved on Windows) is not part of the title line.
+  for (const line of String(markdown ?? '').replace(/^﻿/, '').split(/\r?\n/)) {
     if (fence) {
       if (fence.test(line)) fence = null;
       continue;

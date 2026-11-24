@@ -180,6 +180,19 @@ test('should accept CRLF line ends and a level-three Summary does not count when
   assert.deepEqual(checkReport(FULL.replace('## Summary', '## Summary of changes')).missing, ['## Summary']);
 });
 
+test('should accept a closing hash sequence after a required heading when the report is checked (Gate)', () => {
+  assert.deepEqual(checkReport(FULL.replace('## Summary', '## Summary ##').replace('## Test Coverage', '## Test Coverage #')), { ok: true, missing: [] });
+});
+
+test('should read the headings after it when a backtick line has a backtick in its info string (Gate)', () => {
+  assert.deepEqual(checkReport('# T\n```a```\n## Summary\n## Test Coverage\n'), { ok: true, missing: [] });
+});
+
+test('should accept a report that starts with a byte order mark when the report is checked (Gate)', () => {
+  assert.deepEqual(checkReport('\uFEFF' + FULL), { ok: true, missing: [] });
+  assert.deepEqual(checkReport('\uFEFF' + FAST), { ok: true, missing: [] });
+});
+
 test('should name every part when the input is empty or not a string (Gate)', () => {
   const all = ['# <title>', '## Summary', '## Test Coverage'];
   assert.deepEqual(checkReport(''), { ok: false, missing: all });
