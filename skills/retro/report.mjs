@@ -1,5 +1,7 @@
 // The retro report (run folder only) and the one-line log that is committed (pure). Headings follow the user's language; ids, categories and
 // verify values stay English so scripts and later retros can read them.
+import { DEFAULT_OPTIONS } from './approvals.mjs';
+
 export const LOG_FILE = 'docs/retro/log.md';
 const LOG_COLUMNS = ['date', 'work', 'sessions', 'tokens', 'findings', 'passed', 'approved', 'ratchetRules'];
 const LABELS = {
@@ -21,7 +23,10 @@ export function renderReport({ work, findings, proposals, lang = 'en' }) {
   }
   out.push(`## ${t.proposals}`, '');
   if (!proposals?.length) out.push(t.none);
-  for (const p of proposals ?? []) out.push(`- ${p.id} (${p.finding}): ${p.text ?? ''} [${(p.files ?? []).join(', ')}]`);
+  for (const p of proposals ?? []) {
+    const options = Object.entries(p.options ?? DEFAULT_OPTIONS).map(([k, v]) => `${k} ${v}`).join(', ');
+    out.push(`- ${p.id} (${p.finding}): ${p.text ?? ''} [${(p.files ?? []).join(', ')}] options: ${options}`);
+  }
   return `${out.join('\n')}\n`;
 }
 
