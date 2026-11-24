@@ -46,7 +46,7 @@ function pick(env, root, slug) {
   throw new Usage(open.length ? `several runs are open on this branch: pass --slug (${open.map(r => r.state.slug).join(', ')})` : 'no open run on this branch: open --slug S, or pass --slug to resume');
 }
 
-const summary = ev => ({ facts: ev.facts, measure: ev.measure, dod: ev.dod.ok, board: ev.board.ok, choice: ev.board.choice, adr: ev.adr, pr: ev.pr, verify: ev.verify.ok, retro: ev.retro });
+const summary = ev => ({ facts: ev.facts, measure: ev.measure, dod: ev.dod.ok, board: ev.board.ok, choice: ev.board.choice, adr: ev.adr, pr: ev.pr, verify: ev.verify.ok, verifyWarnings: ev.verify.warnings ?? [], retro: ev.retro });
 
 // A started process sees its cwd as a real path (macOS /var -> /private/var, rules/paths.md); in-process callers get the same.
 const realCwd = p => { try { return realpathSync(p); } catch { return p; } };
@@ -97,7 +97,7 @@ export function main(argv, { env = process.env, cwd = process.cwd(), gh, dodMjs 
     }
     if (cmd === 'tick') {
       if (!ev.verify.ok) return { code: 1, out: { ok: false, errors: ev.verify.errors } };
-      return { code: 0, out: { ok: true, tick: ev.verify.tickable } };
+      return { code: 0, out: { ok: true, tick: ev.verify.tickable, warnings: ev.verify.warnings ?? [] } };
     }
     const r = cmd === 'skip' ? (v.answer ? skip(state, ev.answers, v.answer) : (() => { throw new Usage('skip needs --answer A<n>'); })()) : advance(state, ev);
     if (!r.ok) return { code: 1, out: { ok: false, step: state.step, errors: r.errors } };

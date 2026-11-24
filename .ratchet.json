@@ -1,11 +1,18 @@
 {
   "version": 1,
   "rules": {
+    "hook-readflags": {
+      "hooks/retro-collect.mjs": 1
+    },
     "plugin-version-pin": {},
     "spawn-async-timeout": {},
     "test-serial": {}
   },
   "patterns": {
+    "hook-readflags": {
+      "regex": "readFlags\\(",
+      "glob": "hooks/*.mjs"
+    },
     "plugin-version-pin": {
       "regex": "version,\\s*['\"]\\d+\\.\\d+\\.\\d+['\"]",
       "glob": "**/*.test.mjs"

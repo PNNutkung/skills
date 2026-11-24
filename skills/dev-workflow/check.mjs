@@ -95,14 +95,36 @@ export function parseVerify(md) {
 
 const ACCEPTED_RE = /^accepted (A\d+)$/;
 
+export const NO_NAMES_WARNING = 'no env names booked: the ADR verify env has no [name], so env: was not compared (book names like "[cloud] ...; [ci] ..." in the DoD)';
+const VERIFY_ENV_RE = /^- verify env:(.*)$/m;
+const ENV_NAME_RE = /\[([a-z0-9][a-z0-9_-]*)\]/gi;
+const NAME_CHAR_RE = /[a-z0-9_-]/i;
+
+/** The env names booked in brackets on the ADR's `- verify env:` line, lowercased, first-seen order, once each; [] when none (ADR 0005). */
+export function bookedEnvs(adr) {
+  const m = VERIFY_ENV_RE.exec(String(adr ?? ''));
+  if (!m) return [];
+  return [...new Set([...m[1].matchAll(ENV_NAME_RE)].map(x => x[1].toLowerCase()))];
+}
+
+/** The booked name an env: line starts with (an optional "[" first, case-insensitive, not followed by more name characters), or null. */
+function envName(env, names) {
+  const e = env.trim().replace(/^\[/, '').toLowerCase();
+  return names.find(n => e.startsWith(n) && !NAME_CHAR_RE.test(e.charAt(n.length))) ?? null;
+}
+
 /**
  * Every DoD item has evidence from a real run (env + run + result pass + output or image), or the user accepted it by answer id.
  * tickable: items whose real run passed; those are ticked on the ticket without asking (A23). Accepted items are reported instead.
  */
-export function checkVerify(md, items, answers) {
+export function checkVerify(md, items, answers, { booked } = {}) {
   const sections = parseVerify(md);
-  const errors = [], tickable = [];
-  if (!items?.length) return { ok: false, errors: ['no DoD items to verify: the ADR has no Definition of done items (dod.mjs adr writes them)'], tickable };
+  const errors = [], tickable = [], usedNames = new Set();
+  // booked: the ADR's env names (ADR 0005); null or undefined means the env check is off, so the result keeps its old shape
+  const envCheck = Array.isArray(booked);
+  const names = envCheck ? booked : [];
+  const done = r => (envCheck ? { ...r, warnings: names.length ? [] : [NO_NAMES_WARNING] } : r);
+  if (!items?.length) return done({ ok: false, errors: ['no DoD items to verify: the ADR has no Definition of done items (dod.mjs adr writes them)'], tickable });
   for (const id of items) {
     const s = sections[id];
     if (!s) { errors.push(`${id}: missing (add a "## ${id}" section)`); continue; }
@@ -117,7 +139,13 @@ export function checkVerify(md, items, answers) {
     if (!nonEmpty(s.env)) bad.push(`${id}: no env (where it ran)`);
     if (!nonEmpty(s.run) || !(nonEmpty(s.output) || nonEmpty(s.image))) bad.push(`${id}: no evidence (run: plus an output block or image:)`);
     if (bad.length) { errors.push(...bad); continue; }
+    if (names.length) {
+      const used = envName(s.env, names);
+      if (!used) { errors.push(`${id}: env "${s.env}" does not start with a booked name (${names.map(n => `[${n}]`).join(', ')}); rerun it there, or result: accepted A<n> with the user's answer`); continue; }
+      usedNames.add(used);
+    }
     tickable.push(id);
   }
-  return { ok: errors.length === 0, errors, tickable };
+  for (const n of names) if (!usedNames.has(n)) errors.push(`booked env [${n}] has no passing item: run at least one DoD item there (env: ${n} ...)`);
+  return done({ ok: errors.length === 0, errors, tickable });
 }

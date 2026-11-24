@@ -90,6 +90,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | Flag | Values | Default | What it does |
 |---|---|---|---|
 | `WORKFLOW_GUARD_ENABLED` | `true` \| `false` | `true` | dev-workflow guard (`hooks/workflow-guard.mjs`): while a run is open on the branch, no product code before the design is locked and no merge before verify and retro |
+| `WORKFLOW_VERIFY_ENV_CHECK_ENABLED` | `true` \| `false` | `true` | dev-workflow verify gate: when the ADR's verify env books names (`[cloud] ...; [ci] ...`), each passing item's `env:` must start with one of them and every name needs a passing item; no names booked passes with a warning (ADR 0005) |
 | `DOD_GUARD_ENABLED` | `true` \| `false` | `false` | definition-of-done guard (`hooks/dod-guard.mjs`): no product code and no unapproved ticket write while a DoD session is open |
 | `DOD_ADR_PRECOMMIT_HOOK_ENABLED` | `true` \| `false` | `true` | `dod.mjs adr` installs the git pre-commit hook, and the hook makes ADR `touches` follow committed file moves |
 | `DOD_ADR_TOUCHES_SYNC_ENABLED` | `true` \| `false` | `true` | `hooks/dod-adr-sync.mjs`: ADR `touches` follow the agent's `mv` and `git mv` |

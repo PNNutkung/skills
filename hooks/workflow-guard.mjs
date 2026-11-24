@@ -105,9 +105,10 @@ const isInside = (child, parent) => child === parent || child.startsWith(parent 
 /** A deny reason, or null. input: the PreToolUse payload. Throws FlagError on a bad flag value. */
 export function verdict(input, env = process.env) {
   if (!mods) return null;
-  const { FLAG, STEPS, openRuns, readFlags, repoRoot } = mods;
+  const { FLAG, STEPS, enabled, openRuns, repoRoot } = mods;
   const UNLOCKED_FROM = STEPS.indexOf('tdd');
-  if (!readFlags(env).guard) return null;
+  // only the guard's own flag: a bad value of another dev-workflow flag is the CLI's to report, not a reason to deny every tool
+  if (!enabled(env, FLAG.guard, true)) return null;
   const { tool_name: tool, tool_input: ti, cwd } = input ?? {};
   const isFile = FILE_TOOLS.has(tool);
   if (!isFile && tool !== 'Bash') return null;

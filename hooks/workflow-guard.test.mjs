@@ -139,3 +139,15 @@ test('should deny every guarded tool with the fix when the flag value is not val
     assert.match(out.permissionDecisionReason, /use true or false/);
   } finally { fx.done(); }
 });
+
+test('should read only its own flag when WORKFLOW_VERIFY_ENV_CHECK_ENABLED is not valid (the CLI reports that flag, not the hook)', () => {
+  const fx = fixture('intake');
+  try {
+    const input = { tool_name: 'Write', tool_input: { file_path: join(fx.repo, 'src', 'a.js') }, cwd: fx.repo };
+    const base = { XDG_CACHE_HOME: fx.env.XDG_CACHE_HOME, WORKFLOW_VERIFY_ENV_CHECK_ENABLED: '1' };
+    assert.equal(spawnHook(input, { ...base, WORKFLOW_GUARD_ENABLED: 'false' }), null, 'guard off still means off');
+    const on = spawnHook(input, base);
+    assert.equal(on.permissionDecision, 'deny');
+    assert.doesNotMatch(on.permissionDecisionReason, /WORKFLOW_VERIFY_ENV_CHECK_ENABLED/);
+  } finally { fx.done(); }
+});
