@@ -9,7 +9,7 @@ result: pass
 ```
 ok - should keep SKILL.md short with the dev-workflow name and a quoted description when SKILL.md changes (Skill, Name)
 ok - should register the hook and list the skill when the plugin ships it (Skill)
-ok - should run the CLI and guard edits only when the flag says so (flags: defaults) (Skill, GuardEdit, GuardIdle)
+ok - should run the CLI and guard edits and merges when the flag is unset (flags: defaults) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: on) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: off) (Skill, GuardEdit, GuardIdle)
 5 matching tests passed, fail 0
@@ -114,7 +114,7 @@ ok - should allow product-code edits when the run is at tdd or later (GuardEdit)
 ok - should deny a Bash write into product code when the design is not locked and allow it after (GuardEdit)
 ok - should treat heredoc bodies as data and see unspaced, cp and touch writes when parsing Bash (GuardEdit)
 ok - should print a deny decision and always exit 0 when run as a hook with the flag on (GuardEdit, flags: on)
-ok - should run the CLI and guard edits only when the flag says so (flags: defaults) (Skill, GuardEdit, GuardIdle)
+ok - should run the CLI and guard edits and merges when the flag is unset (flags: defaults) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: on) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: off) (Skill, GuardEdit, GuardIdle)
 8 matching tests passed, fail 0
@@ -136,7 +136,7 @@ run: node --test --test-name-pattern='GuardIdle' skills/dev-workflow/*.test.mjs 
 result: pass
 ```
 ok - should block nothing when no workflow is open on this branch (GuardIdle)
-ok - should run the CLI and guard edits only when the flag says so (flags: defaults) (Skill, GuardEdit, GuardIdle)
+ok - should run the CLI and guard edits and merges when the flag is unset (flags: defaults) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: on) (Skill, GuardEdit, GuardIdle)
 ok - should run the CLI and guard edits only when the flag says so (flags: off) (Skill, GuardEdit, GuardIdle)
 4 matching tests passed, fail 0
@@ -184,8 +184,9 @@ result: pass
 ok - should pass and tick only items with a passing real run when every item has evidence or an accepted answer (Verify, TicketTick)
 ok - should fail when an item is missing, failed, has no evidence or names an answer that does not exist (Verify)
 ok - should fail closed when the ADR yields no DoD items whatever verify.md says (Verify)
+ok - should list a test tagged with the item when docs/verify/dev-workflow.md has a section for it (Verify)
 ok - should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)
-4 matching tests passed, fail 0
+5 matching tests passed, fail 0
 ```
 
 ## TicketTick

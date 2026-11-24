@@ -117,16 +117,16 @@ test('should print a deny decision and always exit 0 when run as a hook with the
   try {
     const out = spawnHook({ tool_name: 'Write', tool_input: { file_path: join(fx.repo, 'src', 'a.js') }, cwd: fx.repo }, fx.env);
     assert.equal(out.permissionDecision, 'deny');
-    assert.match(out.permissionDecisionReason, /WORKFLOW_GUARD_ENABLED=true/);
+    assert.match(out.permissionDecisionReason, /WORKFLOW_GUARD_ENABLED=false turns this guard off/);
     assert.equal(spawnSync(process.execPath, [HOOK], { input: 'not json', env: fx.env, encoding: 'utf8' }).stdout, '', 'fail open on bad input');
   } finally { fx.done(); }
 });
 
-test('should do nothing when the flag is unset or false (flags: defaults, flags: off)', () => {
+test('should deny when the flag is unset and do nothing when it is false (flags: defaults, flags: off)', () => {
   const fx = fixture('intake');
   try {
     const input = { tool_name: 'Write', tool_input: { file_path: join(fx.repo, 'src', 'a.js') }, cwd: fx.repo };
-    assert.equal(spawnHook(input, { XDG_CACHE_HOME: fx.env.XDG_CACHE_HOME }), null);
+    assert.equal(spawnHook(input, { XDG_CACHE_HOME: fx.env.XDG_CACHE_HOME }).permissionDecision, 'deny');
     assert.equal(spawnHook(input, { XDG_CACHE_HOME: fx.env.XDG_CACHE_HOME, WORKFLOW_GUARD_ENABLED: 'false' }), null);
   } finally { fx.done(); }
 });

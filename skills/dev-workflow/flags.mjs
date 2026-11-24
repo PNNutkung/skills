@@ -22,5 +22,5 @@ export const FLAG = { guard: 'WORKFLOW_GUARD_ENABLED' };
 
 /** Every dev-workflow flag at once (throws FlagError on a bad value). */
 export function readFlags(env = process.env) {
-  return { guard: enabled(env, FLAG.guard, false) };
+  return { guard: enabled(env, FLAG.guard, true) };
 }

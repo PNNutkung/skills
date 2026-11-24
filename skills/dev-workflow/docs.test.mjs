@@ -55,7 +55,7 @@ test('should document the flag in SKILL.md, the README Flags table and rules/REA
   const readme = root('README.md');
   for (const name of Object.values(FLAG)) {
     assert.ok(skill.includes(name), `${name} in SKILL.md`);
-    assert.match(readme, new RegExp(`\\| \`${name}\` \\| \`true\` \\\\\\| \`false\` \\| \`false\` \\|`), `${name} README row`);
+    assert.match(readme, new RegExp(`\\| \`${name}\` \\| \`true\` \\\\\\| \`false\` \\| \`true\` \\|`), `${name} README row`);
     assert.ok(root('rules/README.md').includes(name), `${name} in rules/README.md`);
   }
 });
@@ -78,4 +78,15 @@ test('should keep evals for the main paths when evals.json lists them', () => {
   const evals = JSON.parse(read('evals.json'));
   assert.ok(evals.length >= 3);
   for (const e of evals) { assert.deepEqual(e.skills, ['dev-workflow']); assert.ok(e.expected_behavior.length > 0); }
+});
+
+test('should list a test tagged with the item when docs/verify/dev-workflow.md has a section for it (Verify)', () => {
+  const doc = root('docs/verify/dev-workflow.md');
+  const items = [...doc.matchAll(/^## (\w+)$/gm)].map(m => m[1]).filter(id => id !== 'Dogfood');
+  assert.ok(items.length >= 18, String(items.length));
+  for (const id of items) {
+    const body = doc.slice(doc.indexOf(`## ${id}\n`) + id.length + 4).split(/^## /m)[0];
+    const tagged = body.split('\n').filter(l => /^ok - should /.test(l) && new RegExp(`\\((?:[^()]*, )?${id}(?:, [^()]*)?\\)$`).test(l));
+    assert.ok(tagged.length > 0, `${id}: no ok - should ... (${id}) line`);
+  }
 });

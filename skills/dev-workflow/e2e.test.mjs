@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { FLAG } from './flags.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, 'workflow.mjs');
@@ -22,7 +23,7 @@ function setup(flag) {
   mkdirSync(bin);
   symlinkSync(process.execPath, join(bin, 'node'));
   const env = { PATH: bin, HOME: base, XDG_CACHE_HOME: join(base, 'cache') };
-  if (flag !== undefined) env.WORKFLOW_GUARD_ENABLED = flag;
+  if (flag !== undefined) env[FLAG.guard] = flag;
   const cli = (...a) => { const r = spawnSync(process.execPath, [CLI, ...a], { cwd: repo, env, encoding: 'utf8' }); return { code: r.status, out: JSON.parse(r.stdout) }; };
   const hook = input => { const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify({ cwd: repo, ...input }), env, encoding: 'utf8' }); return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.permissionDecision : 'allow'; };
   return { base, repo, cli, hook, done: () => rmSync(base, { recursive: true, force: true }) };
@@ -44,17 +45,22 @@ function walk(f, guarded) {
   return { run, write, merge };
 }
 
-for (const [label, flag, guarded] of [['flags: defaults', undefined, false], ['flags: on', 'true', true], ['flags: off', 'false', false]]) {
-  test(`should run the CLI and guard edits only when the flag says so (${label}) (Skill, GuardEdit, GuardIdle)`, () => {
-    const f = setup(flag);
-    try {
-      const { write, merge } = walk(f, guarded);
-      assert.equal(f.hook(merge), guarded ? 'deny' : 'allow');
-      assert.equal(f.cli('close').code, 0);
-      assert.equal(f.hook(write), 'allow', 'a closed run guards nothing');
-      assert.equal(f.hook(merge), 'allow');
-    } finally { f.done(); }
-  });
+function guardRun(flag, guarded) {
+  const f = setup(flag);
+  try {
+    const { write, merge } = walk(f, guarded);
+    assert.equal(f.hook(merge), guarded ? 'deny' : 'allow');
+    assert.equal(f.cli('close').code, 0);
+    assert.equal(f.hook(write), 'allow', 'a closed run guards nothing');
+    assert.equal(f.hook(merge), 'allow');
+  } finally { f.done(); }
+}
+
+// flags: defaults: this test sets no flag, so the guard runs as a fresh install has it (on)
+test('should run the CLI and guard edits and merges when the flag is unset (flags: defaults) (Skill, GuardEdit, GuardIdle)', () => guardRun(undefined, true));
+
+for (const [label, flag, guarded] of [['flags: on', 'true', true], ['flags: off', 'false', false]]) {
+  test(`should run the CLI and guard edits only when the flag says so (${label}) (Skill, GuardEdit, GuardIdle)`, () => guardRun(flag, guarded));
 }
 
 test('should exit 2 with the fix when the flag value is not valid (flags: invalid)', () => {

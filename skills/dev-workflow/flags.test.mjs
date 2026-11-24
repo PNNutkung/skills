@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FLAG, FlagError, readFlags } from './flags.mjs';
 
-test('should keep the guard off when WORKFLOW_GUARD_ENABLED is unset or empty', () => {
-  assert.deepEqual(readFlags({}), { guard: false });
-  assert.deepEqual(readFlags({ [FLAG.guard]: '  ' }), { guard: false });
+test('should keep the guard on when WORKFLOW_GUARD_ENABLED is unset or empty', () => {
+  assert.deepEqual(readFlags({}), { guard: true });
+  assert.deepEqual(readFlags({ [FLAG.guard]: '  ' }), { guard: true });
 });
 
 test('should read true and false in any case when the flag is set', () => {

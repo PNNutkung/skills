@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash) for the dev-workflow skill. Opt-in: does nothing unless WORKFLOW_GUARD_ENABLED=true.
-// A value of WORKFLOW_GUARD_ENABLED that is not true or false denies every guarded tool with the fix: a guard is on by intent only.
+// PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash) for the dev-workflow skill. On by default: WORKFLOW_GUARD_ENABLED=false turns it off.
+// A value of WORKFLOW_GUARD_ENABLED that is not true or false denies every guarded tool with the fix: a typo never turns it off silently.
 // While a dev-workflow run is open on the current branch (skills/dev-workflow, ~/.cache/dev-workflow), it:
 //   - denies product-code changes (any file in the repo outside docs/) until the design is locked (step tdd or later),
 //   - denies `gh pr merge` / `glab mr merge` until verify and retro are done (step done).
@@ -117,7 +117,7 @@ export function verdict(input, env = process.env) {
   if (!runs.length) return null;
   const locked = runs.every(r => STEPS.indexOf(r.state.step) >= UNLOCKED_FROM);
   const first = runs.find(r => STEPS.indexOf(r.state.step) < UNLOCKED_FROM) ?? runs[0];
-  const where = `dev-workflow run ${first.state.slug} is at step ${first.state.step} (${FLAG.guard}=true)`;
+  const where = `dev-workflow run ${first.state.slug} is at step ${first.state.step} (${FLAG.guard}=false turns this guard off)`;
   const docs = join(root, 'docs');
   const product = p => { const abs = realPathLoose(isAbsolute(p) ? p : join(cwd ?? root, p)); return isInside(abs, root) && !isInside(abs, docs) && !isInside(abs, join(root, '.git')); };
   const notLocked = p => `${where}: the design is not locked, so ${p} (product code) stays untouched. Finish the concept board and the ADR, then: node "${WORKFLOW_MJS}" next`;

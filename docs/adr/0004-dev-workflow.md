@@ -23,6 +23,8 @@ Quoted verbatim from the ticket and the specs this decision rests on:
 
 Nut asked (2026-11-23, thread "Build project workflow into plugin") to build the project's six-step workflow (DoD grill, prototype, design variants, TDD, verify, retro; sub-agents, backward compatibility and feature flags in mind) into this plugin, in an order that avoids going back and forth. The plugin already had skills for steps 1, 4 and 6; prototype, design and verify were done by hand in every thread, and no single entry point stated the order. Past threads went back: a spike after the first grill round overrode answers, prototype and design were two approval rounds, the ADR waited for the design choice, and the real-machine verify was booked after the PR opened. The design (A24) was picked on a concept board: https://claude.ai/artifact/D3tfgnwKBkcERCEbVs4h5S. This ADR is numbered 0004 because PR #24 holds 0003.
 
+Amended 2026-11-24 (Nut, in the same PR): `WORKFLOW_GUARD_ENABLED` defaults to `true`, not `false` as A1 and A8 below say. With no open run the guard still blocks nothing (A19), and `false` turns it off.
+
 ## Decision
 
 ### A1: จะฝัง workflow 6 ขั้นเข้า plugin แบบไหน
