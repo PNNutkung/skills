@@ -13,6 +13,7 @@ npx skills add PNNutkung/skills --skill '*' -a claude-code -g
 
 # or pick one
 npx skills add PNNutkung/skills --skill zero-trust-review
+npx skills add PNNutkung/skills --skill dev-workflow --skill definition-of-done --skill paired-agent-tdd --skill zero-trust-review --skill retro   # the whole workflow, step by step with a gate between steps
 npx skills add PNNutkung/skills --skill definition-of-done   # its ADR (or export) feeds paired-agent-tdd and qa-sweep
 npx skills add PNNutkung/skills --skill retro   # step 6: looks back at finished work, turns mistakes into ratchet rules
 npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review   # paired-agent-tdd borrows the probes (and optionally the sandbox runner) of zero-trust-review
@@ -20,7 +21,7 @@ npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --ski
 mkdir -p ~/.claude/hooks && curl -fsSL -o ~/.claude/hooks/pr-test-tiers.py https://raw.githubusercontent.com/PNNutkung/skills/main/hooks/pr-test-tiers/pr-test-tiers.py   # qa-sweep reads test tiers through it ($TIERS_PY); registering it as a hook is optional
 ```
 
-Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook, the telemetry-capture hook, the opt-in `paired-agent-tdd` file fence, the opt-in `definition-of-done` guard and its `dod-adr-sync` hook, and the `retro-collect` hook (skills alone do not include hooks; every switch is in [Flags](#flags)). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
+Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook, the telemetry-capture hook, the opt-in `paired-agent-tdd` file fence, the `dev-workflow` guard, the opt-in `definition-of-done` guard and its `dod-adr-sync` hook, and the `retro-collect` hook (skills alone do not include hooks; every switch is in [Flags](#flags)). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
 
 ```sh
 /plugin marketplace add PNNutkung/skills
@@ -36,6 +37,7 @@ Two standalone hooks that are not part of the plugin. Install steps are in each 
 
 | Skill | What it does |
 | --- | --- |
+| [`dev-workflow`](skills/dev-workflow) | The whole loop from idea to merge, in one order with a code gate between steps (`workflow.mjs next` refuses to move on without the step's evidence): facts and spike by a low-tier subagent before the first question, the `definition-of-done` grill (the verify environment booked there), one concept board with two or more design variants chosen in one round, the ADR and ticket written once, `paired-agent-tdd` and a draft PR, `docs/verify/<slug>.md` with real-run evidence for every DoD item (passing items are ticked on the ticket), an independent `zero-trust-review`, and the `retro` before merge. Small work may skip only the board, on the user's saved answer. The run folder lives in `~/.cache/dev-workflow`; `status` resumes from the repo when it is gone. The `workflow-guard` hook (on by default; `WORKFLOW_GUARD_ENABLED=false` turns it off) keeps product code untouched until the design is locked and blocks `gh pr merge` / `glab mr merge` until verify and retro are done. |
 | [`definition-of-done`](skills/definition-of-done) | Step 1, before any code: grills the user in rounds (every question has a recommended answer) until nothing is left to assume, and writes `docs/dod/<slug>.json` + `.md` where every item quotes its source (a spec, the ticket or the user's answer). `dod.mjs check` refuses an unquoted item, an unaccepted assumption or an open question. Rewrites the linked ticket's description with the DoD as a checklist (official CLI first, then MCP, else a file to paste), only after the user approves the exact text, and records it as an ADR in the repo's ADR folder (each decision with its options, pros, cons and the trade-off accepted; only the ADR is committed) that `paired-agent-tdd` and `qa-sweep` read directly through `"dodFile"` or find by its `touches`, or exports it for them as before. ADR `touches` follow file moves through a pre-commit hook (`DOD_ADR_PRECOMMIT_HOOK_ENABLED=false`) and the `dod-adr-sync` hook (`DOD_ADR_TOUCHES_SYNC_ENABLED=false`). The opt-in `dod-guard` hook (`DOD_GUARD_ENABLED=true`) keeps product code untouched during the session. |
 | [`paired-agent-tdd`](skills/paired-agent-tdd) | TDD as driver/navigator pairs, one pipeline per file group on a Workflow script (`graph.mjs`, `workflow.js`). Plain-code gates (`tdd.mjs`) run the tests (directly by default, in the sandbox with `plan.sandbox: true`), mutate the new code and check that tests cover the definition of done, so agents judge facts instead of claims. Every stage is a repair loop, not one shot: makers edit and re-run the real gate, navigators re-check on fresh facts, and the loop ends on a pass, on no progress, or at a round cap. `plan` proves the runner runs the repo's tests before an agent is paid (a broken environment never passes for a valid RED). One run-wide repair budget caps the spend; a group still failing is paused, and `tdd.mjs resume` writes a continue file from the gate files (no agent, no tokens) that holds a stalled group, stops a broken environment and sets the next budget, so the next run restarts only what is left. |
 | [`zero-trust-review`](skills/zero-trust-review) | Strict review of a branch diff against a 30-point production-hazard checklist, tiered and cost-capped (`quick` / `standard` / `deep`, plus an opt-in `fast` for diffs that are not security-critical). Cites findings as permalinks on the review host (GitLab, GitHub, or git-only). |
@@ -46,12 +48,48 @@ Two standalone hooks that are not part of the plugin. Install steps are in each 
 
 `zero-trust-review` and `paired-agent-tdd` use the same model and effort tiering policy. See `skills/zero-trust-review/tiering.md` and the tiering section of `skills/paired-agent-tdd/SKILL.md`. `qa-sweep` follows it in one session: judgment stays in the session, mechanical steps may go to a low-tier subagent.
 
+## How to use
+
+Skills load by themselves when a prompt matches their description, or by name (`/dev-workflow`, `use the retro skill`). Each skill works on its own; `dev-workflow` only runs the others in order.
+
+### Pick one skill
+
+| You want to | Install | Say, for example |
+| --- | --- | --- |
+| Pin down what "done" means before coding | `definition-of-done` | `Grill me on this feature and write the DoD: <what you want>. Ticket: <link>` |
+| Build a multi-file change test-first | `paired-agent-tdd` + `zero-trust-review` | `Build <feature> with paired-agent-tdd from the DoD in docs/adr/<file>.md` |
+| Review a branch before merge | `zero-trust-review` | `Zero-trust review this branch` or `Grill this PR` (`quick`, `standard` or `deep`) |
+| Find missing or weak tests, no diff needed | `qa-sweep` + `zero-trust-review` + `paired-agent-tdd` | `QA src/billing and add the regression tests it is missing` |
+| See what a branch changed | `branch-summary` | `Summarize this branch` |
+| Decide how to ship agent-written code | `ai-code-delivery` | `How should I flag, review and roll out this change?` |
+| Look back on finished work | `retro` | `Retro of PR #42` or `Retro of the last 7 days` |
+
+### The whole flow
+
+Install all five with the "whole workflow" line in [Install](#install) (or the plugin, which adds the guard hook), then start it from the repo, on a new branch:
+
+```text
+Use dev-workflow for this: <what you want, in a few sentences>. Ticket: <link, if any>.
+```
+
+Add `This is speed work` when the goal is a number (time, size, memory): the run then measures first. It walks the steps below and stops at each gate until that step has its evidence. You answer questions in rounds (each with options A/B and a recommendation), choose a design on the concept board, and approve the ADR, the ticket text and each retro proposal. Nothing merges on its own.
+
+```mermaid
+flowchart LR
+  A[0 facts] --> B[1 DoD grill] --> C[2 concept board] --> D[3 ADR + ticket] --> E[4 TDD + draft PR] --> F[5 verify + review] --> G[6 retro] --> H[merge]
+```
+
+- **Where am I:** `What step is the dev-workflow run on?` (`workflow.mjs status`). In a new session, or after the run folder is gone: `Resume the dev-workflow run for <slug>`; it picks up from the ADR, the PR, `docs/verify/<slug>.md` and the retro log.
+- **Small change:** say `skip the board: <reason>` (for example `skip the board: one-line doc fix`) and the concept board is skipped. Only the board can be skipped; DoD, verify and retro always run.
+- **The guard:** with the plugin installed, `workflow-guard` is on: while a run is open on the branch it denies product-code edits before the ADR and `gh pr merge` / `glab mr merge` before verify and retro. `WORKFLOW_GUARD_ENABLED=false` turns it off; with no open run it blocks nothing.
+
 ## Flags
 
 Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill reads only its own flags. A flag means what it says, or nothing runs: a value outside the allowed list, or an old name that is still set, stops the tool with a message that names the fix. A hook denies every tool call it guards, a CLI exits 2 (the sandbox runner 64), and the pre-commit hook stops the commit. Unset or empty means the default.
 
 | Flag | Values | Default | What it does |
 |---|---|---|---|
+| `WORKFLOW_GUARD_ENABLED` | `true` \| `false` | `true` | dev-workflow guard (`hooks/workflow-guard.mjs`): while a run is open on the branch, no product code before the design is locked and no merge before verify and retro |
 | `DOD_GUARD_ENABLED` | `true` \| `false` | `false` | definition-of-done guard (`hooks/dod-guard.mjs`): no product code and no unapproved ticket write while a DoD session is open |
 | `DOD_ADR_PRECOMMIT_HOOK_ENABLED` | `true` \| `false` | `true` | `dod.mjs adr` installs the git pre-commit hook, and the hook makes ADR `touches` follow committed file moves |
 | `DOD_ADR_TOUCHES_SYNC_ENABLED` | `true` \| `false` | `true` | `hooks/dod-adr-sync.mjs`: ADR `touches` follow the agent's `mv` and `git mv` |
@@ -88,6 +126,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 - Node 22+ (`graph.mjs`, workflow tests, `sandbox-run.mjs`, `testprobe.mjs`) and Python 3 (`triage.py`).
 - `zero-trust-review` states no guess as a fact: findings quote real code, claims carry a proof (code `file:line`, a sandbox run, or real logs/metrics/traces), and `proofcheck.mjs` re-verifies them in plain code. It runs change-request code only inside a sandbox (macOS `sandbox-exec`, Linux `bwrap`, or docker via `ZT_SANDBOX_IMAGE`); with none, probes report `unverifiable` and never run bare.
 - `zero-trust-review` works on any git repo. To read change-request metadata and post comments it uses the host CLI: [`glab`](https://gitlab.com/gitlab-org/cli) for GitLab or [`gh`](https://cli.github.com) for GitHub (per-host commands in `skills/zero-trust-review/hosts.md`); without one it runs git-only and writes the report only. Its Step 0 reads the skill location from `SK` (default `~/.claude/skills/zero-trust-review`); set `SK` if the CLI installed it elsewhere.
+- `dev-workflow` needs Node 22+ and git, and the skills it hands steps to (`definition-of-done`, `paired-agent-tdd`, `zero-trust-review`, `retro`). With `definition-of-done` installed next to it, the DoD gate runs its `dod.mjs check`; otherwise it reads the DoD JSON. It finds the pull request with `gh api` when `gh` is installed, else from `next --pr`.
 - `definition-of-done` needs Node 22+ and git. It writes the ticket with an official CLI (`gh`, `glab`, `acli`) when one is on PATH, a third-party one (`jira`, `linear`) only after you trust it on that machine (`dod.mjs trust`, kept in `~/.config/definition-of-done`), otherwise an MCP connector, otherwise it leaves `docs/dod/<slug>.ticket.md` for you to paste.
 - `retro` needs Node 22+ and git. It reads PR comments and checks with `gh` (or `glab`) when installed, and counts ESLint and ruff rules with the repo's own ESLint (`node_modules/.bin` first) and ruff; a missing linter is a warning locally and a failure in CI. Transcripts are read from `~/.claude/projects` (`CLAUDE_CONFIG_DIR` moves it).
 - `branch-summary` needs Node 22+ to build its HTML report (`build-report.mjs`); the report page loads `marked`, `DOMPurify` and `mermaid` from a CDN.

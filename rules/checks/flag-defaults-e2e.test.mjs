@@ -101,5 +101,5 @@ test('should keep a defaults e2e test for every skill with an ON flag when the c
   const out = JSON.parse(r.stdout);
   assert.deepEqual(out.violations, []);
   assert.equal(r.status, 0);
-  assert.deepEqual(Object.keys(out.skills).sort(), ['definition-of-done', 'paired-agent-tdd', 'qa-sweep', 'retro', 'zero-trust-review']);
+  assert.deepEqual(Object.keys(out.skills).sort(), ['definition-of-done', 'dev-workflow', 'paired-agent-tdd', 'qa-sweep', 'retro', 'zero-trust-review']);
 });

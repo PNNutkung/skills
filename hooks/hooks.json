@@ -24,6 +24,12 @@
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/dod-guard.mjs\"", "timeout": 5 }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/workflow-guard.mjs\"", "timeout": 5 }
+        ]
       }
     ],
     "PostToolUse": [
