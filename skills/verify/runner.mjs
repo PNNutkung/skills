@@ -10,8 +10,9 @@ export function runCommand(cmd, { cwd, env, timeoutSec = Infinity }) {
     const childEnv = { ...env };
     for (const k of DROP_ENV) delete childEnv[k];
     const chunks = [];
-    let timedOut = false, timer = null, settled = false;
-    const finish = r => { if (settled) return; settled = true; if (timer) clearTimeout(timer); done({ ...r, output: Buffer.concat(chunks).toString('utf8') + (r.extra ?? ''), timedOut, seconds: timeoutSec }); };
+    let timedOut = false, timer = null;
+    // 'error' and 'close' can both fire; the promise keeps the first result
+    const finish = r => { clearTimeout(timer); done({ ...r, output: Buffer.concat(chunks).toString('utf8') + (r.extra ?? ''), timedOut, seconds: timeoutSec }); };
     let child;
     try {
       child = spawn('bash', ['-c', cmd], { cwd, env: childEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });

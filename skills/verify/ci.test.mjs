@@ -26,3 +26,8 @@ test('should fail with the gh error and not throw when gh fails or prints bad JS
   assert.match(ciCheck('t', { sha: 's', gh: fake(new Error('HTTP 404')) }).why.join(), /gh api failed: HTTP 404/);
   assert.match(ciCheck('t', { sha: 's', gh: fake('not json') }).why.join(), /gh api failed/);
 });
+
+test('should not pass when gh fails or the named check run is missing (Envs fail)', () => {
+  assert.equal(ciCheck('t', { sha: 's', gh: fake(new Error('HTTP 404')) }).pass, false);
+  assert.equal(ciCheck('t', { sha: 's', gh: fake(runs([{ name: 'other', status: 'completed', conclusion: 'success' }])) }).pass, false);
+});

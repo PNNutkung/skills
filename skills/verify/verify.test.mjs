@@ -3,10 +3,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DEMO_FLAG, SLUG, goodPlan, makeRepo, writeFiles } from './fixture.mjs';
 import { markedSections } from './marker.mjs';
-import { main } from './verify.mjs';
+import { main as cliMain } from './verify.mjs';
+
+// every call checks the printed contract: ok is true exactly when the exit code is 0
+const main = async (argv, deps) => {
+  const r = await cliMain(argv, deps);
+  assert.equal(r.out.ok, r.code === 0, `${argv.join(' ')}: ok ${r.out.ok} with exit ${r.code}`);
+  return r;
+};
 
 const SESSION = 'sess-1';
 const setup = (opts) => {
@@ -96,7 +105,9 @@ test('should show the normalized plan with preset expects when the plan is compl
 
 test('should refuse with every error when the plan misses an item or plan.json is bad (Plan fail)', async () => {
   const s = await opened();
-  assert.match((await s.cli(['plan'])).out.errors[0], /plan\.json/);
+  const missing = await s.cli(['plan']);
+  assert.equal(missing.code, 1);
+  assert.match(missing.out.errors[0], /plan\.json is missing/);
   writeFileSync(join(s.run, 'plan.json'), '{nope');
   assert.equal((await s.cli(['plan'])).code, 1);
   putPlan(s.run, { items: [goodPlan().items[0]] });
@@ -268,4 +279,74 @@ test('should see the repo by its real path when the cwd is a symlinked folder (R
   const r = await main(['open', '--slug', SLUG], { env: s.env, cwd: link });
   assert.equal(r.code, 0, JSON.stringify(r.out));
   assert.equal(r.out.verifyFile, verifyFile(realpathSync(s.repo)));
+});
+
+const CLI = join(dirname(fileURLToPath(import.meta.url)), 'verify.mjs');
+
+test('should find the repo from a subfolder and take a slug that starts with a digit when open runs there (Source edge)', async () => {
+  const s = setup();
+  const r = await main(['open', '--slug', '2nd'], { env: s.env, cwd: join(s.repo, 'docs', 'adr') });
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  assert.equal(r.out.verifyFile, join(realpathSync(s.repo), 'docs', 'verify', '2nd.md'));
+});
+
+test('should read the ADR given with --dod and refuse a --dod that does not exist when open names one (Source edge)', async () => {
+  const s = setup();
+  const r = await s.cli(['open', '--slug', 'other', '--dod', 'docs/adr/0001-demo.md']);
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  assert.deepEqual(r.out.items.map(i => i.id), ['AC1', 'Flag1']);
+  const bad = await s.cli(['open', '--slug', 'other', '--dod', 'docs/adr/none.md']);
+  assert.equal(bad.code, 2);
+  assert.match(bad.out.errors[0], /--dod docs\/adr\/none\.md does not exist/);
+});
+
+test('should find the run by --slug without a session and refuse a bad slug, no repo, no run or an unknown option when status names one (Guard edge)', async () => {
+  const s = await opened();
+  const env = { ...s.env, CLAUDE_CODE_SESSION_ID: '' };
+  const r = await main(['status', '--slug', SLUG], { env, cwd: s.repo });
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  assert.equal(r.out.run, s.run);
+  for (const [argv, re] of [[['status', '--slug', 'Bad Slug'], /--slug: lowercase/], [['status', '--slug', SLUG, '--repo', s.base], /not inside a git repository/],
+    [['status', '--slug', 'ghost'], /no verify run for ghost/], [['status', '--bogus', 'x'], /unknown or incomplete option --bogus/]]) {
+    const bad = await main(argv, { env, cwd: s.repo });
+    assert.equal(bad.code, 2, argv.join(' '));
+    assert.match(bad.out.errors[0], re);
+  }
+});
+
+test('should give each of the three flag runs a third of the cap when the flag runs print long output (FlagRuns edge)', async () => {
+  const s = await opened();
+  writeFiles(s.repo, { 'tool.mjs': `${readFileSync(join(s.repo, 'tool.mjs'), 'utf8')}console.log('y'.repeat(5000));\n` });
+  putPlan(s.run, goodPlan());
+  const r = await s.cli(['run', '--only', 'Flag1']);
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  const md = readFileSync(verifyFile(s.repo), 'utf8');
+  assert.equal(md.match(/the first and last 1283 are kept/g)?.length, 2, 'runs 1 and 2 cut to (8000 / 3 - 100) chars');
+});
+
+test('should refuse record with no --from, accept exit 255, exit 1 on a bad plan and name the verify file when record is called (Envs edge)', async () => {
+  const s = await opened({ booked: '[cloud] here; [nut-wsl] my machine' });
+  const rec = argv => s.cli(['record', ...argv], { stdin: 'ℹ fail 1' });
+  assert.equal((await rec(['--id', 'AC1', '--from', 'x', '--exit', '1'])).code, 1, 'no plan.json');
+  writeFileSync(join(s.run, 'answers.md'), 'A1: yes\n');
+  putPlan(s.run, { items: [{ id: 'AC1', env: 'nut-wsl', run: 'node --test tool.test.mjs', remote: true, approved: 'A1' }, goodPlan().items[1]] });
+  assert.equal((await rec(['--id', 'AC1', '--exit', '0'])).code, 2);
+  const r = await rec(['--id', 'AC1', '--from', 'x', '--exit', '255']);
+  assert.equal(r.code, 1);
+  assert.match(r.out.why.join(), /exit 255, expected 0/);
+  assert.equal(r.out.verifyFile, verifyFile(realpathSync(s.repo)));
+  assert.equal((await rec(['--id', 'Flag1', '--from', 'x', '--exit', '0'])).code, 1, 'a local entry');
+});
+
+test('should read record output from stdin and print usage with exit 2 when the CLI runs as a process (Envs)', async () => {
+  const s = await opened({ booked: '[cloud] here; [nut-wsl] my machine' });
+  writeFileSync(join(s.run, 'answers.md'), 'A1: yes\n');
+  putPlan(s.run, { items: [{ id: 'AC1', env: 'nut-wsl', run: 'node --test tool.test.mjs', remote: true, approved: 'A1' }, goodPlan().items[1]] });
+  const env = { ...s.env, NODE_TEST_CONTEXT: '' };
+  const rec = spawnSync(process.execPath, [CLI, 'record', '--id', 'AC1', '--from', 'x', '--exit', '0'], { cwd: s.repo, env, input: '✔ should x (AC1)\nℹ pass 1\nℹ fail 0\n', encoding: 'utf8', timeout: 20000 });
+  assert.equal(rec.status, 0, rec.stdout + rec.stderr);
+  assert.equal(JSON.parse(rec.stdout).ok, true);
+  const bare = spawnSync(process.execPath, [CLI], { cwd: s.repo, env, encoding: 'utf8', timeout: 20000 });
+  assert.equal(bare.status, 2);
+  assert.match(JSON.parse(bare.stdout).errors[0], /^usage: verify\.mjs open\|claims/);
 });
