@@ -82,3 +82,10 @@ test('should cut output to the first and last half of the cap at 8000 chars when
   assert.equal(capOutput('x'.repeat(8000)), 'x'.repeat(8000));
   assert.match(capOutput('x'.repeat(8001)), /the output was 8001 chars; the first and last 4000 are kept/);
 });
+
+test('should keep the marker hash valid when a failed section carries a why line (Fail, Run)', () => {
+  const s = renderSection({ ...base, result: 'fail', why: 'exit 1, expected 0; no "fail 0" summary line' });
+  const lines = s.split('\n');
+  assert.deepEqual(lines.slice(2, 7), ['env: cloud (local shell)', 'run: node --test a.test.mjs', 'result: fail', 'expect: exit 0', 'why: exit 1, expected 0; no "fail 0" summary line']);
+  assert.equal(markedSections(s).get('AC1').intact, true);
+});

@@ -41,8 +41,10 @@ const call = (fx, tool_name, tool_input, extra = {}) => verdict({ session_id: SE
 const edit = (fx, file_path, old_string, new_string, more = {}) => call(fx, 'Edit', { file_path, old_string, new_string, ...more });
 const write = (fx, file_path, content) => call(fx, 'Write', { file_path, content });
 const bash = (fx, command, extra) => call(fx, 'Bash', { command }, extra);
+// the caller's own VERIFY_* flags must not leak into a test: each test sets the flags it means
+const callerEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('VERIFY_')));
 const hook = (fx, input, envExtra = {}) => {
-  const r = spawnSync(process.execPath, [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), env: { ...process.env, ...fx.env, ...envExtra }, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [HOOK], { input: typeof input === 'string' ? input : JSON.stringify(input), env: { ...callerEnv(), ...fx.env, ...envExtra }, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput : null;
 };
@@ -351,4 +353,17 @@ test('should ignore a session marker whose repo or run is not an absolute path w
       assert.match(write(fx, join(process.cwd(), 'zz-not-written.js'), 'x') ?? '', /verify run demo/, `run ${run}`);
     }
   } finally { fx.done(); }
+});
+
+test('should still deny when the caller shell sets VERIFY_GUARD_ENABLED=false or the timeout flag, because each test sets its own flags (Guard)', () => {
+  const saved = { g: process.env.VERIFY_GUARD_ENABLED, t: process.env.VERIFY_RUN_TIMEOUT_MAX };
+  process.env.VERIFY_GUARD_ENABLED = 'false';
+  process.env.VERIFY_RUN_TIMEOUT_MAX = 'maybe';
+  const fx = fixture();
+  try {
+    assert.match(hook(fx, { session_id: SESSION, cwd: fx.repo, tool_name: 'Edit', tool_input: { file_path: join(fx.repo, 'src', 'app.js'), old_string: 'a', new_string: 'b' } })?.permissionDecision ?? '', /deny/);
+  } finally {
+    for (const [k, v] of [['VERIFY_GUARD_ENABLED', saved.g], ['VERIFY_RUN_TIMEOUT_MAX', saved.t]]) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    fx.done();
+  }
 });

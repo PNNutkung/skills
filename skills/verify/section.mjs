@@ -17,11 +17,12 @@ export function capOutput(text, cap = CAP) {
 const fenceSafe = s => s.split('\n').map(l => (l.startsWith(FENCE) ? ` ${l}` : l)).join('\n');
 const oneLine = s => String(s ?? '').replace(/\s*\n\s*/g, ' ').trim();
 
-/** One section: heading, marker, env/run/result/expect/image lines and the output block. Ends with a blank line. */
-export function renderSection({ id, env, run, result, expect, image, output }) {
+/** One section: heading, marker, env/run/result/expect/image/why lines and the output block. Ends with a blank line. */
+export function renderSection({ id, env, run, result, expect, image, why, output }) {
   const lines = [`env: ${oneLine(env)}`, `run: ${oneLine(run)}`, `result: ${oneLine(result)}`];
   if (expect) lines.push(`expect: ${oneLine(expect)}`);
   if (image) lines.push(`image: ${oneLine(image)}`);
+  if (why) lines.push(`why: ${oneLine(why)}`); // inside the hashed body, so a failed section stays intact
   lines.push(FENCE, fenceSafe(capOutput(output).replace(/\n+$/, '')), FENCE);
   const body = `${lines.join('\n')}\n`;
   return `## ${id}\n${markerLine(body)}\n${body}\n`;

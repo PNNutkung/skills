@@ -197,10 +197,9 @@ async function runLocal(e, { env, timeoutSec }, repo) {
 }
 
 function section(e, { env, run, pass, why, output, result }) {
-  const lines = { id: e.id, env, run, result: result ?? (pass ? RESULT.pass : RESULT.fail), expect: e.expectLine, image: e.image, output };
-  const text = renderSection(lines);
-  // why: is only on a failed item, after expect:/image:, before the output block
-  return pass || result ? text : text.replace(/\n```\n/, `\nwhy: ${why.join('; ').replace(/\n/g, ' ')}\n\`\`\`\n`);
+  const failed = !pass && !result;
+  // why: only on a failed item; renderSection puts it inside the hashed body
+  return renderSection({ id: e.id, env, run, result: result ?? (pass ? RESULT.pass : RESULT.fail), expect: e.expectLine, image: e.image, why: failed ? why.join('; ') : undefined, output });
 }
 
 function writeSections(ctx, c, sections) {
