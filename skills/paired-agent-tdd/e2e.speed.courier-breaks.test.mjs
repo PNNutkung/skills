@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GROUPS, SPEED_ENV, done, only, runWith } from './test-e2e-speed.mjs';
 
-test('pcourier: a fixer of group a that breaks group b and still reports its own gate ok: the courier is skipped and verify reports the run not done', async () => {
+test('should skip the courier and have verify report the run not done when a fixer of group a breaks group b and still reports its own gate ok (pcourier)', async () => {
   const BREAKS_B = `slugify() {\n  [ $# -ge 1 ] || { echo 'text is required' >&2; return 1; }\n  if [ "$1" = 'hello, world' ]; then printf hello_world; return 0; fi\n  s=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-*//; s/-*$//')\n  printf '%s' "$s" | cut -c1-"\${2:-40}" | sed 's/-*$//'\n}\n`;
   const r = await runWith(only(SPEED_ENV.courierSkip), ({ put, exec, cmdOf, GREEN_ANY }) => ({
     fixer: (gid, p) => {

@@ -6,18 +6,28 @@ import { join } from 'node:path';
 import { HERE } from './test-e2e-run.mjs';
 import { inWorker, runWithInWorker } from './test-e2e-speed.mjs';
 
-// The 9 tests of the three files before the split (ADR 0007 A4): names unchanged, none dropped.
-const NAMES = [
-  'fcompat: every speed flag off runs the v2.0.0 pipeline: four agents a group, a courier, the reviewer after the integration tester',
-  'vmeasure: all flags on against all off: fewer agents and hops; prints agent count, critical-path hops and gate wall-clock',
-  'fcompat: with truly every flag off (PTDD and ZT) the whole run is the v2.0.0 path end to end: same agents, no speed key, no head run, no baseline reuse, no courier skip',
-  'pmode: PTDD_PIPELINE_MODE=fast alone gives the group with no after one tdd-driver and one navigator over both gates',
-  'pquick: PTDD_QUICK_DRIVER_GATE_ENABLED alone makes each driver\'s middle GREEN run quick (no mutants); the navigator\'s run mutates',
-  'preuse, pvreuse: PTDD_GATE_REUSE_ENABLED alone lets each navigator reuse its driver\'s last full run (flake check re-run) and verify reuse the courier\'s final',
-  'pcourier: PTDD_COURIER_SKIP_ENABLED alone spawns no courier when the fixer reports its gate ok; verify is the check',
-  'pparrev: PTDD_PARALLEL_REVIEW_ENABLED alone runs the integration tester and the reviewer at the same time; the reviewer leaves the integration file out',
-  'pcourier: a fixer of group a that breaks group b and still reports its own gate ok: the courier is skipped and verify reports the run not done',
-];
+// The 9 tests kept their assertions when they moved to one file each (ADR 0007); they were renamed to the should ... when ... shape (A14). old name -> new name
+const RENAMED = {
+  'fcompat: every speed flag off runs the v2.0.0 pipeline: four agents a group, a courier, the reviewer after the integration tester':
+    'should run the v2.0.0 pipeline (four agents a group, a courier, the reviewer after the integration tester) when every speed flag is off (fcompat)',
+  'vmeasure: all flags on against all off: fewer agents and hops; prints agent count, critical-path hops and gate wall-clock':
+    'should use fewer agents and hops, and print agent count, critical-path hops and gate wall-clock, when all flags are on against all off (vmeasure)',
+  'fcompat: with truly every flag off (PTDD and ZT) the whole run is the v2.0.0 path end to end: same agents, no speed key, no head run, no baseline reuse, no courier skip':
+    'should run the v2.0.0 path end to end (same agents, no speed key, no head run, no baseline reuse, no courier skip) when truly every flag of PTDD and ZT is off (fcompat)',
+  'pmode: PTDD_PIPELINE_MODE=fast alone gives the group with no after one tdd-driver and one navigator over both gates':
+    'should give the group with no after one tdd-driver and one navigator over both gates when PTDD_PIPELINE_MODE=fast is set alone (pmode)',
+  'pquick: PTDD_QUICK_DRIVER_GATE_ENABLED alone makes each driver\'s middle GREEN run quick (no mutants); the navigator\'s run mutates':
+    "should make each driver's middle GREEN run quick (no mutants) while the navigator's run mutates when PTDD_QUICK_DRIVER_GATE_ENABLED is on alone (pquick)",
+  'preuse, pvreuse: PTDD_GATE_REUSE_ENABLED alone lets each navigator reuse its driver\'s last full run (flake check re-run) and verify reuse the courier\'s final':
+    "should let each navigator reuse its driver's last full run (flake check re-run) and verify reuse the courier's final when PTDD_GATE_REUSE_ENABLED is on alone (preuse, pvreuse)",
+  'pcourier: PTDD_COURIER_SKIP_ENABLED alone spawns no courier when the fixer reports its gate ok; verify is the check':
+    'should spawn no courier and leave verify as the check when PTDD_COURIER_SKIP_ENABLED is on alone and the fixer reports its gate ok (pcourier)',
+  'pparrev: PTDD_PARALLEL_REVIEW_ENABLED alone runs the integration tester and the reviewer at the same time; the reviewer leaves the integration file out':
+    'should run the integration tester and the reviewer at the same time, the reviewer leaving the integration file out, when PTDD_PARALLEL_REVIEW_ENABLED is on alone (pparrev)',
+  'pcourier: a fixer of group a that breaks group b and still reports its own gate ok: the courier is skipped and verify reports the run not done':
+    'should skip the courier and have verify report the run not done when a fixer of group a breaks group b and still reports its own gate ok (pcourier)',
+};
+const NAMES = Object.values(RENAMED);
 const speedFiles = () => readdirSync(HERE).filter(n => /^e2e\.speed.*\.test\.mjs$/.test(n)).sort().map(name => ({ name, src: readFileSync(join(HERE, name), 'utf8') }));
 const count = (src, re) => (src.match(re) ?? []).length;
 const dataUrl = js => new URL(`data:text/javascript,${encodeURIComponent(js)}`);

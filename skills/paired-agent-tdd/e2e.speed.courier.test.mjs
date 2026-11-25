@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SPEED_ENV, done, only, runWith } from './test-e2e-speed.mjs';
 
-test('pcourier: PTDD_COURIER_SKIP_ENABLED alone spawns no courier when the fixer reports its gate ok; verify is the check', async () => {
+test('should spawn no courier and leave verify as the check when PTDD_COURIER_SKIP_ENABLED is on alone and the fixer reports its gate ok (pcourier)', async () => {
   const r = await runWith(only(SPEED_ENV.courierSkip));
   done(r);
   assert.deepEqual([r.labels.filter(l => /^final-verifier/.test(l)), r.out.courierSkipped, r.out.verified], [[], true, null]);

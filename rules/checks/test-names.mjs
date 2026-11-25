@@ -16,18 +16,9 @@ const PY_DEF = /^\+\s*(?:async\s+)?def\s+(test_\w*)\s*\(/;
 export const JS_TITLE = /^should\s+\S.*\s+when\s+\S.*$/;
 export const PY_NAME = /^test_should_[a-z0-9]+(?:_[a-z0-9]+)*_when_[a-z0-9]+(?:_[a-z0-9]+)*$/;
 
-// A test name on one diff line of `file`, or null.
-const nameOf = (file, raw) => (JS_FILE.test(file) && JS_CASE.exec(raw)?.[2]) || (PY_FILE.test(file) && PY_DEF.exec(raw)?.[1]) || null;
-
-// The added tests in a unified diff whose names break the rule: [{ file, line, name }]. A name the same diff removes from a test file was moved, not added.
+// The added tests in a unified diff whose names break the rule: [{ file, line, name }].
 export function badNames(diff) {
-  const out = [], moved = new Set();
-  let from = null;
-  for (const raw of diff.split('\n')) {
-    const f = /^--- (?:a\/)?(.*)$/.exec(raw);
-    if (f) from = f[1];
-    else if (from && raw.startsWith('-')) moved.add(nameOf(from, `+${raw.slice(1)}`));
-  }
+  const out = [];
   let file = null, line = 0;
   for (const raw of diff.split('\n')) {
     const f = /^\+\+\+ (?:b\/)?(.*)$/.exec(raw);
@@ -36,8 +27,10 @@ export function badNames(diff) {
     if (h) { line = Number(h[1]); continue; }
     if (!file || raw.startsWith('---')) continue;
     if (raw.startsWith('+')) {
-      const name = nameOf(file, raw);
-      if (name && !moved.has(name) && !(JS_FILE.test(file) ? JS_TITLE : PY_NAME).test(name)) out.push({ file, line, name });
+      const js = JS_FILE.test(file) && JS_CASE.exec(raw);
+      const py = PY_FILE.test(file) && PY_DEF.exec(raw);
+      if (js && !JS_TITLE.test(js[2])) out.push({ file, line, name: js[2] });
+      if (py && !PY_NAME.test(py[1])) out.push({ file, line, name: py[1] });
       line++;
     } else if (!raw.startsWith('-')) line++;
   }
@@ -56,7 +49,7 @@ function main(argv) {
   let diff;
   try {
     const mb = git('merge-base', base, 'HEAD').trim();
-    diff = git('diff', '--unified=0', '--no-color', '--no-ext-diff', '--diff-filter=AMRD', mb);
+    diff = git('diff', '--unified=0', '--no-color', '--no-ext-diff', '--diff-filter=AMR', mb);
     for (const file of git('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(f => JS_FILE.test(f) || PY_FILE.test(f))) {
       const lines = readFileSync(join(root, file), 'utf8').split('\n');
       diff += `+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}\n`;

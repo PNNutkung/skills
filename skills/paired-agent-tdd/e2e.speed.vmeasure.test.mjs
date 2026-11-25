@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ON_ENV, SPEED_OFF_ENV, done, runWithInWorker } from './test-e2e-speed.mjs';
 
-test('vmeasure: all flags on against all off: fewer agents and hops; prints agent count, critical-path hops and gate wall-clock', async () => {
+test('should use fewer agents and hops, and print agent count, critical-path hops and gate wall-clock, when all flags are on against all off (vmeasure)', async () => {
   const [off, on] = await Promise.all([runWithInWorker(SPEED_OFF_ENV), runWithInWorker(ON_ENV)]); // two worker threads: about one run of wall time
   done(on);
   const row = (name, r) => `${name.padEnd(8)} agents ${String(r.agents).padStart(2)}  critical-path hops ${String(r.hops).padStart(2)}  gate wall-clock ${(r.gateTotal / 1000).toFixed(2)} s (${Object.entries(r.gateMs).map(([k, v]) => `${k} ${(v / 1000).toFixed(2)}`).join(', ')})`;

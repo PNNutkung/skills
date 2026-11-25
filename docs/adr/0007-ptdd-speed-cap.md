@@ -208,9 +208,40 @@ Recommended: A
 Answer: A (confirm as written)
 Trade-off accepted: a later change needs the ADR rewritten
 
+### A13: Post the new #30 description (ticket-new.md)?
+
+Context: render wrote the DoD as a checklist and kept every original sentence under Previous notes; ticket-check passed.
+Options considered (the agent's analysis when the question was asked):
+- (A) post it as attached
+  - pro: the issue matches the DoD and can be ticked at verify
+  - con: the original text moves to the end
+- (B) change it first
+  - pro: exact wording
+  - con: one more round
+Recommended: A
+Answer: A (post it as attached)
+Trade-off accepted: the original text moves to the end
+
+### A14: Keep the rules/checks/test-names.mjs change (outside the ADR touches)?
+
+Context: moving the 9 legacy-named tests into new files made `test-names.mjs --base origin/main` flag all 9 as new names; the fix treats a name the same diff removes from a test file as moved (diff includes deleted files), with tests.
+Options considered (the agent's analysis when the question was asked):
+- (A) keep it in this PR and add the path to the ADR touches
+  - pro: CI passes, and later test moves benefit
+  - con: the PR grows a little
+- (B) rename the 9 tests to the should ... when ... shape
+  - pro: the check is not touched
+  - con: goes against A4 (same names)
+- (C) move the check fix to a separate PR first
+  - pro: one topic per PR
+  - con: this PR waits for that one
+Recommended: A
+Answer: B (rename the 9 tests to the should ... when ... shape)
+Trade-off accepted: goes against A4 (same names)
+
 ## Consequences
 
-The 9 e2e.speed tests move to one file each (`e2e.speed.<mode>.test.mjs`), names and assertions unchanged; the vmeasure test runs its all-off and all-on runs side by side in two worker threads (the worker entry lives in `test-e2e-speed.mjs`). `node --test` spreads the files over the cores, so each file holds about one run of wall time. `rules/checks/test-time.mjs` also prints a warning for any file over `CHECKS_TEST_FILE_WARN_SECONDS_MAX` (default 20 s) so the next creep shows up before the cap fails. The 120 s suite cap is left to a new issue.
+The 9 e2e.speed tests move to one file each (`e2e.speed.<mode>.test.mjs`) with their assertions unchanged; the vmeasure test runs its all-off and all-on runs side by side in two worker threads (the worker entry lives in `test-e2e-speed.mjs`). `node --test` spreads the files over the cores, so each file holds about one run of wall time. Moving them made `rules/checks/test-names.mjs` see 9 added legacy names, so they are renamed to the `should ... when ...` shape (A14) and keep their old tag, such as `(pcourier)`, at the end; `test-e2e-speed.test.mjs` keeps the old name -> new name map. `rules/checks/test-time.mjs` also prints a warning for any file over `CHECKS_TEST_FILE_WARN_SECONDS_MAX` (default 20 s) so the next creep shows up before the cap fails. The 120 s suite cap is left to #33.
 
 Trade-offs we accepted:
 
@@ -226,13 +257,15 @@ Trade-offs we accepted:
 - A10: test-e2e-run.mjs is shared; a change there touches 5 other files' runs
 - A11: 9 files instead of 3, one small worker helper
 - A12: a later change needs the ADR rewritten
+- A13: the original text moves to the end
+- A14: goes against A4 (same names)
 
 ## Definition of done
 
-<!-- dod: written by dod.mjs adr; do not edit; sha256:8941f96ca57eeb8b -->
+<!-- dod: written by dod.mjs adr; do not edit; sha256:5239515dff5b466a -->
 
 - [ ] Under20 (happy, fail, edge): every skills/paired-agent-tdd/e2e.speed*.test.mjs file takes at most 20 s in test-time.jsonl on the node 24 ubuntu CI job, on the PR's first run and on 2 reruns (A1)
-- [ ] SameTests (happy, fail): the same 9 e2e.speed test names with the same assertions run before and after; none is removed, skipped or merged (A4)
+- [ ] SameTests (happy, fail): the same 9 e2e.speed tests with the same assertions run before and after, renamed to the should ... when ... shape (old name -> new name kept in test-e2e-speed.test.mjs); none is removed, skipped or merged (A14)
 - [ ] NoSkip (happy): the per-file and suite caps stay 30 s and 120 s, and no test is skipped (T1)
 - [ ] WarnFlag (happy, fail, edge): rules/checks/test-time.mjs prints a warning (exit code unchanged) for each file over CHECKS_TEST_FILE_WARN_SECONDS_MAX, default 20; unlimited turns it off; a value that is not a whole number above 0 or unlimited exits 2 with the fix (A3)
 - [ ] FlagDoc (happy): the README flags table and rules/performance.md list CHECKS_TEST_FILE_WARN_SECONDS_MAX with its default (A3)

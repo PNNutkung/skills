@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SPEED_ENV, done, only, runWith } from './test-e2e-speed.mjs';
 
-test('pparrev: PTDD_PARALLEL_REVIEW_ENABLED alone runs the integration tester and the reviewer at the same time; the reviewer leaves the integration file out', async () => {
+test('should run the integration tester and the reviewer at the same time, the reviewer leaving the integration file out, when PTDD_PARALLEL_REVIEW_ENABLED is on alone (pparrev)', async () => {
   const r = await runWith(only(SPEED_ENV.parallelReview));
   done(r);
   const at = e => r.events.indexOf(e);

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SPEED_ENV, done, only, runWith } from './test-e2e-speed.mjs';
 
-test('preuse, pvreuse: PTDD_GATE_REUSE_ENABLED alone lets each navigator reuse its driver\'s last full run (flake check re-run) and verify reuse the courier\'s final', async () => {
+test("should let each navigator reuse its driver's last full run (flake check re-run) and verify reuse the courier's final when PTDD_GATE_REUSE_ENABLED is on alone (preuse, pvreuse)", async () => {
   const r = await runWith(only(SPEED_ENV.gateReuse));
   done(r);
   const nav = r.outputs.filter(([k]) => k === 'green-nav');

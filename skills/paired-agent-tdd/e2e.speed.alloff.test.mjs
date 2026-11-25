@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ALL_OFF_ENV, done, runWithJs } from './test-e2e-speed.mjs';
 
-test('fcompat: with truly every flag off (PTDD and ZT) the whole run is the v2.0.0 path end to end: same agents, no speed key, no head run, no baseline reuse, no courier skip', async () => {
+test('should run the v2.0.0 path end to end (same agents, no speed key, no head run, no baseline reuse, no courier skip) when truly every flag of PTDD and ZT is off (fcompat)', async () => {
   const r = await runWithJs(ALL_OFF_ENV); // the JS fixture: it asserts that every navigator GREEN gate mutated
   done(r);
   assert.equal('speed' in r.ARGS, false);

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SPEED_ENV, done, only, runWith } from './test-e2e-speed.mjs';
 
-test('pmode: PTDD_PIPELINE_MODE=fast alone gives the group with no after one tdd-driver and one navigator over both gates', async () => {
+test('should give the group with no after one tdd-driver and one navigator over both gates when PTDD_PIPELINE_MODE=fast is set alone (pmode)', async () => {
   const r = await runWith(only(SPEED_ENV.pipeline));
   done(r);
   assert.deepEqual(r.labels.filter(l => /^(red|green|tdd)-\S+:a$/.test(l)), ['tdd-driver:a', 'green-navigator:a']);

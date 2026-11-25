@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SPEED_ENV, done, only, runWithJs } from './test-e2e-speed.mjs';
 
-test('pquick: PTDD_QUICK_DRIVER_GATE_ENABLED alone makes each driver\'s middle GREEN run quick (no mutants); the navigator\'s run mutates', async () => {
+test("should make each driver's middle GREEN run quick (no mutants) while the navigator's run mutates when PTDD_QUICK_DRIVER_GATE_ENABLED is on alone (pquick)", async () => {
   const r = await runWithJs(only(SPEED_ENV.quickDriverGate)); // the JS fixture: it asserts that the navigator's run mutates
   done(r);
   const quick = r.outputs.filter(([k]) => k === 'green-quick');

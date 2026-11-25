@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SPEED_OFF_ENV, done, runWith } from './test-e2e-speed.mjs';
 
-test('fcompat: every speed flag off runs the v2.0.0 pipeline: four agents a group, a courier, the reviewer after the integration tester', async () => {
+test('should run the v2.0.0 pipeline (four agents a group, a courier, the reviewer after the integration tester) when every speed flag is off (fcompat)', async () => {
   const r = await runWith(SPEED_OFF_ENV);
   done(r);
   assert.equal('speed' in r.ARGS, false);
