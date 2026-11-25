@@ -118,3 +118,11 @@ test('should find the flag error only on a line that names the flag and the bad 
     assert.equal(flagErrorShown(out, 'DEMO_X_ENABLED', 'maybe'), false, out);
   }
 });
+
+test('should refuse a must-fail entry with no expect and accept one with an expect when the plan names an exit other than 0 (ExpectLint)', () => {
+  for (const run of ['node --test a.test.mjs', 'npm test', 'false', 'node a.mjs']) {
+    assert.match(lintExpect({ id: 'X', run, exit: 1 }).join(), /X: exit 1 is a must-fail check: add expect with the error line only this failure prints/, run);
+    assert.deepEqual(lintExpect({ id: 'X', run, exit: 1, expect: 'X_ENABLED=maybe is not valid' }), [], run);
+  }
+  assert.deepEqual(lintExpect({ id: 'X', run: 'node a.mjs', exit: 0 }), []);
+});

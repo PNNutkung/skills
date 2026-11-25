@@ -68,6 +68,8 @@ export function lintExpect(entry) {
   const errors = [];
   if (preset?.verbose && !VERBOSE_RE.test(run)) errors.push(`${id}: ${preset.label} needs -v so each passing test is listed with its name`);
   if (e.kind === 'none') {
+    // any crash exits non-zero, so a must-fail check without its error line passes on the wrong failure
+    if (wantExit(entry) !== 0) errors.push(`${id}: exit ${wantExit(entry)} is a must-fail check: add expect with the error line only this failure prints`);
     if (!preset && TEST_LIKE_RE.test(run)) errors.push(`${id}: "${run}" looks like a test run but has no expect and no preset runner: add expect with a line only a real pass prints (for example the passed count)`);
     return errors;
   }

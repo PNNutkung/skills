@@ -84,7 +84,7 @@ test('should refuse an exit that is not a whole number from 0 to 255 when the pl
 });
 
 test('should accept exit 0 and exit 255 when the plan names a must-pass or must-fail code (Expect edge)', () => {
-  for (const exit of [0, 255]) assert.equal(checkPlan({ items: [good.items[0], { id: 'AC2', env: 'ci', run: 'node a.mjs', exit }] }, ctx).ok, true, String(exit));
+  for (const exit of [0, 255]) assert.equal(checkPlan({ items: [good.items[0], { id: 'AC2', env: 'ci', run: 'node a.mjs', exit, expect: 'failed: no input' }] }, ctx).ok, true, String(exit));
 });
 
 test('should refuse an entry with no id and not throw when an entry is an object without id or not an object (Plan edge)', () => {
