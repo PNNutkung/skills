@@ -5,14 +5,15 @@
 //             writes one JSON line per test file, {"file": <path from the cwd>, "ms": <the file's wall time>}, and one for the run, {"suite": <ms>}
 //   check     node rules/checks/test-time.mjs test-time.jsonl
 //             fails when a file took longer than CHECKS_TEST_FILE_SECONDS_MAX (default 30) or the run longer than CHECKS_TEST_SUITE_SECONDS_MAX
-//             (default 120); `unlimited` turns a cap off. Prints one JSON line. Exit 0 ok, 1 over a cap, 2 usage error, no timings, or a flag
-//             value that is not valid.
+//             (default 120); `unlimited` turns a cap off. Warns (stderr, a GitHub annotation; the exit code does not change) for each file over
+//             CHECKS_TEST_FILE_WARN_SECONDS_MAX (default 20, `unlimited` turns it off). Prints one JSON line. Exit 0 ok, 1 over a cap, 2 usage error,
+//             no timings, or a flag value that is not valid.
 import { readFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const FLAG = { file: 'CHECKS_TEST_FILE_SECONDS_MAX', suite: 'CHECKS_TEST_SUITE_SECONDS_MAX' };
-export const DEFAULT_SECONDS = { file: 30, suite: 120 };
+export const FLAG = { file: 'CHECKS_TEST_FILE_SECONDS_MAX', suite: 'CHECKS_TEST_SUITE_SECONDS_MAX', fileWarn: 'CHECKS_TEST_FILE_WARN_SECONDS_MAX' };
+export const DEFAULT_SECONDS = { file: 30, suite: 120, fileWarn: 20 };
 export class FlagError extends Error {}
 
 /** NAME_MAX: a whole number above 0, or unlimited (null); dflt when unset or empty. Anything else throws a FlagError naming the fix. */
@@ -24,9 +25,9 @@ function secondsMax(env, name, dflt) {
   throw new FlagError(`${name}=${env[name]} is not valid: use a whole number of seconds above 0, or unlimited`);
 }
 
-/** -> { file, suite }: seconds, or null for no cap. */
+/** -> { file, suite, fileWarn }: seconds, or null for no cap (no warning). */
 export function readCaps(env = process.env) {
-  return { file: secondsMax(env, FLAG.file, DEFAULT_SECONDS.file), suite: secondsMax(env, FLAG.suite, DEFAULT_SECONDS.suite) };
+  return Object.fromEntries(Object.keys(FLAG).map(k => [k, secondsMax(env, FLAG[k], DEFAULT_SECONDS[k])]));
 }
 
 // The test runner reports each test file as a top-level test named after the file; its duration is the file's wall time.
@@ -55,15 +56,22 @@ export function parseTimings(text) {
   return { files, suiteMs };
 }
 
-/** -> { ok, over: [{ file|suite, sec, max }], slowest: top 5 files, suiteSec } */
+/** -> { ok, over: [{ file|suite, sec, max }], warn: [{ file, sec, max }] (files over caps.fileWarn; never fails), slowest: top 5 files, suiteSec } */
 export function checkTimings({ files, suiteMs }, caps) {
   const sec = ms => Math.round(ms / 100) / 10;
   const over = [];
   for (const f of files) if (caps.file !== null && f.ms > caps.file * 1000) over.push({ file: f.file, sec: sec(f.ms), max: caps.file });
   if (suiteMs !== null && caps.suite !== null && suiteMs > caps.suite * 1000) over.push({ suite: true, sec: sec(suiteMs), max: caps.suite });
+  const warn = caps.fileWarn === null ? [] : files.filter(f => f.ms > caps.fileWarn * 1000).map(f => ({ file: f.file, sec: sec(f.ms), max: caps.fileWarn }));
   const slowest = [...files].sort((a, b) => b.ms - a.ms).slice(0, 5).map(f => ({ file: f.file, sec: sec(f.ms) }));
-  return { ok: over.length === 0, over, slowest, suiteSec: suiteMs === null ? null : sec(suiteMs) };
+  return { ok: over.length === 0, over, warn, slowest, suiteSec: suiteMs === null ? null : sec(suiteMs) };
 }
+
+/** One GitHub Actions warning annotation per warned file (shown in the CI UI). */
+// GitHub workflow-command escaping (@actions/core): data escapes %, CR, LF; a property value also escapes : and ,.
+const escapeData = v => String(v).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+const escapeProperty = v => escapeData(v).replace(/:/g, '%3A').replace(/,/g, '%2C');
+export const warnLines = (warn, caps) => warn.map(w => `::warning file=${escapeProperty(w.file)}::${escapeData(w.file)} took ${w.sec} s, over the warn level of ${w.max} s (${caps.file === null ? 'no cap' : `cap ${caps.file} s`})`);
 
 /** The check CLI: argv after the script, env -> { code, out } */
 export function main(argv, env = process.env) {
@@ -78,6 +86,7 @@ export function main(argv, env = process.env) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { code, out } = main(process.argv.slice(2));
+  for (const line of warnLines(out.warn ?? [], out.caps ?? {})) console.error(line);
   console.log(JSON.stringify(out));
   process.exitCode = code;
 }

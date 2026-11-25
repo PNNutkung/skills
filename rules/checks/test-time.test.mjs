@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_SECONDS, FLAG, FlagError, checkTimings, main, parseTimings, readCaps } from './test-time.mjs';
+import { DEFAULT_SECONDS, FLAG, FlagError, checkTimings, main, parseTimings, readCaps, warnLines } from './test-time.mjs';
 
 const CHECK = join(dirname(fileURLToPath(import.meta.url)), 'test-time.mjs');
 const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
@@ -14,18 +14,21 @@ const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
 const withoutTestContext = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'NODE_TEST_CONTEXT'));
 const tmp = t => { const d = mkdtempSync(join(tmpdir(), 'tt-')); t.after(() => rmSync(d, { recursive: true, force: true })); return d; };
 const cli = (args, env = {}) => {
-  const r = spawnSync(process.execPath, [CHECK, ...args], { encoding: 'utf8', env: { ...process.env, [FLAG.file]: '', [FLAG.suite]: '', ...env } });
-  return { code: r.status, out: JSON.parse(r.stdout.trim().split('\n').pop()) };
+  const r = spawnSync(process.execPath, [CHECK, ...args], { encoding: 'utf8', env: { ...process.env, [FLAG.file]: '', [FLAG.suite]: '', [FLAG.fileWarn]: '', ...env } });
+  return { code: r.status, out: JSON.parse(r.stdout.trim().split('\n').pop()), stderr: r.stderr };
 };
+const CAPS = { file: 30, suite: 120, fileWarn: 20 };
 
-test('should use 30 s per file and 120 s for the suite when no flag is set', () => {
-  assert.deepEqual(readCaps({}), { file: 30, suite: 120 });
-  assert.deepEqual(DEFAULT_SECONDS, { file: 30, suite: 120 });
+test('should use 30 s per file, 120 s for the suite and warn over 20 s a file when no flag is set', () => {
+  assert.deepEqual(readCaps({}), { file: 30, suite: 120, fileWarn: 20 });
+  assert.deepEqual(DEFAULT_SECONDS, { file: 30, suite: 120, fileWarn: 20 });
+  assert.equal(FLAG.fileWarn, 'CHECKS_TEST_FILE_WARN_SECONDS_MAX');
 });
 
 test('should read a number, unlimited in any case, and an empty value as the default when the flags are set', () => {
-  assert.deepEqual(readCaps({ [FLAG.file]: ' 45 ', [FLAG.suite]: 'Unlimited' }), { file: 45, suite: null });
-  assert.deepEqual(readCaps({ [FLAG.file]: '', [FLAG.suite]: '  ' }), { file: 30, suite: 120 });
+  assert.deepEqual(readCaps({ [FLAG.file]: ' 45 ', [FLAG.suite]: 'Unlimited', [FLAG.fileWarn]: 'UNLIMITED' }), { file: 45, suite: null, fileWarn: null });
+  assert.deepEqual(readCaps({ [FLAG.file]: '', [FLAG.suite]: '  ', [FLAG.fileWarn]: '' }), { file: 30, suite: 120, fileWarn: 20 });
+  assert.equal(readCaps({ [FLAG.fileWarn]: '15' }).fileWarn, 15);
 });
 
 test('should throw a FlagError naming the fix when a flag value is not valid', () => {
@@ -33,6 +36,38 @@ test('should throw a FlagError naming the fix when a flag value is not valid', (
     assert.throws(() => readCaps({ [FLAG.file]: v }), e => e instanceof FlagError && e.message.includes(`${FLAG.file}=${v} is not valid`), v);
     assert.throws(() => readCaps({ [FLAG.suite]: v }), FlagError, v);
   }
+  for (const v of ['0', '-1', '1.5', 'abc', ' 20x']) assert.throws(() => readCaps({ [FLAG.fileWarn]: v }), e => e instanceof FlagError && e.message.includes(`${FLAG.fileWarn}=${v} is not valid`), v);
+});
+
+test('should never throw anything but a FlagError when the warn level is random (WarnFlag fuzz)', () => {
+  const chars = 'aZ09 -_.+eUnLiMiTeDก\0\n';
+  for (let i = 0; i < 500; i++) {
+    const v = Array.from({ length: i % 9 }, (_, j) => chars[(i * 7 + j * 13) % chars.length]).join('');
+    let w;
+    try { w = readCaps({ [FLAG.fileWarn]: v }).fileWarn; } catch (e) { assert.ok(e instanceof FlagError, String(e)); continue; }
+    assert.ok(w === null || (Number.isInteger(w) && w > 0), JSON.stringify([v, w]));
+    assert.equal(w, !v.trim() ? 20 : v.trim().toLowerCase() === 'unlimited' ? null : Number(v.trim()), JSON.stringify(v));
+  }
+});
+
+test('should warn about a file over the warn level and not one at it when every file is under the cap', () => {
+  const t = parseTimings(jsonl([{ file: 'at.test.mjs', ms: 20000 }, { file: 'over.test.mjs', ms: 20100 }, { file: 'cap.test.mjs', ms: 31000 }]));
+  const r = checkTimings(t, CAPS);
+  assert.deepEqual(r.warn, [{ file: 'over.test.mjs', sec: 20.1, max: 20 }, { file: 'cap.test.mjs', sec: 31, max: 20 }]);
+  assert.deepEqual(checkTimings(parseTimings(jsonl([{ file: 'just.test.mjs', ms: 20001 }])), CAPS).warn, [{ file: 'just.test.mjs', sec: 20, max: 20 }], 'one ms over is over');
+  assert.deepEqual(checkTimings(t, { ...CAPS, file: null }).ok, true, 'a warning never fails the check');
+  assert.deepEqual(checkTimings(t, { ...CAPS, fileWarn: null }).warn, [], 'unlimited turns the warning off');
+  assert.deepEqual(warnLines(r.warn, CAPS), [
+    '::warning file=over.test.mjs::over.test.mjs took 20.1 s, over the warn level of 20 s (cap 30 s)',
+    '::warning file=cap.test.mjs::cap.test.mjs took 31 s, over the warn level of 20 s (cap 30 s)',
+  ]);
+  assert.match(warnLines(r.warn, { ...CAPS, file: null })[0], /over the warn level of 20 s \(no cap\)$/);
+});
+
+test('should escape the file name the way GitHub reads workflow commands when it holds %, :, a comma or a line break (WarnFlag)', () => {
+  const [line] = warnLines([{ file: 'a%b::c,d\n::error::x.test.mjs', sec: 21, max: 20 }], CAPS);
+  assert.equal(line, '::warning file=a%25b%3A%3Ac%2Cd%0A%3A%3Aerror%3A%3Ax.test.mjs::a%25b::c,d%0A::error::x.test.mjs took 21 s, over the warn level of 20 s (cap 30 s)');
+  assert.equal(line.split('\n').length, 1, 'one line, so the name cannot start its own command');
 });
 
 test('should pass and list the slowest files when every file and the suite are under their caps', () => {
@@ -67,12 +102,35 @@ test('should exit 0, 1 or 2 when the CLI reads timings under the caps, over a ca
   const over = cli([f]);
   assert.equal(over.code, 1);
   assert.deepEqual(over.out.over, [{ file: 'a.test.mjs', sec: 31, max: 30 }]);
-  assert.deepEqual(over.out.caps, { file: 30, suite: 120 });
+  assert.deepEqual(over.out.caps, CAPS);
   assert.equal(cli([f], { [FLAG.file]: '40' }).code, 0);
   assert.equal(cli([f], { [FLAG.file]: 'unlimited' }).code, 0);
   const bad = cli([f], { [FLAG.suite]: 'fast' });
   assert.equal(bad.code, 2);
   assert.match(bad.out.error, /CHECKS_TEST_SUITE_SECONDS_MAX=fast is not valid/);
+});
+
+test('should exit 0 with a warning on stderr when a file is over the warn level, and 1 when another is over the cap', t => {
+  const d = tmp(t), warnOnly = join(d, 'w.jsonl'), both = join(d, 'b.jsonl');
+  writeFileSync(warnOnly, jsonl([{ file: 'a.test.mjs', ms: 25000 }, { file: 'b.test.mjs', ms: 1000 }, { suite: 40000 }]));
+  const w = cli([warnOnly]);
+  assert.equal(w.code, 0, w.stderr);
+  assert.equal(w.out.ok, true);
+  assert.deepEqual(w.out.warn, [{ file: 'a.test.mjs', sec: 25, max: 20 }]);
+  assert.deepEqual(w.out.caps, CAPS);
+  assert.equal(w.stderr, '::warning file=a.test.mjs::a.test.mjs took 25 s, over the warn level of 20 s (cap 30 s)\n');
+  const off = cli([warnOnly], { [FLAG.fileWarn]: 'unlimited' });
+  assert.deepEqual([off.code, off.out.warn, off.stderr], [0, [], '']);
+  writeFileSync(both, jsonl([{ file: 'a.test.mjs', ms: 25000 }, { file: 'slow.test.mjs', ms: 31000 }, { suite: 40000 }]));
+  const b = cli([both]);
+  assert.equal(b.code, 1);
+  assert.deepEqual(b.out.over, [{ file: 'slow.test.mjs', sec: 31, max: 30 }]);
+  assert.equal(b.out.warn.length, 2);
+  for (const v of ['0', '-1', '1.5', 'abc', ' 20x']) {
+    const bad = cli([warnOnly], { [FLAG.fileWarn]: v });
+    assert.equal(bad.code, 2, v);
+    assert.ok(bad.out.error.includes(`${FLAG.fileWarn}=${v} is not valid: use a whole number of seconds above 0, or unlimited`), bad.out.error);
+  }
 });
 
 test('should exit 2 when the timings file is missing, empty or the arguments are wrong', t => {

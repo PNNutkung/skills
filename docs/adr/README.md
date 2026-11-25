@@ -9,4 +9,5 @@
 | [4](0004-dev-workflow.md) | Dev workflow | Accepted | `skills/dev-workflow/**`, `hooks/workflow-guard.mjs`, `hooks/workflow-guard.test.mjs`, `hooks/hooks.json`, `README.md`, `rules/README.md`, `.claude-plugin/*.json`, `docs/adr/**` |
 | [5](0005-verify-env-check.md) | Verify env check | Accepted | `skills/dev-workflow/**`, `README.md`, `.claude-plugin/*.json`, `docs/**` |
 | [6](0006-branch-summary-split.md) | Branch summary split | Accepted | `skills/branch-summary/**`, `README.md`, `.claude-plugin/plugin.json` |
+| [7](0007-ptdd-speed-cap.md) | Ptdd speed cap | Accepted | `skills/paired-agent-tdd/e2e.speed*.test.mjs`, `skills/paired-agent-tdd/test-e2e-speed.mjs`, `skills/paired-agent-tdd/test-e2e-run.mjs`, `rules/checks/test-time.mjs`, `rules/checks/test-time.test.mjs`, `rules/performance.md`, `README.md`, `docs/**` |
 <!-- /adr-index -->
