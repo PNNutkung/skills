@@ -392,7 +392,7 @@ test('should allow a hand edit when the file already had a duplicate heading of 
 test('should check the script of a shell run with any -c flag cluster, of eval and of shells nested three deep when a run is open (Guard)', () => {
   const fx = fixture();
   try {
-    for (const c of [`bash -lc "echo x > src/app.js"`, `sh -ec 'rm src/app.js'`, `bash -xc 'touch src/n.js'`, `zsh -c -l 'rm src/app.js'`, `eval "echo x > src/app.js"`, `eval rm src/app.js`,
+    for (const c of [`bash -lc "echo x > src/app.js"`, `sh -ec 'rm src/app.js'`, `bash -xc 'touch src/n.js'`, `zsh -c -l 'rm src/app.js'`, `eval "echo x > src/app.js"`, `eval rm src/app.js`, `bash -o posix -c 'rm src/app.js'`,
       `bash -c "bash -c 'bash -c \\"rm src/app.js\\"'"`, `eval "bash -lc 'eval rm src/app.js'"`]) assert.match(bash(fx, c) ?? '', /verify run demo is open/, c);
     const nest = (n, inner) => (n ? nest(n - 1, `bash -c "${inner.replace(/[\\"]/g, '\\$&')}"`) : inner);
     assert.equal(bash(fx, nest(4, 'ls')), null, 'four levels are read');
