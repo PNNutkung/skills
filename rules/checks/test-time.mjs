@@ -68,7 +68,10 @@ export function checkTimings({ files, suiteMs }, caps) {
 }
 
 /** One GitHub Actions warning annotation per warned file (shown in the CI UI). */
-export const warnLines = (warn, caps) => warn.map(w => `::warning file=${w.file}::${w.file} took ${w.sec} s, over the warn level of ${w.max} s (${caps.file === null ? 'no cap' : `cap ${caps.file} s`})`);
+// GitHub workflow-command escaping (@actions/core): data escapes %, CR, LF; a property value also escapes : and ,.
+const escapeData = v => String(v).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+const escapeProperty = v => escapeData(v).replace(/:/g, '%3A').replace(/,/g, '%2C');
+export const warnLines = (warn, caps) => warn.map(w => `::warning file=${escapeProperty(w.file)}::${escapeData(w.file)} took ${w.sec} s, over the warn level of ${w.max} s (${caps.file === null ? 'no cap' : `cap ${caps.file} s`})`);
 
 /** The check CLI: argv after the script, env -> { code, out } */
 export function main(argv, env = process.env) {

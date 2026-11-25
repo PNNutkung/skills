@@ -64,6 +64,12 @@ test('should warn about a file over the warn level and not one at it when every 
   assert.match(warnLines(r.warn, { ...CAPS, file: null })[0], /over the warn level of 20 s \(no cap\)$/);
 });
 
+test('should escape the file name the way GitHub reads workflow commands when it holds %, :, a comma or a line break (WarnFlag)', () => {
+  const [line] = warnLines([{ file: 'a%b::c,d\n::error::x.test.mjs', sec: 21, max: 20 }], CAPS);
+  assert.equal(line, '::warning file=a%25b%3A%3Ac%2Cd%0A%3A%3Aerror%3A%3Ax.test.mjs::a%25b::c,d%0A::error::x.test.mjs took 21 s, over the warn level of 20 s (cap 30 s)');
+  assert.equal(line.split('\n').length, 1, 'one line, so the name cannot start its own command');
+});
+
 test('should pass and list the slowest files when every file and the suite are under their caps', () => {
   const r = checkTimings(parseTimings(jsonl([{ file: 'a.test.mjs', ms: 1000 }, { file: 'b.test.mjs', ms: 29999 }, { suite: 90000 }])), { file: 30, suite: 120 });
   assert.equal(r.ok, true);

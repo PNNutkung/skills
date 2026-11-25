@@ -30,6 +30,12 @@ const RENAMED = {
 const NAMES = Object.values(RENAMED);
 const speedFiles = () => readdirSync(HERE).filter(n => /^e2e\.speed.*\.test\.mjs$/.test(n)).sort().map(name => ({ name, src: readFileSync(join(HERE, name), 'utf8') }));
 const count = (src, re) => (src.match(re) ?? []).length;
+// Runs in the main thread share it (spawnSync blocks), so a second runWith/runWithJs call is a second run of wall time however it is awaited.
+const layoutProblems = src => [
+  ...(count(src, /\brunWith(?:Js)?\(/g) > 1 ? ['more than one runWith/runWithJs call: they run one after another'] : []),
+  ...(count(src, /\bawait\s+runWithInWorker\(/g) ? ['runWithInWorker awaited alone: run the workers side by side, inside Promise.all'] : []),
+  ...(/runWithInWorker\(/.test(src) && /\brunWith(?:Js)?\(/.test(src) ? ['a main-thread run next to the worker runs'] : []),
+];
 const dataUrl = js => new URL(`data:text/javascript,${encodeURIComponent(js)}`);
 
 test('should hold one top-level test and at most one scripted run awaited in turn when an e2e.speed file is read', () => {
@@ -37,10 +43,19 @@ test('should hold one top-level test and at most one scripted run awaited in tur
   assert.equal(files.length, NAMES.length, files.map(f => f.name).join(', '));
   for (const { name, src } of files) {
     assert.equal(count(src, /^test\(/gm), 1, name);
-    assert.ok(count(src, /\bawait\s+runWith(?:Js)?\(/g) <= 1, `${name}: more than one run awaited one after another`);
-    assert.equal(count(src, /\bawait\s+runWithInWorker\(/g), 0, `${name}: runWithInWorker runs side by side, inside Promise.all`);
-    if (/runWithInWorker\(/.test(src)) assert.equal(count(src, /\bawait\s+runWith(?:Js)?\(/g), 0, `${name}: a run in turn next to the worker runs`);
+    assert.deepEqual(layoutProblems(src), [], name);
   }
+});
+
+test('should name a problem when a file starts two main-thread runs or awaits one worker run alone, and none for the real layouts', () => {
+  for (const bad of [
+    'const [a, b] = await Promise.all([runWith(A), runWith(B)]);',
+    'const r = runWith(A); const s = await runWithJs(B); await r;',
+    'const a = await runWithInWorker(A);',
+    'const [a, b] = await Promise.all([runWithInWorker(A), runWithInWorker(B)]); const c = await runWith(C);',
+  ]) assert.notDeepEqual(layoutProblems(bad), [], bad);
+  for (const good of ['const r = await runWith(ONLY);', 'const r = await runWithJs(ONLY, tweak);', 'const [a, b] = await Promise.all([runWithInWorker(A), runWithInWorker(B)]);'])
+    assert.deepEqual(layoutProblems(good), [], good);
 });
 
 test('should run the same 9 test names as before the split when the names of every e2e.speed file are put together', () => {
