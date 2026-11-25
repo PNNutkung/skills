@@ -91,3 +91,8 @@ test('should refuse an entry with no id and not throw when an entry is an object
   assert.match(errs({ items: [...good.items, { env: 'cloud', run: 'node a.mjs' }] }), /\{"env":"cloud","run":"node a.mjs"\} has no id/);
   assert.match(errs({ items: [...good.items, null] }), /entry null has no id/);
 });
+
+test('should accept a flag name with digits 2 to 9 when the flag entry names one (FlagRuns edge)', () => {
+  const r = checkPlan({ items: [{ id: 'AC1', env: 'cloud', run: 'node --test a.test.mjs', flag: { name: 'V2_ENABLED', default: true } }, good.items[1]] }, { ...ctx, newFlags: ['V2_ENABLED'] });
+  assert.equal(r.ok, true, r.errors.join());
+});

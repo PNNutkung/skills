@@ -75,3 +75,10 @@ test('should keep the blank lines after a replaced section and end it with one n
   assert.equal(mergeSections('# t\n\n## AC1\nold\n\n\n## B\nb\n', [renderSection(base)], 'x'), `# t\n\n${s}\n\n\n## B\nb\n`);
   assert.equal(mergeSections('# t\n\n## AC1\nold', [renderSection(base)], 'x'), `# t\n\n${s}\n`);
 });
+
+test('should cut output to the first and last half of the cap at 8000 chars when it is over the cap (Run edge)', () => {
+  assert.equal(capOutput('abcdefghij', 4), 'ab\n... [cut: the output was 10 chars; the first and last 2 are kept] ...\nij');
+  assert.equal(CAP, 8000);
+  assert.equal(capOutput('x'.repeat(8000)), 'x'.repeat(8000));
+  assert.match(capOutput('x'.repeat(8001)), /the output was 8001 chars; the first and last 4000 are kept/);
+});

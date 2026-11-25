@@ -55,3 +55,7 @@ test('should refuse a claim with no answer, a missing answer, a bad id or a dupl
   assert.match(r.errors.join('\n'), /C3: no text/);
   assert.match(claimItems({}, {}).errors.join(), /must be a JSON array/);
 });
+
+test('should list an option with digits 2 to 9 when the diff adds one (Source edge)', () => {
+  assert.deepEqual(candidatesFromDiff('+++ b/cli.mjs\n+if (args.includes("--x9-mode")) run();\n').options, [{ name: '--x9-mode', file: 'cli.mjs' }]);
+});

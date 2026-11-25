@@ -312,3 +312,43 @@ test('should allow an empty file path and use the repo as cwd when the payload c
     for (const cwd of ['src', 5]) assert.match(bash(fx, 'echo x > src/app.js', { cwd }) ?? '', /verify run demo/, String(cwd));
   } finally { fx.done(); }
 });
+
+test('should deny a write hidden behind a variable, a wrapper, a second command or two nested shells when a run is open (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    for (const c of ['FOO=1 rm src/app.js', 'env rm src/app.js', 'cat x; rm src/app.js', 'git --version; rm src/app.js', 'bash -c; rm src/app.js',
+      `bash -c 'bash -c "rm -rf src"'`]) assert.match(bash(fx, c) ?? '', /verify run demo/, c);
+    assert.equal(bash(fx, 'git reset HEAD src/app.js'), null, 'reset without --hard keeps the work tree');
+  } finally { fx.done(); }
+});
+
+test('should deny writing a verify file with one code-written section and allow overwriting one with none when a run is open (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    writeFileSync(join(fx.repo, 'docs', 'verify', 'one.md'), `# Verify: one\n\n${sec('AC1', AC1)}`);
+    writeFileSync(join(fx.repo, 'docs', 'verify', 'notes.md'), '# notes by hand\n');
+    assert.match(bash(fx, 'rm docs/verify/one.md') ?? '', /one\.md/);
+    assert.equal(bash(fx, 'echo x > docs/verify/notes.md'), null);
+  } finally { fx.done(); }
+});
+
+test('should allow a hand edit after a code-written section when the verify file starts with that section (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    writeFileSync(fx.verifyFile, `${sec('AC1', AC1)}## NOTE\nhand text\n`);
+    assert.equal(edit(fx, fx.verifyFile, 'hand text', 'more hand text'), null);
+  } finally { fx.done(); }
+});
+
+test('should ignore a session marker whose repo or run is not an absolute path when it was written by hand (Guard edge)', () => {
+  const fx = fixture();
+  const marker = join(fx.env.VERIFY_CACHE_DIR, 'sessions', `${SESSION}.json`);
+  try {
+    writeFileSync(marker, JSON.stringify({ repo: '.', run: fx.run, slug: 'demo' }));
+    assert.equal(write(fx, join(process.cwd(), 'zz-not-written.js'), 'x'), null, 'a relative repo');
+    for (const run of [5, '.']) {
+      writeFileSync(marker, JSON.stringify({ repo: process.cwd(), run, slug: 'demo' }));
+      assert.match(write(fx, join(process.cwd(), 'zz-not-written.js'), 'x') ?? '', /verify run demo/, `run ${run}`);
+    }
+  } finally { fx.done(); }
+});

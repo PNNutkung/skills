@@ -58,3 +58,9 @@ test('should take the four-digit number from the ADR file name when it has one (
 test('should list a flag once with its digits when the text names it twice and it has digits 2 to 9 (FlagRuns edge)', () => {
   assert.deepEqual(flagNames('add V2_ENABLED and V2_ENABLED again, and API9_MAX'), ['V2_ENABLED', 'API9_MAX']);
 });
+
+test('should read items right below the heading and a flag removed at the start when the ADR is that short (Source edge)', () => {
+  assert.deepEqual(adrItems('## Definition of done\n- [ ] Plan (happy): x'), [{ id: 'Plan', text: '(happy): x' }]);
+  assert.deepEqual(flagNames('no OLD_ENABLED, add NEW_ENABLED'), ['NEW_ENABLED']);
+  assert.deepEqual(bookedEnvs('- verify env: [2nd-box] and [cloud]'), ['2nd-box', 'cloud']);
+});

@@ -93,3 +93,17 @@ test('should describe only the exit and the text when the expect is plain text o
   assert.equal(describeExpect({ id: 'X', run: 'node a.mjs', exit: 2 }), 'exit 2');
   assert.equal(describeExpect({ id: 'X', run: 'node a.mjs', expect: '/saved \\d+/' }), 'exit 0; regex /saved \\d+/');
 });
+
+test('should pass a run with exactly one passing test and fail one whose item line did not pass when pytest, vitest or jest ran (Presets edge)', () => {
+  assert.equal(ok({ id: 'Plan', run: 'pytest -v' }, 't.py::test_plan PASSED\n=== 1 passed in 0.1s ===').pass, true);
+  assert.equal(ok({ id: 'Plan', run: 'npx vitest run' }, ' ✓ should x (Plan)\n      Tests  1 passed (1)').pass, true);
+  assert.equal(ok({ id: 'Plan', run: 'npx jest' }, ' ✓ should x (Plan)\nTests:       1 passed, 1 total').pass, true);
+  assert.equal(ok({ id: 'Plan', run: 'pytest -v' }, 't.py::test_other PASSED\nt.py::test_plan SKIPPED\n=== 1 passed, 1 skipped ===').pass, false);
+  assert.equal(ok({ id: 'Plan', run: 'npx vitest run' }, ' ✓ should other\n ↓ should x (Plan)\n      Tests  1 passed | 1 skipped (2)').pass, false);
+});
+
+test('should skip the preset checks when a preset command must fail with the exit code the plan names (Presets edge)', () => {
+  const e = { id: 'Plan', run: 'node --test bad.test.mjs', exit: 1 };
+  assert.equal(ok(e, 'ℹ tests 1\nℹ pass 0\nℹ fail 1\n', 1).pass, true);
+  assert.equal(describeExpect(e), 'exit 1');
+});
