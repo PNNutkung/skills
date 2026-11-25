@@ -151,8 +151,8 @@ function bashVerdict(command, cwd, r, depth = 0) {
   for (const p of mods.writeTargets(command)) { const why = check(p); if (why) return why; }
   for (const t of commands(mods.stripHeredocs(command))) {
     const c = t.indexOf('-c');
-    if (SHELLS.has(basename(t[0])) && c > 0 && t[c + 1] && depth < MAX_SHELL_DEPTH) {
-      const why = bashVerdict(t[c + 1], cwd, r, depth + 1);
+    if (SHELLS.has(basename(t[0])) && c > 0 && depth < MAX_SHELL_DEPTH) {
+      const why = bashVerdict(t[c + 1] ?? '', cwd, r, depth + 1); // `bash -c` with no script: nothing to check
       if (why) return why;
     }
     const why = gitWrite(t, cwd, r.repo) ?? removedPaths(t).map(check).find(Boolean);
