@@ -59,3 +59,19 @@ test('should replace a hand-written section of the same id and keep a file with 
   const again = mergeSections('# t', [renderSection(base)], 'x');
   assert.ok(again.startsWith('# t\n\n## AC1\n'));
 });
+
+test('should keep output of exactly the cap length whole when it is not over the cap (Run edge)', () => {
+  assert.equal(capOutput('abcd', 4), 'abcd');
+  assert.match(capOutput('abcde', 4), /\[cut: the output was 5 chars/);
+});
+
+test('should replace the section in place when the file starts with that section (Rerun edge)', () => {
+  const merged = mergeSections(renderSection({ ...base, output: 'old ✔' }), [renderSection({ ...base, output: 'new ✔' })], 'x');
+  assert.equal(merged, renderSection({ ...base, output: 'new ✔' }));
+});
+
+test('should keep the blank lines after a replaced section and end it with one newline when the old one had none (Rerun edge)', () => {
+  const s = renderSection(base).trimEnd();
+  assert.equal(mergeSections('# t\n\n## AC1\nold\n\n\n## B\nb\n', [renderSection(base)], 'x'), `# t\n\n${s}\n\n\n## B\nb\n`);
+  assert.equal(mergeSections('# t\n\n## AC1\nold', [renderSection(base)], 'x'), `# t\n\n${s}\n`);
+});

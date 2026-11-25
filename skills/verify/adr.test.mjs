@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { adrItems, adrNumber, bookedEnvs, newFlags, parseAnswers } from './adr.mjs';
+import { adrItems, adrNumber, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
 
 const ADR = `---
 dod: demo
@@ -53,4 +53,8 @@ test('should read A<n> answers over several lines and stop at time: when answers
 test('should take the four-digit number from the ADR file name when it has one (Run edge)', () => {
   assert.equal(adrNumber('/r/docs/adr/0008-verify-skill.md'), '0008');
   assert.equal(adrNumber('/r/notes.md'), null);
+});
+
+test('should list a flag once with its digits when the text names it twice and it has digits 2 to 9 (FlagRuns edge)', () => {
+  assert.deepEqual(flagNames('add V2_ENABLED and V2_ENABLED again, and API9_MAX'), ['V2_ENABLED', 'API9_MAX']);
 });

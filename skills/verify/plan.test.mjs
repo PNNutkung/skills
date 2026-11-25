@@ -82,3 +82,12 @@ test('should refuse an entry with no command, ci, remote or accepted answer and 
 test('should refuse an exit that is not a whole number from 0 to 255 when the plan names one (Expect edge)', () => {
   assert.match(errs({ items: [good.items[0], { id: 'AC2', env: 'ci', run: 'node a.mjs', exit: 'x' }] }), /exit must be a whole number/);
 });
+
+test('should accept exit 0 and exit 255 when the plan names a must-pass or must-fail code (Expect edge)', () => {
+  for (const exit of [0, 255]) assert.equal(checkPlan({ items: [good.items[0], { id: 'AC2', env: 'ci', run: 'node a.mjs', exit }] }, ctx).ok, true, String(exit));
+});
+
+test('should refuse an entry with no id and not throw when an entry is an object without id or not an object (Plan edge)', () => {
+  assert.match(errs({ items: [...good.items, { env: 'cloud', run: 'node a.mjs' }] }), /\{"env":"cloud","run":"node a.mjs"\} has no id/);
+  assert.match(errs({ items: [...good.items, null] }), /entry null has no id/);
+});

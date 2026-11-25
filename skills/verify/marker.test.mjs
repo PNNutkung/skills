@@ -85,3 +85,8 @@ test('should never throw and never call a changed body intact when the input is 
     assert.equal(markedSections(good).get('AC1')?.intact, true, JSON.stringify(body));
   }
 });
+
+test('should split an empty file into no parts when the text is empty (Rerun edge)', () => {
+  assert.deepEqual(splitSections(''), []);
+  assert.deepEqual(splitSections('## A\n'), [{ id: 'A', text: '## A\n' }]);
+});

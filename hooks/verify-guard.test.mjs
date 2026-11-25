@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -261,5 +261,54 @@ test('should never throw and always name the close command when the tool input i
       }
     }
     assert.ok(write(fx, fx.verifyFile, VERIFY_MD) === null, 'the unchanged file is allowed');
+  } finally { fx.done(); }
+});
+
+test('should deny a write to a new file through a symlink to the repo when the path does not exist yet (Guard)', () => {
+  const fx = fixture();
+  try {
+    const link = join(fx.base, 'link');
+    symlinkSync(fx.repo, link);
+    assert.match(write(fx, join(link, 'src', 'new', 'deep.js'), 'x') ?? '', /verify run demo/);
+    assert.match(bash(fx, `echo x > ${join(link, 'src', 'new.js')}`) ?? '', /verify run demo/);
+  } finally { fx.done(); }
+});
+
+test('should check a command that only names the verify CLI as an argument when it is not node running it (Guard)', () => {
+  const fx = fixture();
+  try {
+    mkdirSync(join(fx.repo, 'skills', 'verify'), { recursive: true });
+    writeFileSync(join(fx.repo, 'skills', 'verify', 'verify.mjs'), '');
+    assert.match(bash(fx, 'rm skills/verify/verify.mjs') ?? '', /verify run demo/);
+    fx.env.VERIFY_GUARD_ENABLED = 'maybe';
+    assert.match(bash(fx, 'node x.mjs') ?? '', /VERIFY_GUARD_ENABLED=maybe/, 'plain node is not the verify CLI');
+  } finally { fx.done(); }
+});
+
+test('should allow git stash list and show and recurse only into a shell -c when a run is open (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    for (const c of ['git stash list', 'git stash show -p', 'grep -c "rm src/app.js" log.txt', 'python -c "git push"']) assert.equal(bash(fx, c), null, c);
+    assert.match(bash(fx, 'git stash push -m x') ?? '', /git stash changes the repo/);
+  } finally { fx.done(); }
+});
+
+test('should allow writes into a run folder inside the repo when the marker names it (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    const run = join(fx.repo, '.cache', 'demo');
+    mkdirSync(run, { recursive: true });
+    writeFileSync(join(fx.env.VERIFY_CACHE_DIR, 'sessions', `${SESSION}.json`), JSON.stringify({ run, repo: fx.repo, slug: 'demo' }));
+    assert.equal(write(fx, join(run, 'out.txt'), 'x'), null);
+    assert.equal(bash(fx, `echo x > ${join(run, 'out.txt')}`), null);
+    assert.match(write(fx, join(fx.repo, '.cache', 'other.txt'), 'x') ?? '', /verify run demo/);
+  } finally { fx.done(); }
+});
+
+test('should allow an empty file path and use the repo as cwd when the payload cwd is relative or not a string (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    assert.equal(write(fx, '', 'x'), null, 'the tool fails by itself on an empty path');
+    for (const cwd of ['src', 5]) assert.match(bash(fx, 'echo x > src/app.js', { cwd }) ?? '', /verify run demo/, String(cwd));
   } finally { fx.done(); }
 });

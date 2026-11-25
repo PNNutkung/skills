@@ -87,3 +87,9 @@ test('should parse text and /regex/flags and report a bad regex when the expect 
   assert.equal(parseExpect(undefined).kind, 'none');
   assert.ok(parseExpect('/[/').error);
 });
+
+test('should describe only the exit and the text when the expect is plain text or absent (Expect)', () => {
+  assert.equal(describeExpect({ id: 'X', run: 'node a.mjs', expect: 'saved 3 rows' }), 'exit 0; text "saved 3 rows"');
+  assert.equal(describeExpect({ id: 'X', run: 'node a.mjs', exit: 2 }), 'exit 2');
+  assert.equal(describeExpect({ id: 'X', run: 'node a.mjs', expect: '/saved \\d+/' }), 'exit 0; regex /saved \\d+/');
+});
