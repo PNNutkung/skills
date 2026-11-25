@@ -251,6 +251,7 @@ async function run(v, ctx, deps) {
 function record(v, ctx, { stdin }) {
   if (!v.id || !v.from) throw new Usage('record needs --id ID --from "<how it was run>" --exit N [--file OUT]');
   if (!/^\d{1,3}$/.test(String(v.exit ?? '')) || Number(v.exit) > 255) throw new Usage('--exit must be the exit code, 0 to 255');
+  if (/[()\r\n]/.test(v.from)) throw new Usage('--from: one line with no parentheses, naming where the command ran (the env line is "<env> (relayed: <from>)")');
   const { c, r } = checked(ctx);
   if (!r.ok) return { code: 1, out: { ok: false, errors: r.errors, needsAsk: r.needsAsk } };
   const e = r.entries.find(x => x.id === v.id);

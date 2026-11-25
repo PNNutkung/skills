@@ -53,8 +53,14 @@ export function checkPlan(plan, { items = [], booked = [], newFlags = [], answer
     }
     entries.push({ ...e, kind, expectLine: describeExpect(e) });
   }
+  const envOf = e => String(e.env ?? '').trim().toLowerCase();
+  // a local run's env is this session's machine: an entry there is run by verify.mjs, never relayed by hand through record
+  for (const e of entries.filter(x => x.kind === KIND.remote)) {
+    const local = entries.find(x => x.kind === KIND.run && envOf(x) === envOf(e));
+    if (local) errors.push(`${e.id}: env "${e.env}" is where this session runs commands (${local.id} runs there): run it with verify.mjs run, not remote`);
+  }
   for (const { id } of items) if (!seen.has(id)) errors.push(`${id}: no plan entry`);
-  for (const n of booked) if (!entries.some(e => String(e.env).trim().toLowerCase() === n)) errors.push(`booked env [${n}] has no entry: plan at least one item there`);
+  for (const n of booked) if (!entries.some(e => envOf(e) === n)) errors.push(`booked env [${n}] has no entry: plan at least one item there`);
   for (const f of newFlags) if (!entries.some(e => e.flag?.name === f)) errors.push(`new flag ${f} has no entry with flag: { name: "${f}", default } (flag runs always happen)`);
   return { ok: errors.length === 0, errors, entries, needsAsk };
 }

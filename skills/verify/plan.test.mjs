@@ -96,3 +96,12 @@ test('should accept a flag name with digits 2 to 9 when the flag entry names one
   const r = checkPlan({ items: [{ id: 'AC1', env: 'cloud', run: 'node --test a.test.mjs', flag: { name: 'V2_ENABLED', default: true } }, good.items[1]] }, { ...ctx, newFlags: ['V2_ENABLED'] });
   assert.equal(r.ok, true, r.errors.join());
 });
+
+test('should refuse a remote entry when its env is the env of a local run entry in the same plan (Envs, Ask)', () => {
+  const remote = { id: 'AC2', env: 'Cloud ', run: 'node --test a.test.mjs', remote: true, approved: 'A4' };
+  const r = checkPlan({ items: [good.items[0], remote] }, ctx);
+  assert.equal(r.ok, false);
+  assert.match(r.errors.join(), /AC2: env "Cloud " is where this session runs commands \(AC1 runs there\): run it with verify\.mjs run, not remote/);
+  assert.equal(checkPlan({ items: [{ ...good.items[0], env: 'ci' }, { ...remote, env: 'cloud' }] }, ctx).ok, true, 'no local run there');
+  assert.equal(checkPlan({ items: [{ id: 'AC1', env: 'cloud', ci: 'test' }, remote] }, { ...ctx, booked: ['cloud'] }).ok, true, 'a ci entry is not a local run');
+});

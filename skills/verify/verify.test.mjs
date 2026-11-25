@@ -377,3 +377,15 @@ test('should fail a flag entry when the invalid run names the flag only in a tes
   assert.equal(r.code, 1, JSON.stringify(r.out));
   assert.match(r.out.failed[0].why.join(), /3\/3 .*no line outside the test results names DEMO_X_ENABLED with maybe/);
 });
+
+test('should refuse record when --from holds a parenthesis or a line break, so the env line stays <env> (relayed: <from>) (Envs edge)', async () => {
+  const s = await opened({ booked: '[cloud] here; [nut-wsl] my machine' });
+  writeFileSync(join(s.run, 'answers.md'), 'A1: yes, run it on my machine\n');
+  putPlan(s.run, { items: [{ id: 'AC1', env: 'nut-wsl', run: 'node --test tool.test.mjs', remote: true, approved: 'A1' }, goodPlan().items[1]] });
+  for (const from of ['x) (local shell', 'a\nenv: cloud']) {
+    const r = await s.cli(['record', '--id', 'AC1', '--from', from, '--exit', '0'], { stdin: '✔ should print x when the tool runs (AC1)\nℹ pass 1\nℹ fail 0\n' });
+    assert.equal(r.code, 2, from);
+    assert.match(r.out.errors.join(), /--from: one line with no parentheses/);
+  }
+  assert.equal(existsSync(verifyFile(s.repo)), false);
+});

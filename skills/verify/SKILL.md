@@ -47,7 +47,7 @@ Write `<run>/plan.json`, one entry per item:
 ]}
 ```
 
-- **Kinds.** `run` runs in the local shell (the env this session is in). `ci` reads the check run of that name on HEAD. `remote: true` is run elsewhere and recorded. `accepted` is the user's answer, for a check with no command.
+- **Kinds.** `run` runs in the local shell (the env this session is in). `ci` reads the check run of that name on HEAD. `remote: true` is run elsewhere and recorded; its env must not be the env of a `run` entry (that is this session's machine, so `run` runs it there). `accepted` is the user's answer, for a check with no command.
 - **Expect.** A run passes when it exits 0 (or the `exit` the entry names, for a must-fail check) and, when `expect` is given, its output contains that text or matches that `/regex/flags`. A must-fail check needs an `expect` with the error line only that failure prints; the plan check refuses one without.
 - **Presets.** For `node --test`, `pytest -v`, `vitest`, `jest` and `go test -v` (also through `npx` / `npm exec`) code fills the expect: no failures, at least one test passed, and a passing test's name contains the item id as a word. Name tests with the id, like `should export rows when asked (AC1)`. An expect you add to a preset command must hold too.
 - **Weak expects are refused.** A test-looking command (`test`, `spec`, `e2e`, `check` in it) with no preset and no expect, a bare word (`ok`, `pass`, `passed`, `done`, `success`, `true`, `✔`), or a pattern that matches empty output. Quote a line only a real pass prints.
@@ -81,7 +81,7 @@ A failing item is written as `result: fail` with a `why:` line and its output; t
 
 ## 5. Record a remote run
 
-Run the command where the user allowed it (Remote Control, a device shell), then pass its output in: `node "$SK/verify.mjs" record --id AC4 --from "Remote Control on nut-wsl" --exit 0 --file out.txt` (or on stdin). Code judges it by the same rules and writes `env: nut-wsl (relayed: Remote Control on nut-wsl)`.
+Run the command where the user allowed it (Remote Control, a device shell), then pass its output in: `node "$SK/verify.mjs" record --id AC4 --from "Remote Control on nut-wsl" --exit 0 --file out.txt` (or on stdin). Code judges it by the same rules and writes `env: nut-wsl (relayed: Remote Control on nut-wsl)`. `record` takes only a `remote` entry, and `--from` is one line with no parentheses.
 
 ## 6. Status and close
 
