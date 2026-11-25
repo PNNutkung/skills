@@ -3,10 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEMO_FLAG, SLUG, goodPlan, makeRepo, writeFiles } from './fixture.mjs';
+import { DEMO_FLAG, SLUG, TOOL, goodPlan, makeRepo, writeFiles } from './fixture.mjs';
 import { markedSections } from './marker.mjs';
 import { main as cliMain } from './verify.mjs';
 
@@ -26,6 +26,14 @@ const setup = (opts) => {
 };
 const opened = async (opts) => {
   const s = setup(opts);
+  const r = await s.cli(['open', '--slug', SLUG]);
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  return { ...s, run: r.out.run, open: r.out };
+};
+// product files changed after open fail the run (snapshot.mjs), so a test that needs other product code writes it first
+const openedWith = async (files) => {
+  const s = setup();
+  writeFiles(s.repo, files);
   const r = await s.cli(['open', '--slug', SLUG]);
   assert.equal(r.code, 0, JSON.stringify(r.out));
   return { ...s, run: r.out.run, open: r.out };
@@ -133,8 +141,7 @@ test('should run each item and write its section from the real run when the plan
 });
 
 test('should fail a flag entry when the invalid value does not exit non-zero naming the flag (FlagRuns fail)', async () => {
-  const s = await opened();
-  writeFiles(s.repo, { 'tool.mjs': "console.log('x=' + (process.env.DEMO_X_ENABLED !== 'false'));\n" });
+  const s = await openedWith({ 'tool.mjs': "console.log('x=' + (process.env.DEMO_X_ENABLED !== 'false'));\n" });
   putPlan(s.run, goodPlan());
   const r = await s.cli(['run', '--only', 'Flag1']);
   assert.equal(r.code, 1);
@@ -315,8 +322,7 @@ test('should find the run by --slug without a session and refuse a bad slug, no 
 });
 
 test('should give each of the three flag runs a third of the cap when the flag runs print long output (FlagRuns edge)', async () => {
-  const s = await opened();
-  writeFiles(s.repo, { 'tool.mjs': `${readFileSync(join(s.repo, 'tool.mjs'), 'utf8')}console.log('y'.repeat(5000));\n` });
+  const s = await openedWith({ 'tool.mjs': `${TOOL}console.log('y'.repeat(5000));\n` });
   putPlan(s.run, goodPlan());
   const r = await s.cli(['run', '--only', 'Flag1']);
   assert.equal(r.code, 0, JSON.stringify(r.out));
@@ -367,8 +373,7 @@ test('should report an error and exit 1 from run and status when the verify file
 });
 
 test('should fail a flag entry when the invalid run names the flag only in a test title and never prints the bad value with it (FlagRuns fail)', async () => {
-  const s = await opened();
-  writeFiles(s.repo, {
+  const s = await openedWith({
     'tool.mjs': "console.log('x=' + JSON.parse(process.env.DEMO_X_ENABLED || 'true'));\n",
     'flag.test.mjs': "import { test } from 'node:test';\nimport { execFileSync } from 'node:child_process';\ntest('should print x per DEMO_X_ENABLED when it runs (Flag1)', () => { execFileSync(process.execPath, [new URL('./tool.mjs', import.meta.url).pathname]); });\n",
   });
@@ -388,4 +393,59 @@ test('should refuse record when --from holds a parenthesis or a line break, so t
     assert.match(r.out.errors.join(), /--from: one line with no parentheses/);
   }
   assert.equal(existsSync(verifyFile(s.repo)), false);
+});
+
+test('should fail every item that ran with the changed files and exit 1 when a planned command changes product files (Fail, Guard)', async () => {
+  const s = await opened();
+  putPlan(s.run, { items: [goodPlan().items[0], { ...goodPlan().items[1], run: "echo HACKED >> tool.test.mjs && touch new.js && node tool.mjs" }] });
+  const r = await s.cli(['run']);
+  assert.equal(r.code, 1, JSON.stringify(r.out));
+  assert.deepEqual(r.out.failed.map(f => f.id).sort(), ['AC1', 'Flag1']);
+  for (const f of r.out.failed) assert.match(f.why.join(), /changed product files: new\.js, tool\.test\.mjs/);
+  assert.match(readFileSync(verifyFile(s.repo), 'utf8'), /## AC1\n[^\n]*\n[^\n]*\n[^\n]*\nresult: fail\n[\s\S]*why: [^\n]*changed product files: new\.js, tool\.test\.mjs/);
+});
+
+test('should report product files changed since open as errors from status and close and still close when a file changed outside docs/verify (Fail, Guard)', async () => {
+  const s = await opened({ files: { 'docs/verify/notes.md': 'hand\n' } });
+  writeFiles(s.repo, { 'docs/verify/notes.md': 'more hand\n', 'docs/verify/demo.md': '# by hand\n' });
+  let st = await s.cli(['status']);
+  assert.equal(st.code, 0, 'docs/verify is the run output, not product code');
+  writeFiles(s.repo, { 'tool.mjs': 'console.log("x=true");\n', 'src/extra.js': 'x\n' });
+  st = await s.cli(['status']);
+  assert.equal(st.code, 1);
+  assert.match(st.out.errors.join(), /product files changed since open: src\/extra\.js, tool\.mjs/);
+  const c = await s.cli(['close']);
+  assert.equal(c.code, 1);
+  assert.match(c.out.errors.join(), /product files changed since open: src\/extra\.js, tool\.mjs/);
+  assert.equal(existsSync(join(s.cache, 'sessions', `${SESSION}.json`)), false, 'close still closes');
+});
+
+test('should keep the files that differed at open, the image the plan names and a reopen of the same run out of the change list when they are expected (Fail edge)', async () => {
+  const s = setup();
+  writeFiles(s.repo, { 'tool.test.mjs': `${readFileSync(join(s.repo, 'tool.test.mjs'), 'utf8')}// local edit before open\n`, 'scratch.txt': 'x\n' });
+  const o = await s.cli(['open', '--slug', SLUG]);
+  putPlan(o.out.run, { items: [goodPlan().items[0], { ...goodPlan().items[1], run: 'node tool.mjs && touch shot.png', image: 'shot.png' }] });
+  assert.equal((await s.cli(['run'])).code, 0);
+  writeFiles(s.repo, { 'scratch.txt': 'y\n' });
+  assert.equal((await s.cli(['open', '--slug', SLUG])).code, 0);
+  assert.match((await s.cli(['status'])).out.errors.join(), /changed since open: scratch\.txt/, 'a reopen keeps the snapshot of the first open');
+});
+
+test('should report a commit made since open as a product change when HEAD moved (Fail edge)', async () => {
+  const s = await opened();
+  execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'x'], { cwd: s.repo });
+  assert.match((await s.cli(['status'])).out.errors.join(), /changed since open: HEAD [0-9a-f]{12} -> [0-9a-f]{12}/);
+});
+
+test('should fail the run and report from status when the run state has no snapshot from open (Fail edge)', async () => {
+  const s = await opened();
+  const stateFile = join(s.run, 'state.json');
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  delete state.snapshot;
+  writeFileSync(stateFile, JSON.stringify(state));
+  putPlan(s.run, goodPlan());
+  const r = await s.cli(['run']);
+  assert.equal(r.code, 1);
+  assert.match(r.out.failed[0].why.join(), /no snapshot of the work tree from open: close and open the run again/);
+  assert.match((await s.cli(['status'])).out.errors.join(), /no snapshot of the work tree from open/);
 });

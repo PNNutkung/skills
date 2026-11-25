@@ -10,7 +10,7 @@
 // Exit 0 ok, 1 refused or an item failed, 2 usage or flag error. Node 22+, no dependencies.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { availableParallelism, homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adrItems, adrNumber, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
 import { ciCheck } from './ci.mjs';
@@ -23,6 +23,7 @@ import { runDir, sessionMarker } from './paths.mjs';
 import { KIND, checkPlan, flipped } from './plan.mjs';
 import { CAP, capOutput, fileHeader, mergeSections, renderSection } from './section.mjs';
 import { runCommand } from './runner.mjs';
+import { changedSince, snapshot } from './snapshot.mjs';
 
 class Usage extends Error {}
 const COMMANDS = ['open', 'claims', 'plan', 'run', 'record', 'status', 'close'];
@@ -58,7 +59,11 @@ export async function main(argv, { env = process.env, cwd = process.cwd(), gh, s
     if (cmd === 'open') return open(v, deps);
     if (cmd === 'claims') return claims(v, deps);
     const ctx = locate(v, deps);
-    if (cmd === 'close') { if (ctx.marker) removeFile(ctx.marker); return { code: 0, out: { ok: true, closed: ctx.run } }; }
+    if (cmd === 'close') {
+      if (ctx.marker) removeFile(ctx.marker);
+      const errors = productErrors(ctx);
+      return { code: errors.length ? 1 : 0, out: { ok: !errors.length, closed: ctx.run, errors } };
+    }
     if (cmd === 'status') return status(ctx);
     if (cmd === 'plan') return plan(ctx);
     if (cmd === 'run') return await run(v, ctx, deps);
@@ -86,7 +91,9 @@ function open(v, { env, cwd, home }) {
   const old = readJson(marker);
   if (old && old.run !== run) return { code: 1, out: { ok: false, errors: [`a verify run is open for ${old.slug} in this session: close it first (node verify.mjs close)`] } };
   const verifyFile = verifyPath(repo, v.slug);
-  writePrivateJson(join(run, FILES.state), { slug: v.slug, repo, adr: adr?.path ?? null, opened: new Date().toISOString() });
+  // a reopen of the open run keeps the first snapshot, so reopening never hides a change made since
+  const kept = old ? readJson(join(run, FILES.state))?.snapshot : null;
+  writePrivateJson(join(run, FILES.state), { slug: v.slug, repo, adr: adr?.path ?? null, opened: new Date().toISOString(), snapshot: kept ?? snapshot(repo) });
   writePrivateJson(marker, { run, repo, slug: v.slug, verifyFile, started: new Date().toISOString() });
   const c = context({ run, state: { slug: v.slug, repo, adr: adr?.path ?? null } });
   return { code: 0, out: { ok: true, run, slug: v.slug, adr: adr?.path ?? null, items: c.items, booked: c.booked, newFlags: c.newFlags, errors: c.errors, verifyFile, files: Object.fromEntries(['plan', 'answers', 'claims'].map(k => [k, join(run, FILES[k])])) } };
@@ -151,6 +158,20 @@ function plan(ctx) {
   return { code: r.ok ? 0 : 1, out: { ok: r.ok, errors: r.errors, plan: r.entries.map(shown), needsAsk: r.needsAsk } };
 }
 
+const NO_SNAPSHOT = 'no snapshot of the work tree from open: close and open the run again';
+/** Product files changed since open (docs/verify, the run folder and skipped paths aside), or [NO_SNAPSHOT]. */
+function productChanges(ctx, skip = () => false) {
+  const before = ctx.state.snapshot;
+  if (!before?.files) return [NO_SNAPSHOT];
+  const runRel = relative(ctx.state.repo, ctx.run);
+  const inRun = p => !runRel.startsWith('..') && (p === runRel || p.startsWith(`${runRel}/`));
+  return changedSince(before, snapshot(ctx.state.repo), p => inRun(p) || skip(p));
+}
+function productErrors(ctx) {
+  const changed = productChanges(ctx);
+  return changed[0] === NO_SNAPSHOT ? changed : changed.length ? [`product files changed since open: ${changed.join(', ')}`] : [];
+}
+
 /** Errors for a verify file whose code-written section has a second heading of its id. */
 const duplicateErrors = (md, file) => duplicateMarked(md).map(d => `${d.id}: ${d.count} sections in ${file}; dev-workflow reads the last one, so only the section verify.mjs wrote may use that heading`);
 
@@ -161,7 +182,7 @@ function status(ctx) {
   const marked = markedSections(md);
   const results = new Map(splitSections(md).filter(p => p.id).map(p => [p.id, /^result:\s*(.*)$/m.exec(p.text)?.[1].trim() ?? null]));
   const items = c.items.map(({ id }) => ({ id, result: results.get(id) ?? null, intact: marked.has(id) ? marked.get(id).intact : null }));
-  const errors = [...c.errors, ...duplicateErrors(md, file)];
+  const errors = [...c.errors, ...duplicateErrors(md, file), ...productErrors(ctx)];
   const bad = errors.length > c.errors.length;
   return { code: bad ? 1 : 0, out: { ok: !bad, run: ctx.run, slug: ctx.state.slug, verifyFile: file, items, errors } };
 }
@@ -241,6 +262,13 @@ async function run(v, ctx, deps) {
     return { e, ...r2, env: `${e.env} (${HOW.run})`, run: e.run };
   });
   const done = results.filter(Boolean);
+  // the backstop for a guard bypass: a run that changed product code proves nothing about the code it started with
+  const images = new Set(r.entries.filter(e => e.image).map(e => normalize(e.image)));
+  const changed = done.length ? productChanges(ctx, p => images.has(p)) : [];
+  if (changed.length) {
+    const why = changed[0] === NO_SNAPSHOT ? NO_SNAPSHOT : `changed product files: ${changed.join(', ')}`;
+    for (const x of done) { x.pass = false; x.result = undefined; x.why = [...x.why, why]; }
+  }
   const f = done.length ? writeSections(ctx, c, done.map(x => section(x.e, x))) : verifyPath(repo, ctx.state.slug);
   const failed = done.filter(x => !x.pass).map(x => ({ id: x.e.id, why: x.why }));
   const errors = duplicateErrors(readOr(f, ''), f);

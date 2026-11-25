@@ -21,7 +21,7 @@ dod: ${SLUG}
 - verify env: ${booked}
 `;
 
-const TOOL = `const v = String(process.env.${DEMO_FLAG} ?? '').trim().toLowerCase();
+export const TOOL = `const v = String(process.env.${DEMO_FLAG} ?? '').trim().toLowerCase();
 if (v && v !== 'true' && v !== 'false') { console.error('${DEMO_FLAG}=' + process.env.${DEMO_FLAG} + ' is not valid: use true or false'); process.exit(2); }
 console.log('x=' + (v !== 'false'));
 `;

@@ -77,7 +77,7 @@ expect: exit 0; node --test preset: 0 failed, at least 1 passed, a passing test 
 ```
 ````
 
-A failing item is written as `result: fail` with a `why:` line and its output; the others still run; the JSON lists every failure. **Never edit product code to make an item pass**: a failure goes back to TDD (dev-workflow step 4, or the user). A rerun replaces only the sections of the items it ran; every other byte of the file (a `Booked:` line, a hand-written `## Dogfood` section) stays. Output over 8000 characters keeps its head and tail and says so. `remote` entries are listed as `waiting`.
+A failing item is written as `result: fail` with a `why:` line and its output; the others still run; the JSON lists every failure. **Never edit product code to make an item pass**: a failure goes back to TDD (dev-workflow step 4, or the user). `open` records HEAD and a hash of each changed or untracked file outside `docs/verify/`; when anything there changed since (an image the plan names aside), `run` fails every item it ran (`why: changed product files: ...`), and `status` and `close` list the changes as errors and exit 1 (`close` still closes). A rerun replaces only the sections of the items it ran; every other byte of the file (a `Booked:` line, a hand-written `## Dogfood` section) stays. Output over 8000 characters keeps its head and tail and says so. `remote` entries are listed as `waiting`.
 
 ## 5. Record a remote run
 
