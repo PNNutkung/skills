@@ -9,4 +9,5 @@
 | [4](0004-dev-workflow.md) | Dev workflow | Accepted | `skills/dev-workflow/**`, `hooks/workflow-guard.mjs`, `hooks/workflow-guard.test.mjs`, `hooks/hooks.json`, `README.md`, `rules/README.md`, `.claude-plugin/*.json`, `docs/adr/**` |
 | [5](0005-verify-env-check.md) | Verify env check | Accepted | `skills/dev-workflow/**`, `README.md`, `.claude-plugin/*.json`, `docs/**` |
 | [6](0006-branch-summary-split.md) | Branch summary split | Accepted | `skills/branch-summary/**`, `README.md`, `.claude-plugin/plugin.json` |
+| [8](0008-verify-skill.md) | Verify skill | Accepted | `skills/verify/**`, `hooks/verify-guard.mjs`, `hooks/verify-guard.test.mjs`, `hooks/hooks.json`, `skills/dev-workflow/SKILL.md`, `README.md`, `docs/**`, `.claude-plugin/*.json`, `rules/checks/flag-defaults-e2e.mjs` |
 <!-- /adr-index -->
