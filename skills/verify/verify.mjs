@@ -163,9 +163,11 @@ const NO_SNAPSHOT = 'no snapshot of the work tree from open: close and open the 
 function productChanges(ctx, skip = () => false) {
   const before = ctx.state.snapshot;
   if (!before?.files) return [NO_SNAPSHOT];
+  // verify's own files (the run folder, the session marker) when VERIFY_CACHE_DIR puts them in the repo; outside it (../..) they match no repo path
   const runRel = relative(ctx.state.repo, ctx.run);
-  const inRun = p => !runRel.startsWith('..') && (p === runRel || p.startsWith(`${runRel}/`));
-  return changedSince(before, snapshot(ctx.state.repo), p => inRun(p) || skip(p));
+  const markerRel = ctx.marker ? relative(ctx.state.repo, ctx.marker) : null;
+  const own = p => p === runRel || p.startsWith(`${runRel}/`) || p === markerRel;
+  return changedSince(before, snapshot(ctx.state.repo), p => own(p) || skip(p));
 }
 function productErrors(ctx) {
   const changed = productChanges(ctx);

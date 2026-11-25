@@ -7,7 +7,7 @@ import { git } from './io.mjs';
 
 const VERIFY_PREFIX = 'docs/verify/';
 const names = (repo, args) => git(repo, args).split('\0').filter(Boolean);
-const hashOf = p => { try { return createHash('sha256').update(readFileSync(p)).digest('hex').slice(0, 16); } catch (e) { return e.code ?? 'unreadable'; } };
+const hashOf = p => { try { return createHash('sha256').update(readFileSync(p)).digest('hex'); } catch (e) { return e.code ?? 'unreadable'; } };
 const short = sha => (sha ? sha.slice(0, 12) : 'none');
 
 /** -> { head, files: { path: hash } } for the repo (paths relative to its root, / separated). */

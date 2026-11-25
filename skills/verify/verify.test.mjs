@@ -446,6 +446,17 @@ test('should fail the run and report from status when the run state has no snaps
   putPlan(s.run, goodPlan());
   const r = await s.cli(['run']);
   assert.equal(r.code, 1);
-  assert.match(r.out.failed[0].why.join(), /no snapshot of the work tree from open: close and open the run again/);
-  assert.match((await s.cli(['status'])).out.errors.join(), /no snapshot of the work tree from open/);
+  assert.deepEqual(r.out.failed[0].why, ['no snapshot of the work tree from open: close and open the run again']);
+  assert.deepEqual((await s.cli(['status'])).out.errors, ['no snapshot of the work tree from open: close and open the run again']);
+});
+
+test('should leave the run folder out of the change list when VERIFY_CACHE_DIR puts it inside the repo (Fail edge)', async () => {
+  const s = setup();
+  const env = { ...s.env, VERIFY_CACHE_DIR: join(s.repo, '.verify-cache') };
+  const o = await main(['open', '--slug', SLUG], { env, cwd: s.repo });
+  putPlan(o.out.run, goodPlan());
+  const r = await main(['run'], { env, cwd: s.repo });
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  writeFiles(s.repo, { '.verify-cache.txt': 'x\n' });
+  assert.match((await main(['status'], { env, cwd: s.repo })).out.errors.join(), /changed since open: \.verify-cache\.txt$/, 'a sibling that only starts with the folder name counts');
 });

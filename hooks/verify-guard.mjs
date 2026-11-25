@@ -141,7 +141,7 @@ function removedPaths(t) {
   if (prog === 'patch') {
     const dir = flagValue(args, '-d', '--directory') ?? '.';
     const file = positionals(args, PATCH_VALUE_FLAGS)[0];
-    return [flagValue(args, '-o', '--output') ?? (file ? join(dir, file) : dir)];
+    return [flagValue(args, '-o', '--output') ?? (file ? (isAbsolute(file) ? file : join(dir, file)) : dir)];
   }
   if (prog === 'find') {
     const at = args.findIndex(a => a === '-exec' || a === '-execdir' || a === '-ok' || a === '-okdir');
@@ -161,9 +161,10 @@ function removedPaths(t) {
 function shellScript(t) {
   if (t[0] === 'eval') return t.slice(1).join(' ');
   if (!SHELLS.has(basename(t[0]))) return null;
-  const c = t.findIndex((x, i) => i > 0 && SHELL_SCRIPT_FLAG_RE.test(x));
+  const args = t.slice(1);
+  const c = args.findIndex(x => SHELL_SCRIPT_FLAG_RE.test(x));
   if (c < 0) return null;
-  return t.slice(c + 1).find(x => x !== '--' && !x.startsWith('-')) ?? '';
+  return args.slice(c + 1).find(x => x !== '--' && !x.startsWith('-')) ?? '';
 }
 
 /** { prog, code, inPlace } for inline interpreter code (python -c, node -e, perl -e, ruby -e), or null. */
@@ -172,10 +173,10 @@ function inlineCode(t) {
   const kind = INLINE.find(k => k.re.test(prog));
   if (!kind) return null;
   const inPlace = Boolean(kind.inPlace && t.slice(1).some(x => kind.inPlace.test(x)));
-  for (let i = 1; i < t.length; i++) {
-    const m = kind.attached?.exec(t[i]);
+  for (const [i, x] of t.entries()) {
+    const m = kind.attached?.exec(x);
     if (m) return { prog, code: m[1], inPlace };
-    if (kind.code.test(t[i])) return { prog, code: t[i + 1] ?? '', inPlace };
+    if (kind.code.test(x)) return { prog, code: t[i + 1] ?? '', inPlace };
   }
   return inPlace ? { prog, code: '', inPlace } : null;
 }
@@ -195,7 +196,7 @@ function sectionChange(oldMd, newMd) {
   // dev-workflow reads the last section of an id, so a second heading of a marked id would shadow the code-written one
   const before = headingCounts(oldMd), after = headingCounts(newMd);
   const ids = new Set([...mods.markedList(oldMd), ...mods.markedList(newMd)].map(s => s.id));
-  const dup = [...ids].filter(id => after.get(id) > 1 && after.get(id) > (before.get(id) ?? 0));
+  const dup = [...ids].filter(id => after.get(id) > (before.get(id) ?? 0));
   if (dup.length) return `a second ## ${dup.join(', ')} heading would shadow the section verify.mjs wrote (the last section of an id wins): put notes under another heading`;
   // dev-workflow reads result: lines whoever wrote them, so a new hand section with one forges a result
   const handBefore = headingCounts(oldMd, handResult), handAfter = headingCounts(newMd, handResult);
@@ -253,7 +254,6 @@ function inlineVerdict(t, at, guarded, r) {
   if (WRITE_API_RE.test(x.code)) return `inline ${x.prog} code writes, deletes or runs commands: put the check in the plan and run it with verify.mjs`;
   for (const m of x.code.matchAll(PATH_IN_CODE_RE)) {
     const p = (m[2] ?? m[3]).trim();
-    if (!/\w/.test(p) || /\s/.test(p)) continue;
     const abs = at(p);
     if (abs !== r.repo && guarded(abs) && !isInside(abs, r.verifyDir) && (isAbsolute(p) || existsSync(abs))) return `inline ${x.prog} code names ${p}, a repo path outside ${VERIFY_DIR}/`;
   }

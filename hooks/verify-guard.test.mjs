@@ -394,7 +394,10 @@ test('should check the script of a shell run with any -c flag cluster, of eval a
   try {
     for (const c of [`bash -lc "echo x > src/app.js"`, `sh -ec 'rm src/app.js'`, `bash -xc 'touch src/n.js'`, `zsh -c -l 'rm src/app.js'`, `eval "echo x > src/app.js"`, `eval rm src/app.js`,
       `bash -c "bash -c 'bash -c \\"rm src/app.js\\"'"`, `eval "bash -lc 'eval rm src/app.js'"`]) assert.match(bash(fx, c) ?? '', /verify run demo is open/, c);
-    assert.match(bash(fx, `bash -c "bash -c 'bash -c \\"bash -c \\\\\\"bash -c ls\\\\\\"\\"'"`) ?? '', /nested deeper than/);
+    const nest = (n, inner) => (n ? nest(n - 1, `bash -c "${inner.replace(/[\\"]/g, '\\$&')}"`) : inner);
+    assert.equal(bash(fx, nest(4, 'ls')), null, 'four levels are read');
+    assert.match(bash(fx, nest(4, 'rm src/app.js')) ?? '', /writing src\/app\.js/, 'four levels are read');
+    assert.match(bash(fx, nest(5, 'ls')) ?? '', /nested deeper than 4 levels/);
     for (const c of [`bash -lc "ls src"`, `eval "echo hi"`, `bash -lc 'echo x > docs/verify/notes.md'`, 'bash --login', 'grep -lc x src/app.js']) assert.equal(bash(fx, c), null, c);
   } finally { fx.done(); }
 });
@@ -402,7 +405,7 @@ test('should check the script of a shell run with any -c flag cluster, of eval a
 test('should resolve later relative write targets against a cd or pushd in the same command when a run is open (Guard)', () => {
   const fx = fixture();
   try {
-    for (const c of ['cd docs/verify && echo x > ../../src/app.js', 'pushd docs/verify; rm ../../src/app.js', 'cd docs && cd verify && touch ../../src/n.js',
+    for (const c of ['cd docs/verify && echo x > ../../src/app.js', 'pushd docs/verify; rm ../../src/app.js', 'cd docs && cd verify && touch ../../src/n.js', 'cd -P docs/verify && echo x > ../../src/app.js',
       `cd ${join(fx.repo, 'docs', 'verify')}; cp /tmp/x ../../src/app.js`, "cd docs/verify && bash -c 'rm ../../src/app.js'", 'cd src && git checkout -- app.js']) {
       assert.match(bash(fx, c) ?? '', /verify run demo is open/, c);
     }
@@ -417,7 +420,7 @@ test('should deny inline interpreter code that writes or names a repo path outsi
       `node -e "require('fs').writeFileSync('/tmp/x','x')"`, `node --eval "fs.appendFileSync('/tmp/x','y')"`, `node -p "require('fs').rmSync('x')"`, `node --eval="fs.unlinkSync('a')"`,
       `node -e "console.log(require('fs').readFileSync('src/app.js','utf8'))"`, `node -e "require('child_process').execSync('rm src/app.js')"`,
       `python3 -c "print(open('${join(fx.repo, 'src', 'app.js')}').read())"`, `python3 -c "import os; os.remove('a')"`, `python3 -c "from pathlib import Path; Path('a').write_text('x')"`,
-      `perl -pi -e 's/1/2/' src/app.js`, `perl -i.bak -pe 's/1/2/' /tmp/x`, `perl -e 'unlink "src/app.js"'`, `ruby -e "File.write('a','x')"`, `ruby -e 'puts File.read("src/app.js")'`,
+      `perl -pi -e 's/1/2/' src/app.js`, `perl -i.bak -p fix.pl src/app.js`, `perl -i.bak -pe 's/1/2/' /tmp/x`, `perl -e 'unlink "src/app.js"'`, `ruby -e "File.write('a','x')"`, `ruby -e 'puts File.read("src/app.js")'`,
       `python3 -c "open('docs/verify/demo.md','w').write('x')"`]) {
       assert.match(bash(fx, c) ?? '', /verify run demo is open in this session: inline (python3?|node|perl|ruby) code/, c);
     }
@@ -435,11 +438,12 @@ test('should deny dd of=, truncate, patch, find -delete or -exec rm, xargs rm an
     for (const c of ['dd if=/tmp/x of=src/app.js', 'truncate -s0 src/app.js', 'truncate --size=0 src/app.js', 'patch -p1 < /tmp/p.diff', 'patch src/app.js /tmp/p.diff',
       'find src -delete', 'find . -name "*.js" -exec rm {} +', 'find src -execdir mv {} /tmp \;', 'echo src/app.js | xargs rm', 'ls | xargs -n1 tee', 'git ls-files | xargs -0 cp -t /tmp',
       'git reset HEAD src/app.js', 'git reset --merge HEAD~1', 'git reset', 'git checkout-index -f -a', 'git branch -f main HEAD~3', 'git branch --force main HEAD~3',
-      'git update-ref refs/heads/main HEAD~3', 'cd docs/verify && dd if=/tmp/x of=../../src/app.js']) {
+      'git update-ref refs/heads/main HEAD~3', 'cd docs/verify && dd if=/tmp/x of=../../src/app.js', 'find -exec rm {} +', 'patch -d src < /tmp/p.diff']) {
       assert.match(bash(fx, c) ?? '', /verify run demo is open/, c);
     }
     for (const c of ['dd if=src/app.js of=/tmp/x', 'truncate -s0 /tmp/x', 'patch -d /tmp -p1 < /tmp/p.diff', 'find src -name "*.js"', 'find /tmp/x -delete',
-      'echo /tmp/a | xargs ls', 'git branch', 'git branch -a', 'git branch new-branch', 'git log --oneline', 'patch -o /tmp/out /tmp/a /tmp/p.diff']) {
+      'echo /tmp/a | xargs ls', 'git branch', 'git branch -a', 'git branch new-branch', 'git log --oneline', 'patch -o /tmp/out /tmp/a /tmp/p.diff',
+      'patch /tmp/a /tmp/p.diff', 'patch -p1 /tmp/a < /tmp/p.diff', 'cd docs/verify && patch /tmp/a < /tmp/p.diff']) {
       assert.equal(bash(fx, c), null, c);
     }
   } finally { fx.done(); }
@@ -463,5 +467,13 @@ test('should deny an edit that adds a hand-written section with a result: line w
     assert.equal(edit(fx, fx.verifyFile, 'hand text\n', 'hand text\n\n## AC3\nthe result was fine\n'), null, 'notes without a result: line');
     writeFileSync(fx.verifyFile, `${VERIFY_MD}\n## Dogfood\nresult: by hand\n`);
     assert.equal(edit(fx, fx.verifyFile, 'hand text', 'more hand text'), null, 'an existing hand section stays editable');
+  } finally { fx.done(); }
+});
+
+test('should deny inline code that names a repo file whose name has a space when a run is open (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    writeFileSync(join(fx.repo, 'src', 'my notes.txt'), 'x\n');
+    assert.match(bash(fx, `python3 -c "print(open('src/my notes.txt').read())"`) ?? '', /names src\/my notes\.txt/);
   } finally { fx.done(); }
 });
