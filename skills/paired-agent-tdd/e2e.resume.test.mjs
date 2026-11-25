@@ -21,7 +21,7 @@ const repo = join(dir, 'repo'), tmp = join(dir, 'tmp');
 for (const d of [repo, tmp]) mkdirSync(d);
 process.env.TMPDIR = tmp;
 process.env.ZT_MARKER_DIR = join(dir, 'marker');
-Object.assign(process.env, SPEED_OFF_ENV); // the v2.0.0 pipeline these assertions describe; e2e.speed.test.mjs runs the speed flags
+Object.assign(process.env, SPEED_OFF_ENV); // the v2.0.0 pipeline these assertions describe; the e2e.speed.*.test.mjs files run the speed flags
 const REAL = process.env.E2E_REAL === '1'; // opt-in: the zero-trust-review sandbox instead of the direct runner (the default of a plan)
 const RUNNER = REAL ? join(HERE, '..', 'zero-trust-review', 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs');
 const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();

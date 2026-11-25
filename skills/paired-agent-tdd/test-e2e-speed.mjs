@@ -1,4 +1,5 @@
-// The fixture of the e2e.speed*.test.mjs files (ADR 0001): 2 groups (b after a), an integration test, one finding, scripted agents. Each file runs some of the flag sets.
+// The fixture of the e2e.speed*.test.mjs files (ADR 0001): 2 groups (b after a), an integration test, one finding, scripted agents. Each file runs one flag set
+// (ADR 0007: one test a file, so node --test spreads the runs over the cores); runWithInWorker runs one in a worker thread, for a test that needs two side by side.
 // Two languages of the same fixture (ADR 0003 A13): POSIX sh (the default: `sh {file}`, so a fixture test run starts no node; zero-trust-review mutates no .sh line,
 // so these runs have no mutants) and JavaScript (`node {file}`, mutated) for the runs that assert on mutation (runWithJs).
 // E2E_REAL=1: the zero-trust-review sandbox (and this node binary for the JS fixture) instead of the direct runner.
@@ -6,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { SPEED_ENV, SPEED_OFF_ENV } from './speed.mjs';
 import { DIRECT_RUNNER, HERE, runE2E } from './test-e2e-run.mjs';
 
@@ -100,6 +102,17 @@ const LANGS = {
 export const runWith = (env, tweak = () => ({})) => runIn('sh', env, tweak);
 /** the same run with the JavaScript fixture: zero-trust-review mutates its source lines */
 export const runWithJs = (env, tweak = () => ({})) => runIn('js', env, tweak);
+
+/** Runs the module at `url` in a worker thread with `data` as its workerData -> the first message it posts; rejects on an error, or an exit before a message. */
+export const inWorker = (url, data) => new Promise((resolve, reject) => {
+  const w = new Worker(url, { workerData: data });
+  w.once('message', resolve);
+  w.once('error', reject);
+  w.once('exit', code => reject(new Error(`worker exited with code ${code} before it posted a result`)));
+});
+/** runWith(env) in a worker thread (this module is the worker's entry), so two runs of one test go side by side. -> the same result as runWith */
+export const runWithInWorker = env => inWorker(new URL(import.meta.url), { runWorker: true, env });
+if (!isMainThread && workerData?.runWorker) parentPort.postMessage(await runWith(workerData.env));
 
 async function runIn(lang, env, tweak) {
   const L = LANGS[lang], G = L.groups;

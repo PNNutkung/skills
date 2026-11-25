@@ -20,7 +20,7 @@ const repo = join(dir, 'repo'), tmp = join(dir, 'tmp');
 for (const d of [repo, tmp]) mkdirSync(d);
 process.env.TMPDIR = tmp; // the per-user zt-review base (where plan makes the run folder, and the only place the ledger tools approve one) lives in the fixture
 process.env.ZT_MARKER_DIR = join(dir, 'marker'); // never the user's own active review marker
-Object.assign(process.env, SPEED_OFF_ENV); // the v2.0.0 pipeline these assertions describe; e2e.speed.test.mjs runs the speed flags
+Object.assign(process.env, SPEED_OFF_ENV); // the v2.0.0 pipeline these assertions describe; the e2e.speed.*.test.mjs files run the speed flags
 let run = '';
 const REAL = process.env.E2E_REAL === '1'; // opt-in: the zero-trust-review sandbox and this node binary instead of the direct runner (the default of a plan)
 const RUNNER = REAL ? join(HERE, '..', 'zero-trust-review', 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs');
