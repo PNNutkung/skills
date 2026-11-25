@@ -50,3 +50,10 @@ export function markedSections(md) {
   for (const { id, ...rest } of markedList(md)) if (!map.has(id)) map.set(id, rest);
   return map;
 }
+
+/** [{ id, count }] for each code-written id with more than one `## <id>` section: dev-workflow reads the last, so a copy shadows it. */
+export function duplicateMarked(md) {
+  const count = new Map();
+  for (const { id } of splitSections(md)) if (id !== null) count.set(id, (count.get(id) ?? 0) + 1);
+  return [...new Set(markedList(md).map(s => s.id))].filter(id => count.get(id) > 1).map(id => ({ id, count: count.get(id) }));
+}

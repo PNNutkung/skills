@@ -104,3 +104,13 @@ export function judge(entry, { code, output, timedOut, seconds } = {}) {
   else if (e.kind === 'regex' && !matches(e.re, out)) why.push(`output does not match ${entry.expect}`);
   return { pass: why.length === 0, why };
 }
+
+// a runner's own result line: its text is the test title, which can name anything, so it never shows the product's flag error
+const RESULT_LINE_RE = /^\s*(?:[✔✖✓×]|ok \d|not ok \d|# Subtest|PASSED\b|FAILED\b|--- (?:PASS|FAIL)\b)|\b(?:PASSED|FAILED)(?:\s+\[\s*\d+%\])?\s*$/;
+const bare = s => `(?<![A-Za-z0-9_])${esc(s)}(?![A-Za-z0-9_])`;
+
+/** True when a line of the invalid flag run, other than a test result, names the flag and then the bad value (A3). */
+export function flagErrorShown(output, name, value) {
+  const re = new RegExp(`${bare(name)}.*${bare(value)}`);
+  return String(output ?? '').split('\n').some(l => re.test(l) && !RESULT_LINE_RE.test(l));
+}

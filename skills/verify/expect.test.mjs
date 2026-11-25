@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { describeExpect, judge, lintExpect, parseExpect, presetOf } from './expect.mjs';
+import { describeExpect, flagErrorShown, judge, lintExpect, parseExpect, presetOf } from './expect.mjs';
 
 const NODE_SPEC = '✔ should plan when items are there (Plan) (1ms)\nℹ tests 2\nℹ pass 2\nℹ fail 0\n';
 const NODE_TAP = 'ok 1 - should plan when items are there (Plan)\n# tests 1\n# pass 1\n# fail 0\n';
@@ -106,4 +106,15 @@ test('should skip the preset checks when a preset command must fail with the exi
   const e = { id: 'Plan', run: 'node --test bad.test.mjs', exit: 1 };
   assert.equal(ok(e, 'ℹ tests 1\nℹ pass 0\nℹ fail 1\n', 1).pass, true);
   assert.equal(describeExpect(e), 'exit 1');
+});
+
+test('should find the flag error only on a line that names the flag and the bad value and is not a test result when the invalid run printed it (FlagRuns)', () => {
+  for (const out of ['DEMO_X_ENABLED=maybe is not valid', 'error: DEMO_X_ENABLED: "maybe" is not true or false', '  # DEMO_X_ENABLED=maybe bad', 'x\nfatal DEMO_X_ENABLED value maybe\n']) {
+    assert.equal(flagErrorShown(out, 'DEMO_X_ENABLED', 'maybe'), true, out);
+  }
+  for (const out of ['', 'DEMO_X_ENABLED\nmaybe', '✔ DEMO_X_ENABLED maybe', '✖ DEMO_X_ENABLED=maybe', 'ok 1 - DEMO_X_ENABLED=maybe', 'not ok 2 - DEMO_X_ENABLED maybe',
+    '# Subtest: DEMO_X_ENABLED=maybe', 'tests/a.py::test_x[DEMO_X_ENABLED=maybe] PASSED', 'FAILED tests/a.py::test DEMO_X_ENABLED=maybe', '--- PASS: TestX DEMO_X_ENABLED=maybe',
+    '    --- FAIL: TestX/DEMO_X_ENABLED=maybe', '  ✓ DEMO_X_ENABLED=maybe', '  × DEMO_X_ENABLED=maybe', 'DEMO_X_ENABLEDX=maybe', 'DEMO_X_ENABLED=maybes']) {
+    assert.equal(flagErrorShown(out, 'DEMO_X_ENABLED', 'maybe'), false, out);
+  }
 });

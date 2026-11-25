@@ -102,7 +102,17 @@ function sectionChange(oldMd, newMd) {
   }
   if (changed.length) return `section ${changed.join(', ')} was written by verify.mjs: only a rerun changes it (node "${VERIFY_MJS}" run --only ${changed.join(',')})`;
   if (left.length) return `the verify.mjs marker on ${left.map(k => k.split('\0')[0]).join(', ')} is written only by verify.mjs, not by hand`;
+  // dev-workflow reads the last section of an id, so a second heading of a marked id would shadow the code-written one
+  const before = headingCounts(oldMd), after = headingCounts(newMd);
+  const ids = new Set([...mods.markedList(oldMd), ...mods.markedList(newMd)].map(s => s.id));
+  const dup = [...ids].filter(id => after.get(id) > 1 && after.get(id) > (before.get(id) ?? 0));
+  if (dup.length) return `a second ## ${dup.join(', ')} heading would shadow the section verify.mjs wrote (the last section of an id wins): put notes under another heading`;
   return null;
+}
+function headingCounts(md) {
+  const n = new Map();
+  for (const { id } of mods.splitSections(md)) if (id !== null) n.set(id, (n.get(id) ?? 0) + 1);
+  return n;
 }
 const readOr = (p, dflt) => (existsSync(p) ? readFileSync(p, 'utf8') : dflt);
 /** True when a file (or a file directly in a folder) under docs/verify holds code-written sections. */

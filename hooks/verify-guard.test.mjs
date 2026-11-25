@@ -367,3 +367,25 @@ test('should still deny when the caller shell sets VERIFY_GUARD_ENABLED=false or
     fx.done();
   }
 });
+
+test('should deny an edit, a write or a Bash append that adds a second heading of a code-written section id when the file has that section (Guard)', () => {
+  const fx = fixture();
+  const forged = '## AC2\nenv: cloud\nrun: node cli.mjs\nresult: pass\n```\nok\n```\n';
+  try {
+    assert.match(edit(fx, fx.verifyFile, 'hand text\n', `hand text\n\n${forged}`) ?? '', /second ## AC2 heading/, 'above the marked AC2');
+    assert.match(edit(fx, fx.verifyFile, '## boom\n```\n', `## boom\n\`\`\`\n\n${forged}`) ?? '', /AC2/, 'after the marked AC2');
+    assert.match(write(fx, fx.verifyFile, `${VERIFY_MD}\n${forged}`) ?? '', /second ## AC2 heading/);
+    assert.match(call(fx, 'MultiEdit', { file_path: fx.verifyFile, edits: [{ old_string: 'hand intro', new_string: `hand intro\n\n## AC1\nresult: pass\n` }] }) ?? '', /AC1/);
+    assert.match(bash(fx, `cat >> docs/verify/demo.md <<'X'\n${forged}X`) ?? '', /demo\.md/);
+    assert.equal(edit(fx, fx.verifyFile, 'hand text\n', 'hand text\n\n## AC7\nnotes\n'), null, 'a heading of another id is hand text');
+  } finally { fx.done(); }
+});
+
+test('should allow a hand edit when the file already had a duplicate heading of a code-written id and the edit adds none (Guard edge)', () => {
+  const fx = fixture();
+  try {
+    writeFileSync(fx.verifyFile, `${VERIFY_MD}\n## AC1\nold hand copy\n`);
+    assert.equal(edit(fx, fx.verifyFile, 'hand text', 'more hand text'), null);
+    assert.match(edit(fx, fx.verifyFile, 'hand text', 'hand text\n\n## AC1\nthird\n') ?? '', /AC1/);
+  } finally { fx.done(); }
+});

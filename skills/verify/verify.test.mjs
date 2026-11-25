@@ -139,7 +139,7 @@ test('should fail a flag entry when the invalid value does not exit non-zero nam
   const r = await s.cli(['run', '--only', 'Flag1']);
   assert.equal(r.code, 1);
   assert.match(r.out.failed[0].why.join(), /3\/3 .*exit 0, expected non-zero/);
-  assert.match(r.out.failed[0].why.join(), /does not name DEMO_X_ENABLED/);
+  assert.match(r.out.failed[0].why.join(), /names DEMO_X_ENABLED with maybe/);
 });
 
 test('should write result fail with the output, run the rest and report every failure when items fail (Fail)', async () => {
@@ -349,4 +349,31 @@ test('should read record output from stdin and print usage with exit 2 when the 
   const bare = spawnSync(process.execPath, [CLI], { cwd: s.repo, env, encoding: 'utf8', timeout: 20000 });
   assert.equal(bare.status, 2);
   assert.match(JSON.parse(bare.stdout).errors[0], /^usage: verify\.mjs open\|claims/);
+});
+
+test('should report an error and exit 1 from run and status when the verify file has a second heading of a code-written section id (Guard)', async () => {
+  const s = await opened();
+  putPlan(s.run, goodPlan());
+  await s.cli(['run']);
+  const f = verifyFile(s.repo);
+  writeFileSync(f, `${readFileSync(f, 'utf8')}## AC1\nenv: cloud\nresult: pass\n`);
+  const st = await s.cli(['status']);
+  assert.equal(st.code, 1);
+  assert.match(st.out.errors.join(), /AC1: 2 sections .*docs\/verify\/demo\.md/);
+  const r = await s.cli(['run', '--only', 'Flag1']);
+  assert.equal(r.code, 1);
+  assert.deepEqual(r.out.passed, ['Flag1']);
+  assert.match(r.out.errors.join(), /AC1: 2 sections/);
+});
+
+test('should fail a flag entry when the invalid run names the flag only in a test title and never prints the bad value with it (FlagRuns fail)', async () => {
+  const s = await opened();
+  writeFiles(s.repo, {
+    'tool.mjs': "console.log('x=' + JSON.parse(process.env.DEMO_X_ENABLED || 'true'));\n",
+    'flag.test.mjs': "import { test } from 'node:test';\nimport { execFileSync } from 'node:child_process';\ntest('should print x per DEMO_X_ENABLED when it runs (Flag1)', () => { execFileSync(process.execPath, [new URL('./tool.mjs', import.meta.url).pathname]); });\n",
+  });
+  putPlan(s.run, { items: [goodPlan().items[0], { ...goodPlan().items[1], run: 'node --test flag.test.mjs', expect: undefined }] });
+  const r = await s.cli(['run', '--only', 'Flag1']);
+  assert.equal(r.code, 1, JSON.stringify(r.out));
+  assert.match(r.out.failed[0].why.join(), /3\/3 .*no line outside the test results names DEMO_X_ENABLED with maybe/);
 });

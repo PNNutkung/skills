@@ -15,10 +15,10 @@ import { fileURLToPath } from 'node:url';
 import { adrItems, adrNumber, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
 import { ciCheck } from './ci.mjs';
 import { candidatesFromDiff, claimItems } from './claims.mjs';
-import { describeExpect, judge } from './expect.mjs';
+import { describeExpect, flagErrorShown, judge } from './expect.mjs';
 import { FlagError, checkRemoved, guardEnabled, timeoutMax } from './flags.mjs';
 import { FILES, SLUG_RE, findAdr, git, readJson, readOr, removeFile, repoRoot, verifyPath, writePrivateJson, writeText } from './io.mjs';
-import { markedSections, splitSections } from './marker.mjs';
+import { duplicateMarked, markedSections, splitSections } from './marker.mjs';
 import { runDir, sessionMarker } from './paths.mjs';
 import { KIND, checkPlan, flipped } from './plan.mjs';
 import { CAP, capOutput, fileHeader, mergeSections, renderSection } from './section.mjs';
@@ -151,13 +151,19 @@ function plan(ctx) {
   return { code: r.ok ? 0 : 1, out: { ok: r.ok, errors: r.errors, plan: r.entries.map(shown), needsAsk: r.needsAsk } };
 }
 
+/** Errors for a verify file whose code-written section has a second heading of its id. */
+const duplicateErrors = (md, file) => duplicateMarked(md).map(d => `${d.id}: ${d.count} sections in ${file}; dev-workflow reads the last one, so only the section verify.mjs wrote may use that heading`);
+
 function status(ctx) {
   const { c } = checked(ctx);
-  const md = readOr(verifyPath(ctx.state.repo, ctx.state.slug), '');
+  const file = verifyPath(ctx.state.repo, ctx.state.slug);
+  const md = readOr(file, '');
   const marked = markedSections(md);
   const results = new Map(splitSections(md).filter(p => p.id).map(p => [p.id, /^result:\s*(.*)$/m.exec(p.text)?.[1].trim() ?? null]));
   const items = c.items.map(({ id }) => ({ id, result: results.get(id) ?? null, intact: marked.has(id) ? marked.get(id).intact : null }));
-  return { code: 0, out: { ok: true, run: ctx.run, slug: ctx.state.slug, verifyFile: verifyPath(ctx.state.repo, ctx.state.slug), items, errors: c.errors } };
+  const errors = [...c.errors, ...duplicateErrors(md, file)];
+  const bad = errors.length > c.errors.length;
+  return { code: bad ? 1 : 0, out: { ok: !bad, run: ctx.run, slug: ctx.state.slug, verifyFile: file, items, errors } };
 }
 
 /** Runs fn over items, at most `limit` at a time, results in item order. */
@@ -191,7 +197,7 @@ async function runLocal(e, { env, timeoutSec }, repo) {
     if (i < 2) { for (const w of judge(e, r).why) why.push(`${runs[i].label}: ${w}`); return; }
     if (r.timedOut) why.push(`${runs[i].label}: timeout after ${timeoutSec}s`);
     else if (r.code === 0 || r.code === null) why.push(`${runs[i].label}: exit ${r.code}, expected non-zero`);
-    if (!r.output.includes(name)) why.push(`${runs[i].label}: the output does not name ${name}`);
+    if (!flagErrorShown(r.output, name, INVALID_FLAG_VALUE)) why.push(`${runs[i].label}: no line outside the test results names ${name} with ${INVALID_FLAG_VALUE} (the flag error must say which flag and which value)`);
   });
   return { pass: why.length === 0, why, output: parts.join('\n') };
 }
@@ -237,7 +243,9 @@ async function run(v, ctx, deps) {
   const done = results.filter(Boolean);
   const f = done.length ? writeSections(ctx, c, done.map(x => section(x.e, x))) : verifyPath(repo, ctx.state.slug);
   const failed = done.filter(x => !x.pass).map(x => ({ id: x.e.id, why: x.why }));
-  return { code: failed.length ? 1 : 0, out: { ok: !failed.length, ran: done.map(x => x.e.id), passed: done.filter(x => x.pass).map(x => x.e.id), failed, waiting: entries.filter(e => e.kind === KIND.remote).map(e => e.id), verifyFile: f } };
+  const errors = duplicateErrors(readOr(f, ''), f);
+  const bad = failed.length || errors.length;
+  return { code: bad ? 1 : 0, out: { ok: !bad, errors, ran: done.map(x => x.e.id), passed: done.filter(x => x.pass).map(x => x.e.id), failed, waiting: entries.filter(e => e.kind === KIND.remote).map(e => e.id), verifyFile: f } };
 }
 
 function record(v, ctx, { stdin }) {
