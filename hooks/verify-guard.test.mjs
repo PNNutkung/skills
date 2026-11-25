@@ -137,7 +137,7 @@ test('should deny Bash commands that write into the repo outside docs/verify whe
       'mv src/app.js /tmp/app.js', 'rm src/app.js', 'rm -rf src', 'touch src/new.js', `echo x > ${join(fx.repo, 'README.md')}`,
       'git checkout -- src/app.js', 'git checkout main', 'git restore src/app.js', 'git apply fix.patch', 'git reset --hard HEAD',
       'git commit -m x', 'git push', 'git -C . commit -am x', 'git stash', 'git clean -fd', "bash -c 'echo x > src/app.js'",
-      'cd /tmp && echo ok; echo y > src/app.js', 'node x.mjs > out.txt',
+      '(cd /tmp && echo ok); echo y > src/app.js', 'node x.mjs > out.txt',
     ]) {
       const why = bash(fx, c);
       assert.match(why ?? '', /verify run demo is open/, c);
@@ -320,7 +320,6 @@ test('should deny a write hidden behind a variable, a wrapper, a second command 
   try {
     for (const c of ['FOO=1 rm src/app.js', 'env rm src/app.js', 'cat x; rm src/app.js', 'git --version; rm src/app.js', 'bash -c; rm src/app.js',
       `bash -c 'bash -c "rm -rf src"'`]) assert.match(bash(fx, c) ?? '', /verify run demo/, c);
-    assert.equal(bash(fx, 'git reset HEAD src/app.js'), null, 'reset without --hard keeps the work tree');
   } finally { fx.done(); }
 });
 
@@ -387,5 +386,82 @@ test('should allow a hand edit when the file already had a duplicate heading of 
     writeFileSync(fx.verifyFile, `${VERIFY_MD}\n## AC1\nold hand copy\n`);
     assert.equal(edit(fx, fx.verifyFile, 'hand text', 'more hand text'), null);
     assert.match(edit(fx, fx.verifyFile, 'hand text', 'hand text\n\n## AC1\nthird\n') ?? '', /AC1/);
+  } finally { fx.done(); }
+});
+
+test('should check the script of a shell run with any -c flag cluster, of eval and of shells nested three deep when a run is open (Guard)', () => {
+  const fx = fixture();
+  try {
+    for (const c of [`bash -lc "echo x > src/app.js"`, `sh -ec 'rm src/app.js'`, `bash -xc 'touch src/n.js'`, `zsh -c -l 'rm src/app.js'`, `eval "echo x > src/app.js"`, `eval rm src/app.js`,
+      `bash -c "bash -c 'bash -c \\"rm src/app.js\\"'"`, `eval "bash -lc 'eval rm src/app.js'"`]) assert.match(bash(fx, c) ?? '', /verify run demo is open/, c);
+    assert.match(bash(fx, `bash -c "bash -c 'bash -c \\"bash -c \\\\\\"bash -c ls\\\\\\"\\"'"`) ?? '', /nested deeper than/);
+    for (const c of [`bash -lc "ls src"`, `eval "echo hi"`, `bash -lc 'echo x > docs/verify/notes.md'`, 'bash --login', 'grep -lc x src/app.js']) assert.equal(bash(fx, c), null, c);
+  } finally { fx.done(); }
+});
+
+test('should resolve later relative write targets against a cd or pushd in the same command when a run is open (Guard)', () => {
+  const fx = fixture();
+  try {
+    for (const c of ['cd docs/verify && echo x > ../../src/app.js', 'pushd docs/verify; rm ../../src/app.js', 'cd docs && cd verify && touch ../../src/n.js',
+      `cd ${join(fx.repo, 'docs', 'verify')}; cp /tmp/x ../../src/app.js`, "cd docs/verify && bash -c 'rm ../../src/app.js'", 'cd src && git checkout -- app.js']) {
+      assert.match(bash(fx, c) ?? '', /verify run demo is open/, c);
+    }
+    for (const c of ['cd docs/verify && echo x > notes.md', 'cd docs/verify; ls ../../src', `cd ${fx.run} && echo x > out.txt && rm out.txt`, 'cd; ls']) assert.equal(bash(fx, c), null, c);
+  } finally { fx.done(); }
+});
+
+test('should deny inline interpreter code that writes or names a repo path outside docs/verify and allow read-only one-liners when a run is open (Guard)', () => {
+  const fx = fixture();
+  try {
+    for (const c of [`python3 -c "open('src/app.js','w').write('x')"`, `python -c "open('/tmp/x', 'a')"`, `python3 -Ic "import shutil; shutil.rmtree('/tmp/x')"`,
+      `node -e "require('fs').writeFileSync('/tmp/x','x')"`, `node --eval "fs.appendFileSync('/tmp/x','y')"`, `node -p "require('fs').rmSync('x')"`, `node --eval="fs.unlinkSync('a')"`,
+      `node -e "console.log(require('fs').readFileSync('src/app.js','utf8'))"`, `node -e "require('child_process').execSync('rm src/app.js')"`,
+      `python3 -c "print(open('${join(fx.repo, 'src', 'app.js')}').read())"`, `python3 -c "import os; os.remove('a')"`, `python3 -c "from pathlib import Path; Path('a').write_text('x')"`,
+      `perl -pi -e 's/1/2/' src/app.js`, `perl -i.bak -pe 's/1/2/' /tmp/x`, `perl -e 'unlink "src/app.js"'`, `ruby -e "File.write('a','x')"`, `ruby -e 'puts File.read("src/app.js")'`,
+      `python3 -c "open('docs/verify/demo.md','w').write('x')"`]) {
+      assert.match(bash(fx, c) ?? '', /verify run demo is open in this session: inline (python3?|node|perl|ruby) code/, c);
+    }
+    for (const c of [`python3 -c "print(2+2)"`, `node -p "process.version"`, `node -e "console.log(require('fs').readFileSync('/tmp/x','utf8'))"`,
+      `python3 -c "import json,sys; print(json.load(sys.stdin)['x'])"`, `perl -e 'print 1'`, `ruby -e 'puts 1'`, `node -e "console.log('docs/verify/demo.md')"`,
+      `python3 -c "print(open('${join(fx.run, 'out.txt')}').read())"`, 'node --test', 'python3 tool.py']) {
+      assert.equal(bash(fx, c), null, c);
+    }
+  } finally { fx.done(); }
+});
+
+test('should deny dd of=, truncate, patch, find -delete or -exec rm, xargs rm and git reset, checkout-index, branch -f and update-ref into the repo when a run is open (Guard)', () => {
+  const fx = fixture();
+  try {
+    for (const c of ['dd if=/tmp/x of=src/app.js', 'truncate -s0 src/app.js', 'truncate --size=0 src/app.js', 'patch -p1 < /tmp/p.diff', 'patch src/app.js /tmp/p.diff',
+      'find src -delete', 'find . -name "*.js" -exec rm {} +', 'find src -execdir mv {} /tmp \;', 'echo src/app.js | xargs rm', 'ls | xargs -n1 tee', 'git ls-files | xargs -0 cp -t /tmp',
+      'git reset HEAD src/app.js', 'git reset --merge HEAD~1', 'git reset', 'git checkout-index -f -a', 'git branch -f main HEAD~3', 'git branch --force main HEAD~3',
+      'git update-ref refs/heads/main HEAD~3', 'cd docs/verify && dd if=/tmp/x of=../../src/app.js']) {
+      assert.match(bash(fx, c) ?? '', /verify run demo is open/, c);
+    }
+    for (const c of ['dd if=src/app.js of=/tmp/x', 'truncate -s0 /tmp/x', 'patch -d /tmp -p1 < /tmp/p.diff', 'find src -name "*.js"', 'find /tmp/x -delete',
+      'echo /tmp/a | xargs ls', 'git branch', 'git branch -a', 'git branch new-branch', 'git log --oneline', 'patch -o /tmp/out /tmp/a /tmp/p.diff']) {
+      assert.equal(bash(fx, c), null, c);
+    }
+  } finally { fx.done(); }
+});
+
+test('should deny a Bash write that puts a verify.mjs marker into a new docs/verify file when a run is open (Guard)', () => {
+  const fx = fixture();
+  try {
+    assert.match(bash(fx, `cat > docs/verify/other.md <<'X'\n${sec('AC1', 'result: pass\n')}X`) ?? '', /marker/);
+    assert.match(bash(fx, `printf '%s' '${markerLine('x')}' > docs/verify/x.md`) ?? '', /marker/);
+    assert.equal(bash(fx, `cat > docs/verify/other.md <<'X'\n## AC1\nnotes\nX`), null, 'no marker');
+    assert.equal(bash(fx, `cat > /tmp/x.md <<'X'\n${sec('AC1', 'result: pass\n')}X`), null, 'outside the repo');
+  } finally { fx.done(); }
+});
+
+test('should deny an edit that adds a hand-written section with a result: line when no code-written section has that id (Guard)', () => {
+  const fx = fixture();
+  try {
+    assert.match(edit(fx, fx.verifyFile, 'hand text\n', 'hand text\n\n## AC3\nenv: cloud\nresult: pass\n```\nok\n```\n') ?? '', /AC3.*result: line/s);
+    assert.match(write(fx, join(fx.repo, 'docs', 'verify', 'new.md'), '# V\n\n## AC1\nresult: pass\n') ?? '', /AC1/);
+    assert.equal(edit(fx, fx.verifyFile, 'hand text\n', 'hand text\n\n## AC3\nthe result was fine\n'), null, 'notes without a result: line');
+    writeFileSync(fx.verifyFile, `${VERIFY_MD}\n## Dogfood\nresult: by hand\n`);
+    assert.equal(edit(fx, fx.verifyFile, 'hand text', 'more hand text'), null, 'an existing hand section stays editable');
   } finally { fx.done(); }
 });

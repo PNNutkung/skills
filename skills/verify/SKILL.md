@@ -98,7 +98,7 @@ An invalid value, or the removed `VERIFY_FLAG_RUNS_ENABLED` still set, stops eve
 
 ## Guard
 
-`hooks/verify-guard.mjs` (plugin install), while this session has a run open: edits in the repo are allowed only under `docs/verify/`, a section code wrote cannot be edited by hand, and Bash cannot write into the repo elsewhere, commit or push. The run folder is outside the repo and stays writable. `node "$SK/verify.mjs" close` ends it; `VERIFY_GUARD_ENABLED=false` turns it off.
+`hooks/verify-guard.mjs` (plugin install), while this session has a run open: edits in the repo are allowed only under `docs/verify/`, a section code wrote cannot be edited, shadowed by a second heading of its id or forged (a hand section with a `result:` line), and Bash cannot write into the repo elsewhere, commit, push or reset (it follows `cd` within a command, reads `sh -c` and `eval` scripts, and denies inline `python -c`, `node -e`, `perl -e`, `ruby -e` code that writes or names a repo path outside `docs/verify/`). The Bash check is pattern matching, best effort; the work-tree snapshot from `open` is the backstop. The run folder is outside the repo and stays writable. `node "$SK/verify.mjs" close` ends it; `VERIFY_GUARD_ENABLED=false` turns it off.
 
 ## Scope
 
