@@ -78,7 +78,7 @@ Before `dod.mjs adr`, look at the open pull requests (`gh pr list`, then their f
 
 ## 5. Verify and review
 
-Run every DoD item in the environment the DoD names and write `docs/verify/<slug>.md` in the repo, one section per item id:
+Run every DoD item in the environment the DoD names and write `docs/verify/<slug>.md` in the repo, one section per item id. Use the verify skill to run the items and write this file when it is installed; else write it by hand.
 
 ````
 ## AC1
