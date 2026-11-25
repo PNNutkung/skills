@@ -10,7 +10,7 @@
 // Exit 0 ok, 1 refused or an item failed, 2 usage or flag error. Node 22+, no dependencies.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { availableParallelism, homedir } from 'node:os';
-import { join, normalize, relative, resolve } from 'node:path';
+import { basename, dirname, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adrItems, adrNumber, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
 import { ciCheck } from './ci.mjs';
@@ -158,14 +158,17 @@ function plan(ctx) {
   return { code: r.ok ? 0 : 1, out: { ok: r.ok, errors: r.errors, plan: r.entries.map(shown), needsAsk: r.needsAsk } };
 }
 
+const realOr = p => { try { return realpathSync(p); } catch { return resolve(p); } };
 const NO_SNAPSHOT = 'no snapshot of the work tree from open: close and open the run again';
 /** Product files changed since open (docs/verify, the run folder and skipped paths aside), or [NO_SNAPSHOT]. */
 function productChanges(ctx, skip = () => false) {
   const before = ctx.state.snapshot;
   if (!before?.files) return [NO_SNAPSHOT];
   // verify's own files (the run folder, the session marker) when VERIFY_CACHE_DIR puts them in the repo; outside it (../..) they match no repo path
-  const runRel = relative(ctx.state.repo, ctx.run);
-  const markerRel = ctx.marker ? relative(ctx.state.repo, ctx.marker) : null;
+  // realpath both sides: git gives the real repo path, the cache dir may come through a symlink (macOS /var -> /private/var)
+  const repo = realOr(ctx.state.repo);
+  const runRel = relative(repo, realOr(ctx.run));
+  const markerRel = ctx.marker ? relative(repo, join(realOr(dirname(ctx.marker)), basename(ctx.marker))) : null;
   const own = p => p === runRel || p.startsWith(`${runRel}/`) || p === markerRel;
   return changedSince(before, snapshot(ctx.state.repo), p => own(p) || skip(p));
 }

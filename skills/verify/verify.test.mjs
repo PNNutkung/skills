@@ -450,6 +450,18 @@ test('should fail the run and report from status when the run state has no snaps
   assert.deepEqual((await s.cli(['status'])).out.errors, ['no snapshot of the work tree from open: close and open the run again']);
 });
 
+test('should leave the run folder out of the change list when the repo and VERIFY_CACHE_DIR are reached through a symlink (Fail edge)', async () => {
+  const s = setup();
+  const link = `${s.repo}-link`;
+  symlinkSync(s.repo, link);
+  const env = { ...s.env, VERIFY_CACHE_DIR: join(link, '.verify-cache') };
+  const o = await main(['open', '--slug', SLUG], { env, cwd: link });
+  putPlan(o.out.run, goodPlan());
+  const r = await main(['run'], { env, cwd: link });
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  assert.deepEqual((await main(['status'], { env, cwd: link })).out.errors, []);
+});
+
 test('should leave the run folder out of the change list when VERIFY_CACHE_DIR puts it inside the repo (Fail edge)', async () => {
   const s = setup();
   const env = { ...s.env, VERIFY_CACHE_DIR: join(s.repo, '.verify-cache') };
