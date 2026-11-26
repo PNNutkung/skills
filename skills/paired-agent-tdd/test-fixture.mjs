@@ -2,7 +2,7 @@
 // tdd.cli.test.mjs is the one file that starts the real CLI (spawned tests, parity, fuzz); every other call goes through fx.tdd -> main.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,7 +38,8 @@ exec env "$@"
 `;
 export const writeRunner = (file, text) => { writeFileSync(file, text); chmodSync(file, 0o755); return file; };
 
-export const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
+// maintenance.auto=false: a commit starts no `git maintenance run --auto` process
+export const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', ...a], { encoding: 'utf8' }).trim();
 export const put = (repo, files) => {
   for (const [p, c] of Object.entries(files)) {
     const f = join(repo, p);
@@ -60,19 +61,39 @@ export const argvOf = (fx, cmd, args = []) => [cmd, ...(fx.run && cmd !== 'plan'
 /** the real CLI, spawned: only tdd.cli.test.mjs and the few tests that need a fresh process (ZT_DIR is read when tdd.mjs loads) */
 export const spawnTdd = (argv, env, cwd) => { const r = spawnSync(process.execPath, [TDD, ...argv], { encoding: 'utf8', env, ...(cwd ? { cwd } : {}) }); return { status: r.status, out: r.stdout, err: r.stderr }; };
 
+// The base repo of each set of files is built once a process and copied into each fixture (ADR 0008): git init, add and commit cost about 40 ms CPU a repo,
+// a copy a few. Each test still gets its own repo.
+const templates = new Map();
+let templateRoot;
+function baseRepo(files) {
+  const key = JSON.stringify(files);
+  if (!templates.has(key)) {
+    if (!templateRoot) {
+      templateRoot = realpathSync(mkdtempSync(join(tmpdir(), 'pat-tpl-')));
+      process.on('exit', () => rmSync(templateRoot, { recursive: true, force: true }));
+    }
+    const repo = join(templateRoot, String(templates.size));
+    mkdirSync(repo);
+    git(repo, 'init', '-q');
+    put(repo, files);
+    git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'base');
+    templates.set(key, { repo, head: git(repo, 'rev-parse', 'HEAD') });
+  }
+  return templates.get(key);
+}
+
 // base: src/alpha.txt=old, tests/existing_alpha.sh (needs a file src/alpha.txt). Nothing in the user's repo is ever committed by the gates.
 export function fixture(t, { files = {}, plan = {}, fake = {} } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'pat-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo'), stub = join(dir, 'stub'), tmp = join(dir, 'tmp');
-  for (const d of [repo, stub, tmp]) mkdirSync(d); // TMPDIR=tmp: the per-user zt-review base (the only place the ledger tools approve a run folder) lives in the fixture
-  git(repo, 'init', '-q');
-  put(repo, { 'src/alpha.txt': 'old\n', 'tests/existing_alpha.sh': 'test -f src/alpha.txt\n', ...files });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'base');
+  for (const d of [stub, tmp]) mkdirSync(d); // TMPDIR=tmp: the per-user zt-review base (the only place the ledger tools approve a run folder) lives in the fixture
+  const base = baseRepo({ 'src/alpha.txt': 'old\n', 'tests/existing_alpha.sh': 'test -f src/alpha.txt\n', ...files });
+  cpSync(base.repo, repo, { recursive: true });
   writeRunner(join(stub, 'stub-runner'), STUB);
   writeFileSync(join(stub, 'config.json'), JSON.stringify(fake));
   writeFileSync(join(dir, 'plan.json'), JSON.stringify({ ...PLAN(repo), ...(typeof plan === 'function' ? plan(repo) : plan) }));
-  const fx = { dir, repo, tmp, runner: join(stub, 'stub-runner'), stub, head: git(repo, 'rev-parse', 'HEAD'), run: undefined };
+  const fx = { dir, repo, tmp, runner: join(stub, 'stub-runner'), stub, head: base.head, run: undefined };
   fx.tdd = async (cmd, args = [], env = {}) => {
     const r = await main(argvOf(fx, cmd, args), { env: envOf(fx, env) });
     return { status: r.code, out: r.stdout, err: r.stderr };
