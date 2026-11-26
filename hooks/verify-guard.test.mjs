@@ -1,4 +1,4 @@
-// Tests for the verify-guard hook (ADR 0008 Guard, A10). verdict() runs in-process; a few cases spawn the hook for stdin and the JSON output.
+// Tests for the verify-guard hook (ADR 0009 Guard, A10). verdict() runs in-process; a few cases spawn the hook for stdin and the JSON output.
 // The session marker is written where skills/verify/paths.mjs puts it, under VERIFY_CACHE_DIR in a temp dir.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,4 +1,4 @@
-// Pure writer of docs/verify/<slug>.md sections (ADR 0008 A1, A12): code writes each run's section under a hash marker, and a rerun
+// Pure writer of docs/verify/<slug>.md sections (ADR 0009 A1, A12): code writes each run's section under a hash marker, and a rerun
 // replaces only the sections of the items that ran.
 import { markerLine, splitSections } from './marker.mjs';
 

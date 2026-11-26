@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// verify CLI (ADR 0008): the agent writes the plan; code checks it, runs it and writes the evidence. Prints one JSON line.
+// verify CLI (ADR 0009): the agent writes the plan; code checks it, runs it and writes the evidence. Prints one JSON line.
 //   open --slug S [--repo DIR] [--dod ADR.md]   start a run: items, booked envs and new flags from the ADR; writes the session marker
 //   claims --base REF                           no ADR: candidate flags, CLI options and config keys added on the branch
 //   plan                                        check <run>/plan.json; print it with the preset expects and needsAsk
@@ -204,7 +204,7 @@ async function pool(items, limit, fn) {
 const withFlag = (env, name, value) => { const e = { ...env }; if (value === undefined) delete e[name]; else e[name] = value; return e; };
 const partCap = Math.floor(CAP / 3) - 100;
 
-/** -> { pass, why[], output } for one local entry; a flag entry runs three times (ADR 0008 A3). */
+/** -> { pass, why[], output } for one local entry; a flag entry runs three times (ADR 0009 A3). */
 async function runLocal(e, { env, timeoutSec }, repo) {
   if (!e.flag) {
     const r = await runCommand(e.run, { cwd: repo, env, timeoutSec });

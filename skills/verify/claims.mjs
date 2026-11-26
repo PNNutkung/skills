@@ -1,4 +1,4 @@
-// Standalone use with no ADR (ADR 0008 A2): candidates from the branch diff, and the user's confirmed claims as the items.
+// Standalone use with no ADR (ADR 0009 A2): candidates from the branch diff, and the user's confirmed claims as the items.
 import { FLAG_NAME_RE } from './adr.mjs';
 
 const OPTION_RE = /(?<![\w-])--[a-z][a-z0-9-]+/g;

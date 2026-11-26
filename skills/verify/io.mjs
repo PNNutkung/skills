@@ -1,4 +1,4 @@
-// IO for verify: the repo, the ADR finder, the run folder and the session marker. Copied from dev-workflow's io.mjs on purpose (ADR 0008 A9).
+// IO for verify: the repo, the ADR finder, the run folder and the session marker. Copied from dev-workflow's io.mjs on purpose (ADR 0009 A9).
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

@@ -1,4 +1,4 @@
-// Code-written sections of docs/verify/<slug>.md carry a marker with the hash of their body, so a hand edit shows (ADR 0008 A10).
+// Code-written sections of docs/verify/<slug>.md carry a marker with the hash of their body, so a hand edit shows (ADR 0009 A10).
 // A section runs from a `## <id>` line to the next line starting `## ` outside a fenced block, or EOF; fences are tracked like
 // dev-workflow's parseVerify, so a `## ` line in captured output stays in its section. The marker is the first line after the heading.
 import { createHash } from 'node:crypto';

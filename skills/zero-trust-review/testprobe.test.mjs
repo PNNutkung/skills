@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,25 +11,30 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PROBE = join(HERE, 'testprobe.mjs');
 const REAL_RUNNER = join(HERE, 'sandbox-run.mjs');
 
-// Honors the runner flags, logs its argv, then runs the command after `--` in --cwd. config.json {exit} fakes 86/124.
-const STUB = `
-import { spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const dir = dirname(fileURLToPath(import.meta.url)), a = process.argv.slice(2);
-if (a[0] === '--check') { console.log('stub'); process.exit(0); }
-appendFileSync(join(dir, 'calls.log'), JSON.stringify(a) + '\\n');
-const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
-const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
-const fake = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')).exit;
-if (fake) process.exit(fake);
-const env = { ...process.env };
-for (const kv of vals('--env')) env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
-process.exit(spawnSync(cmd[0], cmd.slice(1), { cwd: vals('--cwd')[0], env, stdio: 'inherit' }).status ?? 1);
+// Honors the runner flags, logs its argv, then runs the command after `--` in --cwd. config.sh FAKE_EXIT fakes 86/124 for every call.
+// A sh script, run directly (probelib runs a runner that is not a node file itself): no node start per call (ADR 0008).
+// calls.log: one record per call, the args each ended by \037 (unit separator), the record by \036 and a newline, written in one append.
+const STUB = `#!/bin/sh
+d=\${0%/*}
+[ "$1" = --check ] && { echo stub; exit 0; }
+rec=$(printf '%s\\037' "$@")
+printf '%s\\036\\n' "$rec" >> "$d/calls.log"
+. "$d/config.sh"
+[ -n "$FAKE_EXIT" ] && exit "$FAKE_EXIT"
+cwd=
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+  case "$1" in --cwd) cwd=$2;; --env) export "$2";; esac
+  shift 2
+done
+shift
+cd "$cwd" || exit 1
+exec "$@"
 `;
+const writeExec = (f, text) => { writeFileSync(f, text); chmodSync(f, 0o755); };
+const readCalls = f => (existsSync(f) ? readFileSync(f, 'utf8').split('\x1e\n').filter(Boolean).map(rec => rec.split('\x1f').slice(0, -1)) : []);
 
-const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
+// maintenance.auto=false: a commit starts no `git maintenance run --auto` process
+const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', ...a], { encoding: 'utf8' }).trim();
 const put = (repo, files) => {
   for (const [p, c] of Object.entries(files)) {
     const f = join(repo, p);
@@ -39,31 +44,43 @@ const put = (repo, files) => {
 };
 
 // base: src/value.txt=old + tests/check.sh (passes only when value.txt has "new"); head: value.txt=new plus `head`
+// Each fixture repo is built once a process and copied into each test's own dir (ADR 0008): git init and two commits cost tens of ms CPU a repo, a copy a few.
+const templates = new Map();
+let templateRoot;
 function fixture(t, { base = {}, head = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tp-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const repo = join(dir, 'repo');
-  mkdirSync(repo);
-  git(repo, 'init', '-q');
-  put(repo, { 'src/value.txt': 'old\n', 'tests/check.sh': 'grep -q new src/value.txt\n', ...base });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'base');
-  const baseRev = git(repo, 'rev-parse', 'HEAD');
-  put(repo, { 'src/value.txt': 'new\n', ...head });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'head');
-  return { dir, repo, base: baseRev, head: git(repo, 'rev-parse', 'HEAD'), scratch: join(dir, 'scratch') };
+  const repo = join(dir, 'repo'), key = JSON.stringify([base, head]);
+  if (!templates.has(key)) {
+    if (!templateRoot) {
+      templateRoot = mkdtempSync(join(tmpdir(), 'tp-tpl-'));
+      process.on('exit', () => rmSync(templateRoot, { recursive: true, force: true }));
+    }
+    const r = join(templateRoot, String(templates.size));
+    mkdirSync(r);
+    git(r, 'init', '-q');
+    put(r, { 'src/value.txt': 'old\n', 'tests/check.sh': 'grep -q new src/value.txt\n', ...base });
+    git(r, 'add', '-A'); git(r, 'commit', '-qm', 'base');
+    const baseRev = git(r, 'rev-parse', 'HEAD');
+    put(r, { 'src/value.txt': 'new\n', ...head });
+    git(r, 'add', '-A'); git(r, 'commit', '-qm', 'head');
+    templates.set(key, { repo: r, base: baseRev, head: git(r, 'rev-parse', 'HEAD') });
+  }
+  const tpl = templates.get(key);
+  cpSync(tpl.repo, repo, { recursive: true });
+  return { dir, repo, base: tpl.base, head: tpl.head, scratch: join(dir, 'scratch') };
 }
 
 function probe(fx, args = [], fake = {}, runner) {
   const sd = join(fx.dir, 'stub');
   mkdirSync(sd, { recursive: true });
-  writeFileSync(join(sd, 'stub-runner.mjs'), STUB);
-  writeFileSync(join(sd, 'config.json'), JSON.stringify(fake));
-  const r = spawnSync(process.execPath, [PROBE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', fx.scratch, '--cmd', 'sh {file}', '--runner', runner ?? join(sd, 'stub-runner.mjs'), ...args], { encoding: 'utf8' });
+  writeExec(join(sd, 'stub-runner'), STUB);
+  writeFileSync(join(sd, 'config.sh'), `FAKE_EXIT=${fake.exit ?? ''}\n`);
+  const r = spawnSync(process.execPath, [PROBE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', fx.scratch, '--cmd', 'sh {file}', '--runner', runner ?? join(sd, 'stub-runner'), ...args], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   const lines = r.stdout.trim().split('\n');
   assert.equal(lines.length, 1, 'stdout is one JSON line');
-  const log = join(sd, 'calls.log');
-  return { out: JSON.parse(lines[0]), calls: existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l)) : [] };
+  return { out: JSON.parse(lines[0]), calls: readCalls(join(sd, 'calls.log')) };
 }
 const vals = (argv, k) => argv.slice(0, argv.indexOf('--')).flatMap((f, i) => (f === k ? [argv[i + 1]] : []));
 
@@ -225,38 +242,40 @@ test('real sandbox runner end to end', { skip: !realSandbox && 'sandbox-run.mjs 
 // ---- ZT_TEST_PROCESS_MAX and --head-out
 const MAX_FLAG = 'ZT_TEST_PROCESS_MAX';
 
-// Like the real runner: the command runs in a process group of its own and the ledger line closes the output (a fixed run id). Each run leaves a marker in
-// live/ while it lasts and logs how many markers it saw (peak.log).
-const PROC_STUB = `
-import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-const dir = dirname(fileURLToPath(import.meta.url)), a = process.argv.slice(2);
-if (a[0] === '--check') { console.log('stub'); process.exit(0); }
-appendFileSync(join(dir, 'calls.log'), JSON.stringify(a) + '\\n');
-const cut = a.indexOf('--'), flags = a.slice(0, cut), cmd = a.slice(cut + 1);
-const vals = k => flags.flatMap((f, i) => (f === k ? [flags[i + 1]] : []));
-const live = join(dir, 'live'), me = join(live, String(process.pid));
-mkdirSync(live, { recursive: true });
-writeFileSync(me, '');
-appendFileSync(join(dir, 'peak.log'), readdirSync(live).length + '\\n');
-const env = { ...process.env };
-for (const kv of vals('--env')) env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
-const child = spawn(cmd[0], cmd.slice(1), { cwd: vals('--cwd')[0], env, stdio: 'inherit', detached: true });
-process.on('SIGTERM', () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } });
-child.on('exit', code => { rmSync(me, { force: true }); process.stderr.write('ZT-RUN stub exit=' + (code ?? 1) + '\\n'); process.exit(code ?? 1); });
+// Like the real runner: the ledger line closes the output (a fixed run id). Each run leaves a marker in live/ while it lasts and logs how many markers it saw
+// (peak.log). A sh script like STUB: no node start per call; no test here kills a running command, so it needs no process group of its own.
+const PROC_STUB = `#!/bin/sh
+d=\${0%/*}
+[ "$1" = --check ] && { echo stub; exit 0; }
+rec=$(printf '%s\\037' "$@")
+printf '%s\\036\\n' "$rec" >> "$d/calls.log"
+mkdir -p "$d/live"
+me="$d/live/$$"
+: > "$me"
+n=$(ls "$d/live" | wc -l)
+echo $n >> "$d/peak.log"
+cwd=
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+  case "$1" in --cwd) cwd=$2;; --env) export "$2";; esac
+  shift 2
+done
+shift
+cd "$cwd" || { rm -f "$me"; exit 1; }
+"$@"; code=$?
+rm -f "$me"
+printf 'ZT-RUN stub exit=%s\\n' "$code" >&2
+exit "$code"
 `;
 
 function probeProc(fx, { args = [], flags = {} } = {}) {
   const sd = mkdtempSync(join(fx.dir, 'pstub-'));
-  writeFileSync(join(sd, 'stub-runner.mjs'), PROC_STUB);
+  writeExec(join(sd, 'stub-runner'), PROC_STUB);
   const env = { ...process.env };
   delete env[MAX_FLAG];
   const r = spawnSync(process.execPath, [PROBE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', mkdtempSync(join(fx.dir, 'scr-')), '--cmd', 'sh {file}',
-    '--runner', join(sd, 'stub-runner.mjs'), ...args], { encoding: 'utf8', env: { ...env, ...flags } });
+    '--runner', join(sd, 'stub-runner'), ...args], { encoding: 'utf8', env: { ...env, ...flags } });
   const lines = name => (existsSync(join(sd, name)) ? readFileSync(join(sd, name), 'utf8').trim().split('\n').filter(Boolean) : []);
-  return { ...r, runner: join(sd, 'stub-runner.mjs'), calls: lines('calls.log').map(l => JSON.parse(l)), peak: Math.max(0, ...lines('peak.log').map(Number)) };
+  return { ...r, runner: join(sd, 'stub-runner'), calls: readCalls(join(sd, 'calls.log')), peak: Math.max(0, ...lines('peak.log').map(Number)) };
 }
 const stableOut = s => s.replace(/"sec":[\d.]+/g, '"sec":0');
 const normalCalls = (fx, calls) => {
@@ -353,4 +372,24 @@ test('should stop with exit 2 naming the fix for any ZT_TEST_PROCESS_MAX that is
       assert.equal(r.calls.length, 0, 'nothing ran');
     }
   }
+});
+
+// ---------------------------------------------------------------- --runner-inprocess (ADR 0008 A18)
+const DIRECT_RUN = join(HERE, '..', 'paired-agent-tdd', 'direct-run.mjs');
+const spawnProbe = (fx, args) => spawnSync(process.execPath, [PROBE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', fx.scratch, '--cmd', 'sh {file}', ...args], { encoding: 'utf8' });
+
+test('should give the same verdicts with --runner-inprocess as with the spawned direct runner, and report it as direct, when --runner is direct-run.mjs (RunnerFlag, Parity)', t => {
+  const fx = fixture(t, { head: { 'tests/always.sh': 'exit 0\n' } });
+  const slim = out => ({ ...out, tests: out.tests.map(({ head, base, ...r }) => ({ ...r, head: head.exit, base: base.exit })) });
+  const [spawned, inproc] = [[], ['--runner-inprocess']].map(extra => spawnProbe(fx, ['--runner', DIRECT_RUN, '--flake', '1', ...extra]));
+  assert.equal(inproc.status, 0, inproc.stderr);
+  assert.deepEqual(slim(JSON.parse(inproc.stdout)), slim(JSON.parse(spawned.stdout)));
+  assert.equal(JSON.parse(inproc.stdout).backend, 'direct');
+});
+
+test('should exit 2 naming the fix when --runner-inprocess is given with a runner that is not direct-run.mjs (RunnerFlag)', t => {
+  const fx = fixture(t);
+  const r = spawnProbe(fx, ['--runner', join(HERE, 'sandbox-run.mjs'), '--runner-inprocess']);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^testprobe: --runner-inprocess needs --runner to be the built-in direct-run.mjs of paired-agent-tdd/);
 });

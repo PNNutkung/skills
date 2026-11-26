@@ -1,4 +1,4 @@
-// Pure check of plan.json against the items, the booked envs, the new flags and answers.md (ADR 0008 A1, A3, A5, A6, A8, A14).
+// Pure check of plan.json against the items, the booked envs, the new flags and answers.md (ADR 0009 A1, A3, A5, A6, A8, A14).
 import { isAbsolute, normalize } from 'node:path';
 import { describeExpect, lintExpect } from './expect.mjs';
 

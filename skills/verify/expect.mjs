@@ -1,4 +1,4 @@
-// Pure pass/fail rules for one run (ADR 0008 A4, A14): the exit code, the runner presets and the agent's expect, plus the lint of a weak expect.
+// Pure pass/fail rules for one run (ADR 0009 A4, A14): the exit code, the runner presets and the agent's expect, plus the lint of a weak expect.
 const REGEX_FORM_RE = /^\/(.*)\/([a-z]*)$/s;
 const BARE_WORDS = new Set(['ok', 'pass', 'passed', 'done', 'success', 'true', '✔']);
 const TEST_LIKE_RE = /test|spec|e2e|check/i;

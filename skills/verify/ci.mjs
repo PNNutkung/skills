@@ -1,4 +1,4 @@
-// A [ci]-type env (ADR 0008 A5): the check runs of HEAD through gh's REST API (GraphQL is blocked in cloud sessions). gh is injected for tests.
+// A [ci]-type env (ADR 0009 A5): the check runs of HEAD through gh's REST API (GraphQL is blocked in cloud sessions). gh is injected for tests.
 import { execFileSync } from 'node:child_process';
 
 const GH_TIMEOUT_MS = 30000;

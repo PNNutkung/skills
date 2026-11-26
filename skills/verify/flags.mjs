@@ -4,7 +4,7 @@
 export class FlagError extends Error {}
 
 export const FLAG = { guard: 'VERIFY_GUARD_ENABLED', timeout: 'VERIFY_RUN_TIMEOUT_MAX' };
-export const REMOVED = { VERIFY_FLAG_RUNS_ENABLED: 'flag runs always happen (ADR 0008 A15)' };
+export const REMOVED = { VERIFY_FLAG_RUNS_ENABLED: 'flag runs always happen (ADR 0009 A15)' };
 const UNLIMITED = 'unlimited';
 
 const raw = (env, name) => String(env?.[name] ?? '').trim();

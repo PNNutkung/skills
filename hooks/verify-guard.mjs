@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash) for the verify skill (ADR 0008 A10). On by default: VERIFY_GUARD_ENABLED=false turns it off.
+// PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash) for the verify skill (ADR 0009 A10). On by default: VERIFY_GUARD_ENABLED=false turns it off.
 // An invalid VERIFY_GUARD_ENABLED, or the removed VERIFY_FLAG_RUNS_ENABLED still set, denies every guarded tool with the fix.
 // While this session has a verify run open (skills/verify/paths.mjs session marker), only the repo is fenced:
 //   - file edits in the repo outside docs/verify/ are denied (the run folder lives in the cache, outside the repo),

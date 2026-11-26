@@ -68,7 +68,7 @@ test('should point dev-workflow step 5 at verify and own the VERIFY flag prefix 
 test('should take a minor at or above the one verify shipped in and list verify in both plugin descriptions when the plugin is bumped (Docs)', () => {
   const plugin = JSON.parse(root('.claude-plugin/plugin.json'));
   const [major, minor] = plugin.version.split('.').map(Number);
-  assert.ok(major > 2 || (major === 2 && minor >= 7), `verify shipped in 2.7.0; plugin is ${plugin.version}`);
+  assert.ok(major > 2 || (major === 2 && minor >= 8), `verify shipped in 2.8.0; plugin is ${plugin.version}`);
   assert.match(plugin.description, /\bverify\b/);
   assert.match(JSON.parse(root('.claude-plugin/marketplace.json')).plugins[0].description, /\bverify\b/);
 });

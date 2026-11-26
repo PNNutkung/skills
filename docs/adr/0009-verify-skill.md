@@ -11,7 +11,7 @@ touches:
   - "rules/checks/flag-defaults-e2e.mjs"
 dod: verify-skill
 ---
-# 8. Verify skill
+# 9. Verify skill
 
 Date: 2026-11-25
 Status: Accepted
@@ -22,7 +22,7 @@ Quoted verbatim from the ticket and the specs this decision rests on:
 
 (no ticket or spec quotes)
 
-Step 5 of dev-workflow (ADR 0004) is a gate, not a tool. `checkVerify` reads `docs/verify/<slug>.md` and checks that each DoD item has env, run, result and output, and (ADR 0005) that env starts with a booked env name. Nothing runs the `run:` command. Nothing compares the output with a real run. Nothing proves that a new feature flag works when it is on, when it is off and when it has a bad value. Every verify file so far was typed by the agent. Nut asked for a skill that helps to verify new features and config. This ADR records the `verify` skill: the agent writes a plan, and code runs it and writes the evidence. The dev-workflow gate does not change. No ticket: the ADR and the PR carry the work (A17). The number is 0008 because PR #34 holds 0007.
+Step 5 of dev-workflow (ADR 0004) is a gate, not a tool. `checkVerify` reads `docs/verify/<slug>.md` and checks that each DoD item has env, run, result and output, and (ADR 0005) that env starts with a booked env name. Nothing runs the `run:` command. Nothing compares the output with a real run. Nothing proves that a new feature flag works when it is on, when it is off and when it has a bad value. Every verify file so far was typed by the agent. Nut asked for a skill that helps to verify new features and config. This ADR records the `verify` skill: the agent writes a plan, and code runs it and writes the evidence. The dev-workflow gate does not change. No ticket: the ADR and the PR carry the work (A17). The number is 0009 because ADR 0007 (PR #34) and ADR 0008 (PR #37) came first.
 
 ## Decision
 

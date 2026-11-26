@@ -19,6 +19,7 @@ Skills installed with `npx skills add` get their own folder only, without `rules
 | [`test-naming.md`](./test-naming.md) | Test names say `should ... when ...` | paired-agent-tdd, `hooks/test-name-guard`, `rules/checks/test-names` (CI) |
 | [`paths.md`](./paths.md) | Compare paths by their real path; a test covers a linked folder | every skill |
 | [`performance.md`](./performance.md) | Use every core when it lowers wall time; measure the CPU floor before a speed target | every skill, definition-of-done |
+| [`flaky-tests.md`](./flaky-tests.md) | Compare two-pipe output as a set; poll for a start instead of a fixed wait | paired-agent-tdd, qa-sweep |
 
 ## Guardrails and what enforces them
 
@@ -53,8 +54,9 @@ Every flag, its values and its default: [README, Flags](../README.md#flags).
 | qa-sweep runs e2e only against a local host unless the user confirms the URL | `target.mjs` | always |
 | A change request ships unit, integration and e2e tests, and removes or skips no test silently | `hooks/pr-test-tiers` (standalone) | install it |
 | A commit adds no test named outside `should ... when ...` | `hooks/test-name-guard` (standalone) | install it |
-| A branch adds no test named outside `should ... when ...` | `rules/checks/test-names.mjs` in CI (`.github/workflows/test.yml`), tested by `rules/checks/test-names.test.mjs` | always (CI) |
+| A branch adds no test named outside `should ... when ...`, and removes no test that `rules/checks/test-merges.json` does not map | `rules/checks/test-names.mjs` in CI (`.github/workflows/test.yml`), tested by `rules/checks/test-names.test.mjs` | always (CI) |
 | No async `spawn` with a `timeout:` option, and no `--test-concurrency=1` / `concurrency: 1` (or `false`) in a test or workflow, beyond today's counts ([`performance.md`](./performance.md)) | `.ratchet.json` rules `spawn-async-timeout` and `test-serial`, checked by `ratchet.mjs check --ci` in CI | always (CI) |
-| One test file takes at most 30 s and the suite at most 120 s ([`performance.md`](./performance.md)) | `rules/checks/test-time.mjs` (a node --test reporter plus a check), CI node 24 on Ubuntu | `CHECKS_TEST_FILE_SECONDS_MAX`, `CHECKS_TEST_SUITE_SECONDS_MAX`, `CHECKS_TEST_FILE_WARN_SECONDS_MAX` (warns only) |
+| One test file takes at most 30 s and the suite at most 120 s ([`performance.md`](./performance.md)) | `rules/checks/test-time.mjs` (a node --test reporter plus a check), CI node 24 on Ubuntu | `CHECKS_TEST_FILE_SECONDS_MAX`, `CHECKS_TEST_SUITE_SECONDS_MAX`, `CHECKS_TEST_FILE_WARN_SECONDS_MAX` and `CHECKS_TEST_SUITE_WARN_SECONDS_MAX` (warn only) |
+| CI and the documented local command run the suite with the slowest test files first and more files at once than cores ([`performance.md`](./performance.md)) | `rules/checks/run-tests.mjs` (order from `rules/checks/test-times.json`), every CI test job; `rules/checks/run-tests.test.mjs` checks the workflow | `CHECKS_TEST_CONCURRENCY_MAX` (default cores + 1) |
 | An in-process `main(argv, { cwd })` resolves its cwd to the real path and has a test marked `// cwd: linked` that runs it through a symlinked folder ([`paths.md`](./paths.md)) | `rules/checks/inproc-cwd.mjs`, run by `rules/checks/inproc-cwd.test.mjs` in CI | always (CI) |
 | Every skill with a flag that defaults ON keeps an e2e test marked `flags: defaults` that runs with that skill's flags unset ([`flag-defaults-e2e.md`](./flag-defaults-e2e.md)) | `rules/checks/flag-defaults-e2e.mjs`, run by `rules/checks/flag-defaults-e2e.test.mjs` in CI | always (CI) |

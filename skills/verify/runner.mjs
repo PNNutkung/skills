@@ -1,4 +1,4 @@
-// The small runner (ADR 0008 A18): bash -c in its own process group, stdout and stderr in arrival order, and a timeout that kills the group.
+// The small runner (ADR 0009 A18): bash -c in its own process group, stdout and stderr in arrival order, and a timeout that kills the group.
 import { spawn } from 'node:child_process';
 
 // set by node --test in its children; a nested `node --test` would then print v8 frames instead of its report

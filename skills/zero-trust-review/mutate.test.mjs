@@ -1,10 +1,10 @@
 // Offline checks for mutate.mjs: fixture git repos plus a stub runner, so no real sandbox is needed. Run: node --test mutate.test.mjs
 // flags: defaults. mutate.mjs runs with the inherited env and no ZT_MUTATION_* flag in most tests; see rules/flag-defaults-e2e.md.
 // Most tests call main() in-process (ADR 0003 ZtInProc); the CLI itself is spawned for usage errors, exit codes, one real run and the parity/fuzz checks.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +41,8 @@ const writeExec = (f, text) => { writeFileSync(f, text); chmodSync(f, 0o755); };
 const stubConfig = (fake = {}) => `FAKE_EXIT=${fake.exit ?? ''}\nFAKE_MUTANT_EXIT=${fake.fakeMutantExit ?? ''}\n`;
 const readCalls = f => (existsSync(f) ? readFileSync(f, 'utf8').split('\x1e\n').filter(Boolean).map(rec => rec.split('\x1f').slice(0, -1)) : []);
 
-const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
+// maintenance.auto=false: a commit starts no `git maintenance run --auto` process
+const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', ...a], { encoding: 'utf8' }).trim();
 const put = (repo, files) => {
   for (const [p, c] of Object.entries(files)) {
     const f = join(repo, p);
@@ -65,18 +66,39 @@ assert classify(10) == "big"
 assert classify(9) == "small"
 `;
 
+// Each fixture repo is built once a process by `build(repo)` -> its revisions, and copied into each test's own dir (ADR 0008): git init and commits cost
+// tens of ms CPU a repo, a copy a few.
+const templates = new Map();
+let templateRoot;
+function copyOf(dir, key, build) {
+  if (!templates.has(key)) {
+    if (!templateRoot) {
+      templateRoot = mkdtempSync(join(tmpdir(), 'mut-tpl-'));
+      process.on('exit', () => rmSync(templateRoot, { recursive: true, force: true }));
+    }
+    const repo = join(templateRoot, String(templates.size));
+    mkdirSync(repo);
+    templates.set(key, { repo, revs: build(repo) });
+  }
+  const { repo, revs } = templates.get(key);
+  cpSync(repo, join(dir, 'repo'), { recursive: true });
+  return revs;
+}
+
 function fixture(t, { source = CALC, testText = TEST_CALC, extra = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'mut-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo');
-  mkdirSync(repo);
-  git(repo, 'init', '-q');
-  put(repo, { 'README.md': 'x\n' });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'base');
-  const base = git(repo, 'rev-parse', 'HEAD');
-  put(repo, { 'src/calc.py': source, 'tests/test_calc.py': testText, ...extra });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'head');
-  return { dir, repo, base, head: git(repo, 'rev-parse', 'HEAD'), scratch: join(dir, 'scratch') };
+  const { base, head } = copyOf(dir, JSON.stringify(['diff', source, testText, extra]), r => {
+    git(r, 'init', '-q');
+    put(r, { 'README.md': 'x\n' });
+    git(r, 'add', '-A'); git(r, 'commit', '-qm', 'base');
+    const b = git(r, 'rev-parse', 'HEAD');
+    put(r, { 'src/calc.py': source, 'tests/test_calc.py': testText, ...extra });
+    git(r, 'add', '-A'); git(r, 'commit', '-qm', 'head');
+    return { base: b, head: git(r, 'rev-parse', 'HEAD') };
+  });
+  return { dir, repo, base, head, scratch: join(dir, 'scratch') };
 }
 
 // main() in-process, shaped like a spawnSync result
@@ -101,8 +123,19 @@ async function mutate(fx, args = [], fake = {}, { cmd = 'python3 {file}', runner
 
 const skip = !hasPython && 'python3 not available';
 
+// One default run (the default fixture, no args, no fake exit) shared by the tests that only read what it did (ADR 0008 A6): each of them ran this same run on its own.
+// The git status before the run is taken here too, for the test that checks the repo is untouched.
+const cleanups = [];
+after(() => { for (const f of cleanups) f(); });
+let sharedRun;
+const defaultRun = () => (sharedRun ??= (async () => {
+  const fx = fixture({ after: f => cleanups.push(f) });
+  const before = git(fx.repo, 'status', '--porcelain');
+  return { fx, before, r: await mutate(fx) };
+})());
+
 test('tests that pin the code kill its mutants; code the tests never touch survives, with a citable run id', { skip }, async t => {
-  const r = await mutate(fixture(t));
+  const { r } = await defaultRun();
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.out.mutants.length > 0);
   for (const m of r.out.mutants.filter(m => m.line <= 4)) assert.equal(m.result, 'killed', `${m.file}:${m.line} ${m.op}`);
@@ -117,7 +150,7 @@ test('tests that pin the code kill its mutants; code the tests never touch survi
 });
 
 test('mutants carry no full-line payload, only before/after, and every id is unique', { skip }, async t => {
-  const r = await mutate(fixture(t));
+  const { r } = await defaultRun();
   assert.ok(r.out.mutants.every(m => !('newLine' in m) && m.before && m.after && m.before !== m.after));
   assert.equal(new Set(r.out.mutants.map(m => m.id)).size, r.out.mutants.length);
 });
@@ -162,8 +195,7 @@ test('--budget 0 skips every mutant', { skip }, async t => {
 });
 
 test('python never writes bytecode into the trees: a same-size mutant must run the new code', { skip }, async t => {
-  const fx = fixture(t);
-  const r = await mutate(fx);
+  const { fx, r } = await defaultRun();
   assert.ok(r.calls.length > 0 && r.calls.every(a => a.some((x, i) => x === '--env' && a[i + 1] === 'PYTHONDONTWRITEBYTECODE=1')));
   const scratch = realpathSync(fx.scratch);
   for (const d of readdirSync(scratch)) assert.equal(existsSync(join(scratch, d, 'src', '__pycache__')), false, d);
@@ -173,7 +205,7 @@ test('python never writes bytecode into the trees: a same-size mutant must run t
 });
 
 test('a survivor and a killed mutant both carry a quote that the ledger output will contain', { skip }, async t => {
-  const r = await mutate(fixture(t));
+  const { r } = await defaultRun();
   for (const m of r.out.mutants) assert.match(m.quote, new RegExp(`^ZT-MUTANT ${m.id} ${m.file.replace('.', '\\.')}:${m.line} ${m.op} exit=${m.result === 'survived' ? 0 : '[1-9]\\d*'}$`));
   const stamped = r.calls.filter(a => a.at(-1).includes('ZT-MUTANT X-'));
   assert.equal(stamped.length, r.out.mutants.length, 'one stamped run per mutant (one test file); the baseline run is not stamped');
@@ -210,17 +242,14 @@ test('a mutant whose run did not finish cleanly (no stamp: killed, timed out) ge
 });
 
 test('the repo is never modified, and mutated files are restored in the scratch trees', { skip }, async t => {
-  const fx = fixture(t);
-  const before = git(fx.repo, 'status', '--porcelain');
-  await mutate(fx);
+  const { fx, before } = await defaultRun();
   assert.equal(git(fx.repo, 'status', '--porcelain'), before);
   const scratch = realpathSync(fx.scratch);
   for (const d of readdirSync(scratch)) assert.equal(readFileSync(join(scratch, d, 'src/calc.py'), 'utf8'), CALC, d);
 });
 
 test('every command goes through the runner, with --cwd and --rw on a scratch tree, never the repo', { skip }, async t => {
-  const fx = fixture(t);
-  const r = await mutate(fx);
+  const { fx, r } = await defaultRun();
   assert.ok(r.calls.length > 0);
   const scratch = realpathSync(fx.scratch);
   for (const a of r.calls) {
@@ -270,10 +299,11 @@ function filesFixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'mut-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo');
-  mkdirSync(repo);
-  git(repo, 'init', '-q');
-  put(repo, { 'src/calc.py': FILES_CALC, 'tests/test_calc.py': 'print("ok")\n' });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'only');
+  copyOf(dir, 'files', r => {
+    git(r, 'init', '-q');
+    put(r, { 'src/calc.py': FILES_CALC, 'tests/test_calc.py': 'print("ok")\n' });
+    git(r, 'add', '-A'); git(r, 'commit', '-qm', 'only');
+  });
   const sd = join(dir, 'stub');
   mkdirSync(sd);
   writeExec(join(sd, 'stub-runner'), STUB);
@@ -677,4 +707,24 @@ test('should share no state between two in-process calls when a failing call com
   const again = await main(argv);
   assert.deepEqual(normalize(again), normalize(fresh), 'no flag, limiter or output buffer carried over');
   assert.equal(again.stdout.split('\n').length, 2, 'the output of one call only');
+});
+
+// ---------------------------------------------------------------- --runner-inprocess (ADR 0008 A18)
+const DIRECT_RUN = join(HERE, '..', 'paired-agent-tdd', 'direct-run.mjs');
+
+test('should give the same mutants and verdicts with --runner-inprocess as with the spawned direct runner when --runner is direct-run.mjs (RunnerFlag, Parity)', { skip }, async t => {
+  const fx = fixture(t);
+  const slim = r => { const o = JSON.parse(r.stdout); return { ...o, summary: o.summary.replace(/\(run \S+\)/g, ''), mutants: o.mutants.map(({ run, ...m }) => ({ ...m, run: typeof run })) }; };
+  const argv = extra => mutateArgs(fx, stubDir(fx, {}), 'python3 {file}', DIRECT_RUN, ['--max', '3', ...extra]);
+  const [spawned, inproc] = await Promise.all([inProc(argv([])), inProc(argv(['--runner-inprocess']))]);
+  assert.equal(inproc.status, 0, inproc.stderr);
+  assert.deepEqual(slim(inproc), slim(spawned));
+  assert.deepEqual([JSON.parse(inproc.stdout).backend, slim(inproc).mutants.length > 0], ['direct', true]);
+});
+
+test('should exit 2 naming the fix when --runner-inprocess is given with a runner that is not direct-run.mjs (RunnerFlag)', async t => {
+  const fx = fixture(t);
+  const r = await inProc(mutateArgs(fx, stubDir(fx, {}), 'python3 {file}', undefined, ['--runner-inprocess']));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^mutate: --runner-inprocess needs --runner to be the built-in direct-run.mjs of paired-agent-tdd/);
 });

@@ -1,4 +1,4 @@
-// The work tree outside docs/verify at open, and what changed since (ADR 0008 Fail, Guard): the backstop for any guard bypass.
+// The work tree outside docs/verify at open, and what changed since (ADR 0009 Fail, Guard): the backstop for any guard bypass.
 // A snapshot is HEAD plus a content hash of each file that differs from HEAD or is untracked (not ignored), outside docs/verify.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';

@@ -1,4 +1,4 @@
-// Pure readers of the ADR that definition-of-done wrote, and of answers.md. Copied rules, not imports: verify works alone (ADR 0008 A9).
+// Pure readers of the ADR that definition-of-done wrote, and of answers.md. Copied rules, not imports: verify works alone (ADR 0009 A9).
 import { basename } from 'node:path';
 
 const DOD_HEADING_RE = /^## Definition of done\s*$/;

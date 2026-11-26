@@ -1,4 +1,4 @@
-# Verify: verify-skill (ADR 0008)
+# Verify: verify-skill (ADR 0009)
 
 ## Plan
 <!-- verify: written by verify.mjs; sha256:54424be40c7fc6b5 -->
@@ -2479,7 +2479,7 @@ gate-and-qa-sweep-unchanged
 ```
 
 ## Dogfood
-Hand-written. This file was written by the verify skill itself (`verify.mjs open`, `plan`, `run`) on its own ADR 0008: 16 items, booked `[cloud]` and `[ci]`, new flags VERIFY_GUARD_ENABLED and VERIFY_RUN_TIMEOUT_MAX (each run unset, flipped and invalid). The first run found two real bugs, fixed in bc04732:
+Hand-written. This file was written by the verify skill itself (`verify.mjs open`, `plan`, `run`) on its own ADR 0009 (first numbered 0008): 16 items, booked `[cloud]` and `[ci]`, new flags VERIFY_GUARD_ENABLED and VERIFY_RUN_TIMEOUT_MAX (each run unset, flipped and invalid). The first run found two real bugs, fixed in bc04732:
 - a failed section was never intact: the `why:` line was added after the hash, so `status` and the guard saw a code-written section as hand-edited;
 - `hooks/verify-guard.test.mjs` failed when the caller's shell set `VERIFY_GUARD_ENABLED=false` (the flipped flag run): the spawned hook inherited it.
 The flag commands were also reordered so the invalid run fails on the flag error itself (`verify.mjs status` first), not on a test that only happens to name the flag.

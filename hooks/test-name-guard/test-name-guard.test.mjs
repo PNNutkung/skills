@@ -4,7 +4,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,17 +20,24 @@ const git = (cwd, ...args) => {
 };
 
 /** A repo on branch `feature` off `main`, with tests/test_a.py holding `body` (staged, and committed when `commit` is true). */
+// The base (main with one commit, then branch feature) is built once and copied into each repo (ADR 0008): fewer git processes, each repo still its own.
+let base;
 function repo(body, { commit = false } = {}) {
+  if (!base) {
+    base = mkdtempSync(join(tmpdir(), 'tng-base-'));
+    made.push(base);
+    git(base, 'init', '-q', '-b', 'main');
+    writeFileSync(join(base, 'README.md'), 'x\n');
+    git(base, 'add', '-A'); git(base, '-c', 'maintenance.auto=false', 'commit', '-qm', 'base');
+    git(base, 'checkout', '-qb', 'feature');
+  }
   const dir = mkdtempSync(join(tmpdir(), 'tng-'));
   made.push(dir);
-  git(dir, 'init', '-q', '-b', 'main');
-  writeFileSync(join(dir, 'README.md'), 'x\n');
-  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'base');
-  git(dir, 'checkout', '-qb', 'feature');
+  cpSync(base, dir, { recursive: true });
   mkdirSync(join(dir, 'tests'));
   writeFileSync(join(dir, 'tests', 'test_a.py'), body);
   git(dir, 'add', '-A');
-  if (commit) git(dir, 'commit', '-qm', 'tests');
+  if (commit) git(dir, '-c', 'maintenance.auto=false', 'commit', '-qm', 'tests');
   return dir;
 }
 const hook = (command, cwd, mode) => {
