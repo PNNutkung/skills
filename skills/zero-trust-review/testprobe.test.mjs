@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,8 @@ exec "$@"
 const writeExec = (f, text) => { writeFileSync(f, text); chmodSync(f, 0o755); };
 const readCalls = f => (existsSync(f) ? readFileSync(f, 'utf8').split('\x1e\n').filter(Boolean).map(rec => rec.split('\x1f').slice(0, -1)) : []);
 
-const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
+// maintenance.auto=false: a commit starts no `git maintenance run --auto` process
+const git = (repo, ...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', ...a], { encoding: 'utf8' }).trim();
 const put = (repo, files) => {
   for (const [p, c] of Object.entries(files)) {
     const f = join(repo, p);
@@ -43,18 +44,31 @@ const put = (repo, files) => {
 };
 
 // base: src/value.txt=old + tests/check.sh (passes only when value.txt has "new"); head: value.txt=new plus `head`
+// Each fixture repo is built once a process and copied into each test's own dir (ADR 0008): git init and two commits cost tens of ms CPU a repo, a copy a few.
+const templates = new Map();
+let templateRoot;
 function fixture(t, { base = {}, head = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tp-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const repo = join(dir, 'repo');
-  mkdirSync(repo);
-  git(repo, 'init', '-q');
-  put(repo, { 'src/value.txt': 'old\n', 'tests/check.sh': 'grep -q new src/value.txt\n', ...base });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'base');
-  const baseRev = git(repo, 'rev-parse', 'HEAD');
-  put(repo, { 'src/value.txt': 'new\n', ...head });
-  git(repo, 'add', '-A'); git(repo, 'commit', '-qm', 'head');
-  return { dir, repo, base: baseRev, head: git(repo, 'rev-parse', 'HEAD'), scratch: join(dir, 'scratch') };
+  const repo = join(dir, 'repo'), key = JSON.stringify([base, head]);
+  if (!templates.has(key)) {
+    if (!templateRoot) {
+      templateRoot = mkdtempSync(join(tmpdir(), 'tp-tpl-'));
+      process.on('exit', () => rmSync(templateRoot, { recursive: true, force: true }));
+    }
+    const r = join(templateRoot, String(templates.size));
+    mkdirSync(r);
+    git(r, 'init', '-q');
+    put(r, { 'src/value.txt': 'old\n', 'tests/check.sh': 'grep -q new src/value.txt\n', ...base });
+    git(r, 'add', '-A'); git(r, 'commit', '-qm', 'base');
+    const baseRev = git(r, 'rev-parse', 'HEAD');
+    put(r, { 'src/value.txt': 'new\n', ...head });
+    git(r, 'add', '-A'); git(r, 'commit', '-qm', 'head');
+    templates.set(key, { repo: r, base: baseRev, head: git(r, 'rev-parse', 'HEAD') });
+  }
+  const tpl = templates.get(key);
+  cpSync(tpl.repo, repo, { recursive: true });
+  return { dir, repo, base: tpl.base, head: tpl.head, scratch: join(dir, 'scratch') };
 }
 
 function probe(fx, args = [], fake = {}, runner) {
