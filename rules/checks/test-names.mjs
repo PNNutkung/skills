@@ -18,16 +18,29 @@ export const JS_TITLE = /^should\s+\S.*\s+when\s+\S.*$/;
 export const MERGES = 'rules/checks/test-merges.json';
 export const PY_NAME =/^test_should_[a-z0-9]+(?:_[a-z0-9]+)*_when_[a-z0-9]+(?:_[a-z0-9]+)*$/;
 
+// `--- `/`+++ ` are file headers only between a `diff --git` line and the first hunk: inside a hunk they are a removed `-- ...` or an added `++ ...` line
+function* lines(diff) {
+  let header = false;
+  for (const raw of diff.split('\n')) {
+    if (raw.startsWith('diff --git ')) { header = true; yield { raw, kind: 'diff' }; continue; }
+    const f = header && /^(---|\+\+\+) (?:[ab]\/)?(.*)$/.exec(raw);
+    if (f) { yield { raw, kind: f[1] === '---' ? 'from' : 'to', file: f[2] === '/dev/null' ? null : f[2] }; continue; }
+    if (raw.startsWith('@@')) header = false;
+    if (!header) yield { raw, kind: 'line' };
+  }
+}
+
 // The added tests in a unified diff whose names break the rule: [{ file, line, name }].
 export function badNames(diff) {
   const out = [];
   let file = null, line = 0;
-  for (const raw of diff.split('\n')) {
-    const f = /^\+\+\+ (?:b\/)?(.*)$/.exec(raw);
-    if (f) { file = f[1] === '/dev/null' ? null : f[1]; continue; }
+  for (const { raw, kind, file: f } of lines(diff)) {
+    if (kind === 'diff') { file = null; continue; }
+    if (kind === 'to') { file = f; continue; }
+    if (kind === 'from') continue;
     const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(raw);
     if (h) { line = Number(h[1]); continue; }
-    if (!file || raw.startsWith('---')) continue;
+    if (!file) continue;
     if (raw.startsWith('+')) {
       const js = JS_FILE.test(file) && JS_CASE.exec(raw);
       const py = PY_FILE.test(file) && PY_DEF.exec(raw);
@@ -45,20 +58,33 @@ const JS_ANY = /^[-+]\s*(?:test|it)(?:\.(?:only|skip))?(?:\.each\(.*?\))?\(\s*([
 const PY_ANY = /^[-+]\s*(?:async\s+)?def\s+(test_\w*)\s*\(/;
 const caseName = (file, raw) => (JS_FILE.test(file) && JS_ANY.exec(raw)?.[2]) || (PY_FILE.test(file) && PY_ANY.exec(raw)?.[1]) || null;
 
-/** The tests a unified diff removes: [{ file, name }]. A name the diff adds again in any test file is a move or an edit, not a removal. */
+/** The tests a unified diff removes: [{ file, name }]. Each time the diff adds a name again in a test file, one removal of that name is a move or an edit
+ * (one in the same file first); the removals of a name beyond its additions are removals. */
 export function removedTests(diff) {
-  const gone = [], added = new Set();
+  const gone = [], added = new Map(); // name -> files it is added in, once per addition
   let from = null, to = null;
-  for (const raw of diff.split('\n')) {
-    const a = /^--- (?:a\/)?(.*)$/.exec(raw);
-    if (a) { from = a[1] === '/dev/null' ? null : a[1]; continue; }
-    const b = /^\+\+\+ (?:b\/)?(.*)$/.exec(raw);
-    if (b) { to = b[1] === '/dev/null' ? null : b[1]; continue; }
+  for (const { raw, kind, file } of lines(diff)) {
+    if (kind === 'diff') { from = to = null; continue; }
+    if (kind === 'from') { from = file; continue; }
+    if (kind === 'to') { to = file; continue; }
     if (raw.startsWith('-') && from) { const n = caseName(from, raw); if (n) gone.push({ file: from, name: n }); }
-    if (raw.startsWith('+') && to) { const n = caseName(to, raw); if (n) added.add(n); }
+    if (raw.startsWith('+') && to) { const n = caseName(to, raw); if (n) added.set(n, [...(added.get(n) ?? []), to]); }
   }
-  return gone.filter(g => !added.has(g.name));
+  const kept = new Set();
+  for (const pass of [g => added.get(g.name)?.indexOf(g.file) ?? -1, g => (added.get(g.name)?.length ? 0 : -1)]) {
+    for (const g of gone) {
+      if (kept.has(g)) continue;
+      const i = pass(g);
+      if (i >= 0) { added.get(g.name).splice(i, 1); kept.add(g); }
+    }
+  }
+  return gone.filter(g => !kept.has(g));
 }
+
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Whether `text` (the content of test file `file`) declares a test named exactly `name`: a test(/it( call with that title, or a def of that python test. */
+export const declares = (file, text, name) => (JS_FILE.test(file) && new RegExp(`^\\s*(?:test|it)(?:\\.(?:only|skip))?(?:\\.each\\(.*?\\))?\\(\\s*(['"\`])${esc(name)}\\1`, 'm').test(text))
+  || (PY_FILE.test(file) && new RegExp(`^\\s*(?:async\\s+)?def\\s+${esc(name)}\\s*\\(`, 'm').test(text));
 
 /** The removed tests the merge map does not account for. exists(file, name) -> whether the target test is there (the CLI reads the working tree). */
 export const unmapped = (removed, merges, exists = () => true) => removed.filter(r => {
@@ -83,7 +109,7 @@ function main(argv) {
     diff = git('diff', '--unified=0', '--no-color', '--no-ext-diff', '--diff-filter=AMRD', mb);
     for (const file of git('ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(f => JS_FILE.test(f) || PY_FILE.test(f))) {
       const lines = readFileSync(join(root, file), 'utf8').split('\n');
-      diff += `+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}\n`;
+      diff += `diff --git a/${file} b/${file}\n--- /dev/null\n+++ b/${file}\n@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}\n`;
     }
   } catch {
     console.log(JSON.stringify({ ok: false, error: `cannot diff against ${base}: fetch it first (actions/checkout with fetch-depth: 0)` }));
@@ -96,7 +122,7 @@ function main(argv) {
     if (!merges || typeof merges !== 'object' || Array.isArray(merges)) { console.log(JSON.stringify({ ok: false, error: `${MERGES} is not a JSON object of "<file>::<old name>": "<file>::<new name>"` })); return 2; }
   }
   const bad = badNames(diff), removed = removedTests(diff);
-  const exists = (file, name) => { try { return readFileSync(join(root, file), 'utf8').includes(name); } catch { return false; } };
+  const exists = (file, name) => { try { return declares(file, readFileSync(join(root, file), 'utf8'), name); } catch { return false; } };
   const lost = unmapped(removed, merges, exists);
   const fix = bad.map(b => `${b.file}:${b.line} "${b.name}": name it should <expected> when <state>`);
   const out = { ok: !bad.length && !lost.length, base, bad: fix };

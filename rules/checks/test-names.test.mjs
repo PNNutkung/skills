@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { badNames, removedTests, unmapped } from './test-names.mjs';
+import { badNames, declares, removedTests, unmapped } from './test-names.mjs';
 
 const CHECK = join(dirname(fileURLToPath(import.meta.url)), 'test-names.mjs');
 const diff = (file, lines, start = 1) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -0,0 +${start},${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}\n`;
@@ -126,4 +126,27 @@ test('should exit 1 on a removed test that is not in the merge map and 0 once it
     map({ 'a.test.mjs::should go when ready': to, 'a.test.mjs::should stop when told': to, 'b.test.mjs::legacy b': to });
     assert.deepEqual(run(), { code: 0, out: { ok: true, base: 'main', bad: [], merged: ['a.test.mjs::should go when ready', 'a.test.mjs::should stop when told', 'b.test.mjs::legacy b'] } });
   } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('should count a map target only when a test declares that exact title when it checks the target exists (MergedTests)', () => {
+  const js = "test('should go or stop when ready', () => {});\n// should go when ready\nconst s = 'should go when ready';\n  it(\"should halt when told\", async () => {});\n";
+  assert.equal(declares('a.test.mjs', js, 'should go when ready'), false, 'a substring, a comment or a string is no test');
+  assert.equal(declares('a.test.mjs', js, 'should go or stop when ready'), true);
+  assert.equal(declares('a.test.mjs', js, 'should halt when told'), true);
+  const py = 'def test_should_go_when_ready_now():\n    pass\nasync def test_should_stop_when_told():\n';
+  assert.equal(declares('tests/test_a.py', py, 'test_should_go_when_ready'), false);
+  assert.equal(declares('tests/test_a.py', py, 'test_should_stop_when_told'), true);
+});
+
+test('should report a removal when more tests of a title are removed than the diff adds back in any file (MergedTests)', () => {
+  const d = minus('a.test.mjs', ["test('should do x when y', () => {"], { gone: true }) + minus('b.test.mjs', ["test('should do x when y', () => {"], { gone: true })
+    + diff('c.test.mjs', ["test('should do x when y', () => {"]);
+  assert.equal(removedTests(d).length, 1, 'one of the two removals is a move, the other is gone');
+  const edits = minus('a.test.mjs', ["test('should do x when y', () => {", "test('should do x when y', () => {"]) + diff('a.test.mjs', ["test('should do x when y', async () => {", "test('should do x when y', async () => {"]);
+  assert.deepEqual(removedTests(edits), [], 'as many added back as removed');
+});
+
+test('should read a removed line that starts with "-- " as a removed line, not a file header, when it is inside a hunk (MergedTests)', () => {
+  assert.deepEqual(removedTests(minus('a.test.mjs', ['-- not a header', "test('should do x when y', () => {"])), [{ file: 'a.test.mjs', name: 'should do x when y' }]);
+  assert.deepEqual(badNames("diff --git a/a.test.mjs b/a.test.mjs\n--- a/a.test.mjs\n+++ b/a.test.mjs\n@@ -0,0 +1,2 @@\n+++ b/notes.md\n+test('bad', () => {\n"), [{ file: 'a.test.mjs', line: 2, name: 'bad' }]);
 });
