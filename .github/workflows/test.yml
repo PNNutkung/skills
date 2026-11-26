@@ -43,12 +43,21 @@ jobs:
       - name: Install ESLint and ruff
         shell: bash
         run: npm install -g eslint@9 && python -m pip install ruff
-      # The timings reporter writes each test file's wall time and the run's (rules/checks/test-time.mjs); spec stays the console output.
+      # run-tests.mjs runs node --test with the slowest files first (rules/checks/test-times.json), cores + 1 at once (rules/performance.md). The
+      # timings reporter writes each test file's wall time and the run's (rules/checks/test-time.mjs); spec stays the console output.
       - name: Run tests
         shell: bash
         run: |
-          git ls-files -z '*.test.mjs' | xargs -0 node --test --test-reporter=spec --test-reporter-destination=stdout \
+          node rules/checks/run-tests.mjs --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter=./rules/checks/test-time.mjs --test-reporter-destination=test-time.jsonl
+      # The timings, for refreshing rules/checks/test-times.json (run-tests.mjs --write-times) and for tracking test time over time (#36).
+      - name: Upload test timings
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.node == 24
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-time
+          path: test-time.jsonl
+          if-no-files-found: ignore
       # Time caps (rules/performance.md): 30 s per test file and 120 s for the suite, on the node 24 Ubuntu job only. Measured on this job
       # (2026-11-23): suite 78-107 s, slowest file about 20 s; node 22 and 26 and macOS are slower (node 22: two files at about 30.5 s).
       - name: Test time caps
@@ -83,12 +92,13 @@ jobs:
         run: |
           npm install -g eslint@9 && asdf reshim nodejs
           python3 -m pip install --user ruff && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # node --test through run-tests.mjs, as in the test job.
       - name: Run tests
         shell: bash
         run: |
           command -v node | grep -q '/.asdf/shims/node'
           node --version
-          git ls-files -z '*.test.mjs' | xargs -0 node --test
+          node rules/checks/run-tests.mjs
 
   # Windows runs the skills under WSL. The repo is copied into the WSL home so file modes and line endings are Linux ones.
   wsl:
@@ -102,6 +112,7 @@ jobs:
         with:
           distribution: Ubuntu-24.04
           additional-packages: git python3 python3-pip curl xz-utils bubblewrap
+      # node --test through run-tests.mjs, as in the test job.
       - name: Run tests
         shell: wsl-bash {0}
         run: |
@@ -114,4 +125,4 @@ jobs:
           # WSL logs in as root, which ignores file modes; run as a plain user, the way a developer does.
           id dev >/dev/null 2>&1 || useradd -m dev
           rm -rf /home/dev/skills && cp -r . /home/dev/skills && chown -R dev:dev /home/dev/skills
-          su - dev -c 'export PATH=/opt/node/bin:$PATH; cd ~/skills && node --version && git ls-files -z "*.test.mjs" | xargs -0 node --test'
+          su - dev -c 'export PATH=/opt/node/bin:$PATH; cd ~/skills && node --version && node rules/checks/run-tests.mjs'

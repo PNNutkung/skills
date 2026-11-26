@@ -14,20 +14,20 @@ const jsonl = rows => rows.map(r => JSON.stringify(r)).join('\n') + '\n';
 const withoutTestContext = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== 'NODE_TEST_CONTEXT'));
 const tmp = t => { const d = mkdtempSync(join(tmpdir(), 'tt-')); t.after(() => rmSync(d, { recursive: true, force: true })); return d; };
 const cli = (args, env = {}) => {
-  const r = spawnSync(process.execPath, [CHECK, ...args], { encoding: 'utf8', env: { ...process.env, [FLAG.file]: '', [FLAG.suite]: '', [FLAG.fileWarn]: '', ...env } });
+  const r = spawnSync(process.execPath, [CHECK, ...args], { encoding: 'utf8', env: { ...process.env, [FLAG.file]: '', [FLAG.suite]: '', [FLAG.fileWarn]: '', [FLAG.suiteWarn]: '', ...env } });
   return { code: r.status, out: JSON.parse(r.stdout.trim().split('\n').pop()), stderr: r.stderr };
 };
-const CAPS = { file: 30, suite: 120, fileWarn: 20 };
+const CAPS = { file: 30, suite: 120, fileWarn: 20, suiteWarn: 100 };
 
 test('should use 30 s per file, 120 s for the suite and warn over 20 s a file when no flag is set', () => {
-  assert.deepEqual(readCaps({}), { file: 30, suite: 120, fileWarn: 20 });
-  assert.deepEqual(DEFAULT_SECONDS, { file: 30, suite: 120, fileWarn: 20 });
+  assert.deepEqual(readCaps({}), { file: 30, suite: 120, fileWarn: 20, suiteWarn: 100 });
+  assert.deepEqual(DEFAULT_SECONDS, { file: 30, suite: 120, fileWarn: 20, suiteWarn: 100 });
   assert.equal(FLAG.fileWarn, 'CHECKS_TEST_FILE_WARN_SECONDS_MAX');
 });
 
 test('should read a number, unlimited in any case, and an empty value as the default when the flags are set', () => {
-  assert.deepEqual(readCaps({ [FLAG.file]: ' 45 ', [FLAG.suite]: 'Unlimited', [FLAG.fileWarn]: 'UNLIMITED' }), { file: 45, suite: null, fileWarn: null });
-  assert.deepEqual(readCaps({ [FLAG.file]: '', [FLAG.suite]: '  ', [FLAG.fileWarn]: '' }), { file: 30, suite: 120, fileWarn: 20 });
+  assert.deepEqual(readCaps({ [FLAG.file]: ' 45 ', [FLAG.suite]: 'Unlimited', [FLAG.fileWarn]: 'UNLIMITED' }), { file: 45, suite: null, fileWarn: null, suiteWarn: 100 });
+  assert.deepEqual(readCaps({ [FLAG.file]: '', [FLAG.suite]: '  ', [FLAG.fileWarn]: '' }), { file: 30, suite: 120, fileWarn: 20, suiteWarn: 100 });
   assert.equal(readCaps({ [FLAG.fileWarn]: '15' }).fileWarn, 15);
 });
 
@@ -155,4 +155,48 @@ test('should write one line per test file and one for the run when node --test r
   assert.ok(files.find(f => f.file === 'a.test.mjs').ms >= 150, JSON.stringify(files));
   assert.ok(files.find(f => f.file === 'b.test.mjs').ms >= 250, 'a file time includes its top-level await: ' + JSON.stringify(files));
   assert.ok(suiteMs >= 250, String(suiteMs));
+});
+
+test('should warn about the suite over 100 s by default, and read a number or unlimited when the suite warn level is set (SuiteWarn)', () => {
+  assert.equal(FLAG.suiteWarn, 'CHECKS_TEST_SUITE_WARN_SECONDS_MAX');
+  assert.equal(readCaps({ [FLAG.suiteWarn]: ' 90 ' }).suiteWarn, 90);
+  assert.equal(readCaps({ [FLAG.suiteWarn]: 'Unlimited' }).suiteWarn, null);
+  const t = parseTimings(jsonl([{ file: 'a.test.mjs', ms: 1000 }, { suite: 104500 }]));
+  const r = checkTimings(t, CAPS);
+  assert.equal(r.ok, true, 'a warning never fails the check');
+  assert.deepEqual(r.suiteWarn, { sec: 104.5, max: 100 });
+  assert.deepEqual(warnLines(r.warn, CAPS, r.suiteWarn), ['::warning::the test suite took 104.5 s, over the warn level of 100 s (cap 120 s)']);
+  assert.deepEqual(warnLines([], { ...CAPS, suite: null }, r.suiteWarn), ['::warning::the test suite took 104.5 s, over the warn level of 100 s (no cap)']);
+});
+
+test('should throw a FlagError naming the fix when the suite warn level is not a whole number above 0 or unlimited (SuiteWarn)', () => {
+  for (const v of ['0', '-1', '1.5', 'abc', ' 100s', 'true']) {
+    assert.throws(() => readCaps({ [FLAG.suiteWarn]: v }), e => e instanceof FlagError && e.message === `${FLAG.suiteWarn}=${v} is not valid: use a whole number of seconds above 0, or unlimited`, v);
+  }
+});
+
+test('should not warn when the suite is exactly at the warn level, has no run line, or the level is unlimited (SuiteWarn)', () => {
+  assert.equal(checkTimings(parseTimings(jsonl([{ file: 'a', ms: 1 }, { suite: 100000 }])), CAPS).suiteWarn, null, 'at the level is not over it');
+  assert.deepEqual(checkTimings(parseTimings(jsonl([{ file: 'a', ms: 1 }, { suite: 100001 }])), CAPS).suiteWarn, { sec: 100, max: 100 }, 'one ms over is over');
+  assert.equal(checkTimings(parseTimings(jsonl([{ file: 'a', ms: 1 }])), CAPS).suiteWarn, null);
+  assert.equal(checkTimings(parseTimings(jsonl([{ file: 'a', ms: 1 }, { suite: 999999 }])), { ...CAPS, suiteWarn: null }).suiteWarn, null);
+  assert.equal(checkTimings(parseTimings(jsonl([{ file: 'a', ms: 1 }, { suite: 999999 }])), { file: 30, suite: 120 }).suiteWarn, null, 'caps without the key: no warning');
+});
+
+test('should exit with the same code and print the suite warning on stderr when the CLI reads a suite over the warn level (SuiteWarn)', t => {
+  const d = tmp(t), slow = join(d, 's.jsonl'), over = join(d, 'o.jsonl');
+  writeFileSync(slow, jsonl([{ file: 'a.test.mjs', ms: 1000 }, { suite: 110000 }]));
+  const w = cli([slow]);
+  assert.deepEqual([w.code, w.out.ok, w.out.suiteWarn, w.out.caps], [0, true, { sec: 110, max: 100 }, CAPS]);
+  assert.equal(w.stderr, '::warning::the test suite took 110 s, over the warn level of 100 s (cap 120 s)\n');
+  const off = cli([slow], { [FLAG.suiteWarn]: 'unlimited' });
+  assert.deepEqual([off.code, off.out.suiteWarn, off.stderr], [0, null, '']);
+  assert.deepEqual([cli([slow], { [FLAG.suiteWarn]: '110' }).stderr], [''], 'exactly at the level');
+  writeFileSync(over, jsonl([{ file: 'a.test.mjs', ms: 1000 }, { suite: 121000 }]));
+  const b = cli([over]);
+  assert.equal(b.code, 1, 'over the cap still fails');
+  assert.match(b.stderr, /^::warning::the test suite took 121 s, over the warn level of 100 s \(cap 120 s\)\n$/);
+  const bad = cli([slow], { [FLAG.suiteWarn]: 'soon' });
+  assert.equal(bad.code, 2);
+  assert.equal(bad.out.error, `${FLAG.suiteWarn}=soon is not valid: use a whole number of seconds above 0, or unlimited`);
 });
