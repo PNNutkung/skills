@@ -10,6 +10,7 @@
 // In-process (ADR 0008 A18): runDirect() does the same work without a node process of its own; the CLI below is a thin wrapper around it.
 import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
@@ -26,6 +27,23 @@ async function ledgerOf(env) {
   } catch { return null; }
 }
 
+// In-process runs (trap: true) have no CLI process whose SIGINT/SIGTERM/SIGHUP handlers kill the detached command group, so while any runs this process traps those
+// signals once: every live group gets SIGTERM, SIGKILL after the grace, then the handler is removed and the signal raised again (the conventional signal exit).
+const live = new Set(); // { term(), killNow() } of each in-process command
+let dying = false;
+const TRAPPED = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+function onSignal(sig) {
+  if (dying) { for (const c of live) c.killNow(); return; } // a second signal: no more grace
+  dying = true;
+  for (const c of live) c.term();
+  const end = () => { for (const c of live) c.killNow(); for (const s of TRAPPED) process.removeListener(s, onSignal); process.kill(process.pid, sig); setImmediate(() => process.exit(128 + osConstants.signals[sig])); };
+  const until = Date.now() + KILL_GRACE_MS;
+  const wait = () => (live.size && Date.now() < until ? setTimeout(wait, 50) : end());
+  wait();
+}
+function track(c) { if (!live.size) for (const s of TRAPPED) process.on(s, onSignal); live.add(c); }
+function untrack(c) { if (live.delete(c) && !live.size && !dying) for (const s of TRAPPED) process.removeListener(s, onSignal); }
+
 function capture() { // bounded memory: the first and last OUT_HALF chars of the combined output
   let head = '', tail = '', total = 0;
   return { add(s) { total += s.length; const room = OUT_HALF - head.length; head += s.slice(0, room); tail = (tail + s.slice(room)).slice(-OUT_HALF); }, get out() { return total > 2 * OUT_HALF ? `${head}\n...\n${tail}` : head + tail; } };
@@ -37,8 +55,9 @@ function capture() { // bounded memory: the first and last OUT_HALF chars of the
  * stdout / stderr: streams to tee into (the CLI's own); onData(text): every piece of decoded text the CLI would have printed, in arrival order, ZT-RUN line last.
  * signal (AbortSignal): what SIGINT/SIGTERM/SIGHUP do to the CLI: SIGTERM to the process group, SIGKILL after a grace.
  * kill (AbortSignal): what SIGKILL does to the CLI: stop waiting at once (exit null, no ledger entry), after SIGKILL to the process group.
+ * trap: false when the caller handles SIGINT/SIGTERM/SIGHUP itself (the CLI); else this process traps them while the command runs (see onSignal).
  */
-export async function runDirect({ cwd = process.cwd(), timeout = 120, env = [], cmd = [], procEnv = process.env, procCwd, stdout, stderr, onData = () => {}, signal, kill } = {}) {
+export async function runDirect({ cwd = process.cwd(), timeout = 120, env = [], cmd = [], procEnv = process.env, procCwd, stdout, stderr, onData = () => {}, signal, kill, trap = true } = {}) {
   const say = text => { stderr?.write(text); onData(text); };
   const usage = msg => { say(`${msg}\n`); return { exit: 64 }; };
   if (!cmd.length) return usage('direct-run: no command after --');
@@ -53,7 +72,7 @@ export async function runDirect({ cwd = process.cwd(), timeout = 120, env = [], 
   const inherited = { ...procEnv };
   delete inherited.NODE_TEST_CONTEXT;
   return new Promise(done => {
-    if (kill?.aborted) { done({ exit: null }); return; }
+    if (kill?.aborted || (trap && dying)) { done({ exit: null }); return; }
     const child = spawn(cmd[0], cmd.slice(1), { cwd: procCwd === undefined ? cwd : resolve(procCwd, cwd), env: { ...inherited, ...userEnv }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     const tee = (src, dst) => {
       const dec = new StringDecoder('utf8'), add = s => { if (s) { cap.add(s); onData(s); } };
@@ -62,10 +81,14 @@ export async function runDirect({ cwd = process.cwd(), timeout = 120, env = [], 
     };
     tee(child.stdout, stdout); tee(child.stderr, stderr);
     const killGroup = sig => { try { process.kill(-child.pid, sig); } catch { /* group already gone */ } };
-    const terminate = () => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS).unref(); };
+    let killer; // the SIGKILL after the grace: cleared when the command ends (as the CLI process exited then), so it never hits a reused pgid
+    const terminate = () => { killGroup('SIGTERM'); clearTimeout(killer); killer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS); killer.unref(); };
     let timedOut = false, finished = false;
     const timer = setTimeout(() => { timedOut = true; terminate(); }, Number(timeout) * 1000);
-    const hardStop = () => { if (finished) return; finished = true; clearTimeout(timer); killGroup('SIGKILL'); child.stdout.destroy(); child.stderr.destroy(); done({ exit: null }); };
+    const tracked = { term: terminate, killNow: () => killGroup('SIGKILL') };
+    const release = () => { clearTimeout(timer); signal?.removeEventListener('abort', terminate); kill?.removeEventListener('abort', hardStop); untrack(tracked); };
+    const hardStop = () => { if (finished) return; finished = true; release(); clearTimeout(killer); killGroup('SIGKILL'); child.stdout.destroy(); child.stderr.destroy(); done({ exit: null }); };
+    if (trap && child.pid) track(tracked);
     signal?.addEventListener('abort', terminate, { once: true });
     kill?.addEventListener('abort', hardStop, { once: true });
     if (signal?.aborted) terminate();
@@ -73,9 +96,8 @@ export async function runDirect({ cwd = process.cwd(), timeout = 120, env = [], 
     const finish = exit => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', terminate);
-      kill?.removeEventListener('abort', hardStop);
+      release();
+      clearTimeout(killer);
       let line = '', run;
       if (ledger) {
         try { ledger.append(ledger.run, ledger.file, `${JSON.stringify({ id, ts: new Date(t0).toISOString(), cmd: cmd.join(' '), cwd, exit, sec: Math.round((Date.now() - t0) / 100) / 10, out: cap.out, backend: 'direct' })}\n`); line = `ZT-RUN ${id} exit=${exit}\n`; run = id; }
@@ -101,7 +123,7 @@ async function cli(args) {
   }
   const stop = new AbortController();
   for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(s, () => stop.abort());
-  const r = await runDirect({ ...o, cmd, stdout: process.stdout, stderr: process.stderr, signal: stop.signal });
+  const r = await runDirect({ ...o, cmd, stdout: process.stdout, stderr: process.stderr, signal: stop.signal, trap: false });
   process.exit(r.exit);
 }
 

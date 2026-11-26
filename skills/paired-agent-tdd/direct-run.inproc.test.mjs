@@ -2,8 +2,9 @@
 // same exit, output tail, ZT-RUN line and ledger entry (ids, timestamps and durations aside). Run: node --test direct-run.inproc.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -137,4 +138,48 @@ test('should drop an inherited NODE_TEST_CONTEXT and apply --env when runDirect 
   let seen = '';
   await runDirect({ cwd: work, cmd: ['sh', '-c', 'echo "ctx=${NODE_TEST_CONTEXT-unset} g=$G"'], env: ['G=hi'], procEnv: { ...procEnv, NODE_TEST_CONTEXT: 'child-v8' }, onData: d => (seen += d) });
   assert.match(seen, /^ctx=unset g=hi\n/);
+});
+
+const KILL_GRACE_MS = 2000; // direct-run.mjs's grace between SIGTERM and SIGKILL
+test('should send no late SIGKILL after the command ended and ignore the stop signal after a hard stop when runDirect runs in-process (Parity)', async t => {
+  const orig = process.kill, calls = [];
+  process.kill = (pid, sig) => { calls.push([pid, sig]); return orig.call(process, pid, sig); };
+  t.after(() => { process.kill = orig; });
+  const ac = new AbortController(), r = runDirect({ cwd: work, cmd: ['sh', '-c', 'sleep 30'], procEnv, signal: ac.signal });
+  await tick(200);
+  ac.abort();
+  await r;
+  const group = calls.find(([, s]) => s === 'SIGTERM')?.[0];
+  assert.ok(group < 0, 'the stop signal sent SIGTERM to the group');
+  await tick(KILL_GRACE_MS + 300);
+  assert.deepEqual(calls.filter(([p, s]) => p === group && s === 'SIGKILL'), [], 'the group was gone: its pgid may be reused, nothing kills it later');
+  const term = new AbortController(), hard = new AbortController(), h = runDirect({ cwd: work, cmd: ['sh', '-c', 'sleep 30'], procEnv, signal: term.signal, kill: hard.signal });
+  await tick(200);
+  hard.abort();
+  assert.equal((await h).exit, null);
+  calls.length = 0;
+  term.abort();
+  await tick(50);
+  assert.deepEqual(calls, [], 'a hard stop removes the stop listener');
+});
+
+// A process that runs runDirect in-process (tdd.mjs, testprobe.mjs, mutate.mjs) and gets Ctrl-C, SIGHUP or SIGTERM: the detached command group must not outlive it
+const SIGNALLED = `import { runIn } from ${JSON.stringify(pathToFileURL(join(ZT, 'probelib.mjs')).href)}; import { runDirect } from ${JSON.stringify(pathToFileURL(RUNNER).href)};
+await runIn({ runner: ${JSON.stringify(RUNNER)}, env: [], ro: [], timeout: 60, inproc: runDirect }, process.argv[1], 'sleep 300 & echo $! > bg.pid; wait');`;
+test('should kill the command group and end by the signal when a process running commands in-process gets SIGINT, SIGTERM or SIGHUP (RunnerFlag, Parity)', async t => {
+  await Promise.all(['SIGINT', 'SIGTERM', 'SIGHUP'].map(async sig => {
+    const d = join(work, `sig-${sig}`);
+    mkdirSync(d, { recursive: true });
+    const p = spawn(process.execPath, ['--input-type=module', '-e', SIGNALLED, d], { stdio: 'ignore', env: ENV });
+    const ended = new Promise(r => p.on('close', (code, s) => r({ code, s })));
+    const pidFile = join(d, 'bg.pid'), until = performance.now() + 10000;
+    while (!existsSync(pidFile) && performance.now() < until) await tick(50);
+    await tick(100);
+    const bg = Number(readFileSync(pidFile, 'utf8'));
+    t.after(() => { try { process.kill(bg, 'SIGKILL'); } catch { /* gone */ } });
+    p.kill(sig);
+    const end = await ended;
+    assert.ok(end.s === sig || end.code === 128 + osConstants.signals[sig], `${sig}: the conventional signal exit, got ${JSON.stringify(end)}`);
+    assert.ok(await gone(bg), `${sig}: the background child of the command is gone`);
+  }));
 });
