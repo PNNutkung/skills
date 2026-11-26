@@ -1,7 +1,7 @@
 // Offline checks for mutate.mjs: fixture git repos plus a stub runner, so no real sandbox is needed. Run: node --test mutate.test.mjs
 // flags: defaults. mutate.mjs runs with the inherited env and no ZT_MUTATION_* flag in most tests; see rules/flag-defaults-e2e.md.
 // Most tests call main() in-process (ADR 0003 ZtInProc); the CLI itself is spawned for usage errors, exit codes, one real run and the parity/fuzz checks.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -101,8 +101,19 @@ async function mutate(fx, args = [], fake = {}, { cmd = 'python3 {file}', runner
 
 const skip = !hasPython && 'python3 not available';
 
-test('tests that pin the code kill its mutants; code the tests never touch survives, with a citable run id', { skip }, async t => {
-  const r = await mutate(fixture(t));
+// One default run (the default fixture, no args, no fake exit) shared by the tests that only read what it did (ADR 0008 A6): each of them ran this same run on its own.
+// The git status before the run is taken here too, for the test that checks the repo is untouched.
+const cleanups = [];
+after(() => { for (const f of cleanups) f(); });
+let sharedRun;
+const defaultRun = () => (sharedRun ??= (async () => {
+  const fx = fixture({ after: f => cleanups.push(f) });
+  const before = git(fx.repo, 'status', '--porcelain');
+  return { fx, before, r: await mutate(fx) };
+})());
+
+test('tests that pin the code kill its mutants; code the tests never touch survives, with a citable run id', { skip }, async () => {
+  const { r } = await defaultRun();
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.out.mutants.length > 0);
   for (const m of r.out.mutants.filter(m => m.line <= 4)) assert.equal(m.result, 'killed', `${m.file}:${m.line} ${m.op}`);
@@ -116,8 +127,8 @@ test('tests that pin the code kill its mutants; code the tests never touch survi
   assert.equal(r.out.score.killed + r.out.score.survived, r.out.score.total);
 });
 
-test('mutants carry no full-line payload, only before/after, and every id is unique', { skip }, async t => {
-  const r = await mutate(fixture(t));
+test('mutants carry no full-line payload, only before/after, and every id is unique', { skip }, async () => {
+  const { r } = await defaultRun();
   assert.ok(r.out.mutants.every(m => !('newLine' in m) && m.before && m.after && m.before !== m.after));
   assert.equal(new Set(r.out.mutants.map(m => m.id)).size, r.out.mutants.length);
 });
@@ -161,9 +172,8 @@ test('--budget 0 skips every mutant', { skip }, async t => {
   assert.ok(r.out.mutants.every(m => m.result === 'skipped'));
 });
 
-test('python never writes bytecode into the trees: a same-size mutant must run the new code', { skip }, async t => {
-  const fx = fixture(t);
-  const r = await mutate(fx);
+test('python never writes bytecode into the trees: a same-size mutant must run the new code', { skip }, async () => {
+  const { fx, r } = await defaultRun();
   assert.ok(r.calls.length > 0 && r.calls.every(a => a.some((x, i) => x === '--env' && a[i + 1] === 'PYTHONDONTWRITEBYTECODE=1')));
   const scratch = realpathSync(fx.scratch);
   for (const d of readdirSync(scratch)) assert.equal(existsSync(join(scratch, d, 'src', '__pycache__')), false, d);
@@ -172,8 +182,8 @@ test('python never writes bytecode into the trees: a same-size mutant must run t
   assert.equal(sameSize.result, 'killed');
 });
 
-test('a survivor and a killed mutant both carry a quote that the ledger output will contain', { skip }, async t => {
-  const r = await mutate(fixture(t));
+test('a survivor and a killed mutant both carry a quote that the ledger output will contain', { skip }, async () => {
+  const { r } = await defaultRun();
   for (const m of r.out.mutants) assert.match(m.quote, new RegExp(`^ZT-MUTANT ${m.id} ${m.file.replace('.', '\\.')}:${m.line} ${m.op} exit=${m.result === 'survived' ? 0 : '[1-9]\\d*'}$`));
   const stamped = r.calls.filter(a => a.at(-1).includes('ZT-MUTANT X-'));
   assert.equal(stamped.length, r.out.mutants.length, 'one stamped run per mutant (one test file); the baseline run is not stamped');
@@ -209,18 +219,15 @@ test('a mutant whose run did not finish cleanly (no stamp: killed, timed out) ge
   }
 });
 
-test('the repo is never modified, and mutated files are restored in the scratch trees', { skip }, async t => {
-  const fx = fixture(t);
-  const before = git(fx.repo, 'status', '--porcelain');
-  await mutate(fx);
+test('the repo is never modified, and mutated files are restored in the scratch trees', { skip }, async () => {
+  const { fx, before } = await defaultRun();
   assert.equal(git(fx.repo, 'status', '--porcelain'), before);
   const scratch = realpathSync(fx.scratch);
   for (const d of readdirSync(scratch)) assert.equal(readFileSync(join(scratch, d, 'src/calc.py'), 'utf8'), CALC, d);
 });
 
-test('every command goes through the runner, with --cwd and --rw on a scratch tree, never the repo', { skip }, async t => {
-  const fx = fixture(t);
-  const r = await mutate(fx);
+test('every command goes through the runner, with --cwd and --rw on a scratch tree, never the repo', { skip }, async () => {
+  const { fx, r } = await defaultRun();
   assert.ok(r.calls.length > 0);
   const scratch = realpathSync(fx.scratch);
   for (const a of r.calls) {
