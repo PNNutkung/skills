@@ -19,6 +19,7 @@ Skills installed with `npx skills add` get their own folder only, without `rules
 | [`test-naming.md`](./test-naming.md) | Test names say `should ... when ...` | paired-agent-tdd, `hooks/test-name-guard`, `rules/checks/test-names` (CI) |
 | [`paths.md`](./paths.md) | Compare paths by their real path; a test covers a linked folder | every skill |
 | [`performance.md`](./performance.md) | Use every core when it lowers wall time; measure the CPU floor before a speed target | every skill, definition-of-done |
+| [`flaky-tests.md`](./flaky-tests.md) | Compare two-pipe output as a set; poll for a start instead of a fixed wait | paired-agent-tdd, qa-sweep |
 
 ## Guardrails and what enforces them
 
