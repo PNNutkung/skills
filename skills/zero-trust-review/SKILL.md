@@ -5,19 +5,19 @@ description: "Principal-Staff-Engineer-level code review of the current branch d
 
 # Zero-Trust Review
 
-Strict review of **only the changes in the current branch diff against the target branch**. Assume nothing; ambiguity, omission and unstated assumptions are blockers until proven otherwise. A hazard in untouched code is **not** a finding unless the diff newly routes traffic through it; say so instead of padding.
+Strict review of **only the branch diff against the target branch**. Assume nothing; ambiguity, omission and unstated assumptions are blockers until proven otherwise. A hazard in untouched code is **not** a finding unless the diff newly routes traffic through it; say so instead of padding.
 
-It runs as an **execution graph** ([`graph.mjs`](./graph.mjs)) executed by [`workflow.js`](./workflow.js). The lead gathers facts with plain code ([`triage.py`](./triage.py)); the 30-point audit lives in [`checklist.md`](./checklist.md) and agents Read only their own points. Related: `code-review` (standards + spec), `security-review` (escalate when point 6 or 7 finds a real flaw). This skill owns **production-hazard and test-integrity review**.
+It runs as an **execution graph** ([`graph.mjs`](./graph.mjs)) executed by [`workflow.js`](./workflow.js). The lead gathers facts with plain code ([`triage.py`](./triage.py)); the 30-point audit lives in [`checklist.md`](./checklist.md) and agents Read only their own points. Related: `code-review` (standards + spec), `security-review` (escalate a real point 6 or 7 flaw). This skill owns **production-hazard and test-integrity review**.
 
-**Requires:** Node 22+ (`graph.mjs`, `workflow.js`), python3 (`triage.py`, stdlib only), git, and a sandbox for probes (macOS `sandbox-exec` built in, Linux `bwrap`, or docker via `ZT_SANDBOX_IMAGE`); with none, probes are `unverifiable` and never run bare. Optional: the host CLI (`glab` GitLab, `gh` GitHub) plus `jq`, to read CR metadata and post. Without one the skill runs git-only: report only. Per-host commands: [`hosts.md`](./hosts.md).
+**Requires:** Node 22+ (`graph.mjs`, `workflow.js`), python3 (`triage.py`, stdlib only), git, and a sandbox for probes (macOS `sandbox-exec` built in, Linux `bwrap`, or docker via `ZT_SANDBOX_IMAGE`); with none, probes are `unverifiable` and never run bare. Optional: the host CLI (`glab` GitLab, `gh` GitHub) plus `jq`, to read CR metadata and post. Without one: git-only, report only. Per-host commands: [`hosts.md`](./hosts.md).
 
-**Terms:** *change request (CR)* = a GitLab merge request (MR) or GitHub pull request (PR); *lead* = the coordinating session; *driver* = a finding agent (`reviewer`, `gap-reviewer`); *navigator* = a verifying agent (`verifier-*`); *finding* = one defect; *cluster* = findings merged by `dedupe`, the unit verified.
+**Terms:** *change request (CR)* = a GitLab merge request (MR) or GitHub pull request (PR); *lead* = the main session; *driver* = a finding agent (`reviewer`, `gap-reviewer`); *navigator* = a verifying agent (`verifier-*`); *finding* = one defect; *cluster* = findings merged by `dedupe`, the unit verified.
 
-Cost levers ([`runs.md`](./runs.md)): disjoint groups, gated points, plain-code dedupe, tiered verification, checkpoints, few agents (~45k tokens each). **Do not reach for `deep` or extra verifiers reflexively.** Blue/red (opt-in): [`probes.md`](./probes.md#bluered).
+Cost levers ([`runs.md`](./runs.md)): disjoint groups, gated points, plain-code dedupe, tiered verification, checkpoints, few agents. **Do not reach for `deep` or extra verifiers by reflex.** Blue/red (opt-in): [`probes.md`](./probes.md#bluered).
+
+**Reply style:** each technical term in English, then a short note in brackets in the user's language; ASD-STE100 sentences ([rule](../../rules/reply-style.md)).
 
 ## Progress checklist
-
-Copy and tick off:
 
 ```
 - [ ] 0 Triage: mode chosen, plan shown (confirm if > 25 agents)
@@ -129,7 +129,7 @@ The reviewer is the **driver**: it files findings for its group's points, told a
 
 ## Tiering and iteration
 
-Each node carries a tier (T0 code, T2 sonnet, T3 opus); table and rules R1-R6 are in [`tiering.md`](./tiering.md). Models, efforts and caps are a starting guess: after each run append the line from `node measure.mjs <transcriptDir>` to [`runs.md`](./runs.md) and move one node only from those numbers. The critical path is the wall-clock floor: shorten it by removing an edge. Evals: [`evals.json`](./evals.json).
+Each node carries a tier (T0 code, T2 sonnet, T3 opus); table and rules R1-R6 are in [`tiering.md`](./tiering.md). Models, efforts and caps start as a guess: after each run append the line from `node measure.mjs <transcriptDir>` to [`runs.md`](./runs.md) and move one node only from those numbers. The critical path is the wall-clock floor; remove an edge to shorten it. Evals: [`evals.json`](./evals.json).
 
 ## Voice
 

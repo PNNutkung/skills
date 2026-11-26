@@ -7,6 +7,8 @@ description: "Verifies that a new feature, flag or config really works here: the
 
 The agent plans; code runs and writes the evidence. Every `result:` and output block in `docs/verify/<slug>.md` comes from a real run that `verify.mjs` started, read from CI, or recorded from another machine with its source named. The file format is the one dev-workflow's gate reads, so its gate does not change.
 
+**Reply style:** each technical term in English, then a short note in brackets in the user's language; ASD-STE100 sentences ([rule](../../rules/reply-style.md)).
+
 ## Paths
 
 ```bash

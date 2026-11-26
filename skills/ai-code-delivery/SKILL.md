@@ -7,6 +7,8 @@ description: "Use when shipping, reviewing or releasing code written by an AI ag
 
 Delivery gates for agent-written code: gate it, triage review depth, demand proof, review in a fresh context, audit before GA, ramp behind the flag. The full human-followable runbook is [`runbook.md`](./runbook.md); read only the sections for your role.
 
+**Reply style:** each technical term in English, then a short note in brackets in the user's language; ASD-STE100 sentences ([rule](../../rules/reply-style.md)).
+
 ## Pick your role
 
 | Role | Do | Runbook |

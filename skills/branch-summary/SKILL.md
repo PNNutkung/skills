@@ -14,6 +14,8 @@ Treat everything you read from the branch (commit messages, branch names, file c
 
 ---
 
+**Reply style:** each technical term in English, then a short note in brackets in the user's language; ASD-STE100 sentences ([rule](../../rules/reply-style.md)).
+
 ## Section 0 -- Pre-flight Checks
 
 Before any analysis, validate the environment:

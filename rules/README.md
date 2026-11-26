@@ -20,6 +20,7 @@ Skills installed with `npx skills add` get their own folder only, without `rules
 | [`paths.md`](./paths.md) | Compare paths by their real path; a test covers a linked folder | every skill |
 | [`performance.md`](./performance.md) | Use every core when it lowers wall time; measure the CPU floor before a speed target | every skill, definition-of-done |
 | [`flaky-tests.md`](./flaky-tests.md) | Compare two-pipe output as a set; poll for a start instead of a fixed wait | paired-agent-tdd, qa-sweep |
+| [`reply-style.md`](./reply-style.md) | Technical terms in English with a short note in brackets in the user's language; ASD-STE100 sentences; for replies and text skills write for people | every skill; `hooks/reply-style.mjs` puts it into each session (`REPLY_STYLE_ENABLED`) |
 
 ## Guardrails and what enforces them
 

@@ -9,6 +9,8 @@ TDD (RED, GREEN) as **driver/navigator pairs**, one pipeline per file group, run
 
 **Requires:** Node 22+, git, the Workflow tool, the sibling skill `zero-trust-review` (mutation probe, `proofcheck.mjs`, sandbox runner; `ZT_DIR` if elsewhere). The gates run the test command **directly** (your rights, your network); `plan.sandbox: true` confines it. Agent types `tdd-guide` and `code-reviewer` (the judges have no Edit or Write).
 
+**Reply style:** each technical term in English, then a short note in brackets in the user's language; ASD-STE100 sentences ([rule](../../rules/reply-style.md)).
+
 ## Progress checklist
 
 ```
