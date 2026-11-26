@@ -24,8 +24,8 @@ dod: demo
 
 test('should list each DoD item id with its text when the ADR has a Definition of done (Source)', () => {
   assert.deepEqual(adrItems(ADR), [
-    { id: 'Plan', text: '(happy, fail): the agent writes a plan (A1)' },
-    { id: 'Run2', text: '(happy): code runs it (A2)' },
+    { id: 'Plan', text: 'the agent writes a plan (A1)' },
+    { id: 'Run2', text: 'code runs it (A2)' },
   ]);
 });
 
@@ -60,7 +60,11 @@ test('should list a flag once with its digits when the text names it twice and i
 });
 
 test('should read items right below the heading and a flag removed at the start when the ADR is that short (Source edge)', () => {
-  assert.deepEqual(adrItems('## Definition of done\n- [ ] Plan (happy): x'), [{ id: 'Plan', text: '(happy): x' }]);
+  assert.deepEqual(adrItems('## Definition of done\n- [ ] Plan (happy): x'), [{ id: 'Plan', text: 'x' }]);
   assert.deepEqual(flagNames('no OLD_ENABLED, add NEW_ENABLED'), ['NEW_ENABLED']);
   assert.deepEqual(bookedEnvs('- verify env: [2nd-box] and [cloud]'), ['2nd-box', 'cloud']);
+});
+
+test('should keep the text whole when an item has no test-kind prefix (Source edge)', () => {
+  assert.deepEqual(adrItems('## Definition of done\n- [ ] Plan (A1 note) x'), [{ id: 'Plan', text: '(A1 note) x' }]);
 });

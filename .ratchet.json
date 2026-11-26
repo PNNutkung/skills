@@ -4,6 +4,16 @@
     "hook-readflags": {
       "hooks/retro-collect.mjs": 1
     },
+    "path-relative": {
+      "hooks/dod-adr-sync.mjs": 1,
+      "hooks/qa-guard.mjs": 1,
+      "rules/checks/run-tests.mjs": 2,
+      "rules/checks/test-time.mjs": 1,
+      "skills/qa-sweep/run.mjs": 1,
+      "skills/retro/adapters.mjs": 1,
+      "skills/verify/verify.mjs": 2,
+      "skills/zero-trust-review/proofcheck.test.mjs": 1
+    },
     "plugin-version-pin": {},
     "spawn-async-timeout": {},
     "test-serial": {}
@@ -12,6 +22,10 @@
     "hook-readflags": {
       "regex": "readFlags\\(",
       "glob": "hooks/*.mjs"
+    },
+    "path-relative": {
+      "regex": "\\brelative\\(",
+      "glob": "**/*.mjs"
     },
     "plugin-version-pin": {
       "regex": "version,\\s*['\"]\\d+\\.\\d+\\.\\d+['\"]",

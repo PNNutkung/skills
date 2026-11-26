@@ -31,3 +31,25 @@ test('should not pass when gh fails or the named check run is missing (Envs fail
   assert.equal(ciCheck('t', { sha: 's', gh: fake(new Error('HTTP 404')) }).pass, false);
   assert.equal(ciCheck('t', { sha: 's', gh: fake(runs([{ name: 'other', status: 'completed', conclusion: 'success' }])) }).pass, false);
 });
+
+// gh answers by path: check runs, the PRs of a commit, one PR
+const routes = map => (args) => { const hit = Object.entries(map).find(([k]) => args[1].includes(k)); if (!hit) throw new Error(`HTTP 404 ${args[1]}`); if (hit[1] instanceof Error) throw hit[1]; return hit[1]; };
+
+test('should say the PR has a merge conflict when the check is missing and an open PR of the commit is dirty (Envs fail)', () => {
+  const r = ciCheck('t', { sha: 's', gh: routes({ 'check-runs': runs([]), 'commits/s/pulls': JSON.stringify([{ number: 35, state: 'open' }]), 'pulls/35': JSON.stringify({ number: 35, mergeable_state: 'dirty' }) }) });
+  assert.equal(r.pass, false);
+  assert.match(r.why.join('; '), /no check run named "t" on s; PR #35 has a merge conflict with its base: CI does not run until it is fixed/);
+});
+
+test('should name only the missing check when the open PR has no conflict or the commit has no PR (Envs edge)', () => {
+  const clean = ciCheck('t', { sha: 's', gh: routes({ 'check-runs': runs([]), 'commits/s/pulls': JSON.stringify([{ number: 35, state: 'open' }]), 'pulls/35': JSON.stringify({ mergeable_state: 'clean' }) }) });
+  assert.deepEqual(clean.why, ['no check run named "t" on s']);
+  const closed = ciCheck('t', { sha: 's', gh: routes({ 'check-runs': runs([]), 'commits/s/pulls': JSON.stringify([{ number: 9, state: 'closed' }]), 'pulls/9': JSON.stringify({ mergeable_state: 'dirty' }) }) });
+  assert.deepEqual(closed.why, ['no check run named "t" on s']);
+});
+
+test('should not throw and name only the missing check when the PR lookup fails or prints bad JSON (Envs edge)', () => {
+  assert.deepEqual(ciCheck('t', { sha: 's', gh: routes({ 'check-runs': runs([]), 'commits/s/pulls': new Error('HTTP 403') }) }).why, ['no check run named "t" on s']);
+  assert.deepEqual(ciCheck('t', { sha: 's', gh: routes({ 'check-runs': runs([]), 'commits/s/pulls': '{"x":1}' }) }).why, ['no check run named "t" on s']);
+  assert.deepEqual(ciCheck('t', { sha: 's', gh: routes({ 'check-runs': runs([]), 'commits/s/pulls': '[{"number":1,"state":"open"}]', 'pulls/1': 'not json' }) }).why, ['no check run named "t" on s']);
+});

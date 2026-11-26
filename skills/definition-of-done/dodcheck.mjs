@@ -8,6 +8,8 @@ const DOD_ID = /^[A-Za-z][A-Za-z0-9]{0,11}$/; // the id rule of paired-agent-tdd
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const ANSWER_REF = /^A(\d+)$/;
 const SPEC_REF = /^(.+):(\d+)$/;
+// "(A1)" or "(A1, T2)" at the end of an item text: adr.mjs writes the source ref there itself, so the ADR would show it twice
+const TRAILING_REF = /\([ATS]\d+(?:, [ATS]\d+)*\)$/;
 const SPEC_TOLERANCE = 2; // lines of slack around a spec ref, as in qa-sweep findings.mjs
 const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim();
 const has = (hay, quote) => norm(quote) !== '' && norm(hay).includes(norm(quote));
@@ -48,6 +50,8 @@ function itemProblems(item, ctx) {
   const out = [];
   const id = item.id;
   if (norm(item.text) === '') out.push(`${id}: text is required`);
+  const tail = TRAILING_REF.exec(norm(item.text));
+  if (tail) out.push(`${id}: text ends with a source ref "${tail[0]}": remove it, the ADR adds the source ref itself`);
   if (item.kinds !== undefined) {
     if (!Array.isArray(item.kinds) || !item.kinds.length || item.kinds.some(k => !KINDS.includes(k))) out.push(`${id}: kinds must be a non-empty subset of ${KINDS}`);
     else if (item.kinds.length < KINDS.length && norm(item.kindsReason) === '') out.push(`${id}: kinds narrowed without kindsReason`);

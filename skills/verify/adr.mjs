@@ -4,6 +4,8 @@ import { basename } from 'node:path';
 const DOD_HEADING_RE = /^## Definition of done\s*$/;
 // same item shape as skills/dev-workflow/check.mjs adrItems
 const ITEM_RE = /^- \[[ xX]\] ([A-Za-z][A-Za-z0-9]{0,11}) (\(.*)$/;
+// the test kinds definition-of-done writes before the text, e.g. "(happy, fail, edge): "
+const KINDS_RE = /^\([a-z]+(?:, [a-z]+)*\): /;
 const VERIFY_ENV_RE = /^- verify env:(.*)$/m;
 const ENV_NAME_RE = /\[([a-z0-9][a-z0-9_-]*)\]/gi;
 const FLAG_LINE_RE = /^- feature flag:(.*)$/m;
@@ -21,7 +23,7 @@ export function adrItems(adr) {
   for (const line of lines.slice(at + 1)) {
     if (/^## /.test(line)) break;
     const m = ITEM_RE.exec(line);
-    if (m) out.push({ id: m[1], text: m[2].trim() });
+    if (m) out.push({ id: m[1], text: m[2].replace(KINDS_RE, '').trim() });
   }
   return out;
 }
