@@ -53,7 +53,7 @@ jobs:
       # The timings, for refreshing rules/checks/test-times.json (run-tests.mjs --write-times) and for tracking test time over time (#36).
       - name: Upload test timings
         if: always() && matrix.os == 'ubuntu-latest' && matrix.node == 24
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: test-time
           path: test-time.jsonl
