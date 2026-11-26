@@ -3,7 +3,7 @@
 //   node rules/checks/run-tests.mjs [node --test options] [test files]
 //     lists `git ls-files '*.test.mjs'` (or the files given), starts the slowest first by rules/checks/test-times.json (files missing from it
 //     first: a new file's time is unknown) and runs `node --test --test-concurrency=<N>` with every other argument passed through. N is
-//     CHECKS_TEST_CONCURRENCY_MAX, or cores + 2 (os.availableParallelism()); a --test-concurrency you pass wins. Exits with node's exit code;
+//     CHECKS_TEST_CONCURRENCY_MAX, or cores + 1 (os.availableParallelism()); a --test-concurrency you pass wins. Exits with node's exit code;
 //     2 for a flag value that is not valid. Give an option's value after `=` or a space; a bare word that is not an option's value is a file.
 //   node rules/checks/run-tests.mjs --write-times test-time.jsonl
 //     rewrites test-times.json from what the test-time.mjs reporter wrote: new times win, files no longer tracked drop out.
@@ -19,8 +19,8 @@ export const CONCURRENCY_FLAG = 'CHECKS_TEST_CONCURRENCY_MAX';
 export const TIMES_FILE = join(dirname(fileURLToPath(import.meta.url)), 'test-times.json');
 export class FlagError extends Error {}
 
-// Files wait on child processes much of the time, so more files than cores keeps the CPU busy. Measured on 4 cores (rules/performance.md).
-export const defaultConcurrency = cores => Math.max(1, cores) + 2;
+// Files wait on child processes much of the time, so one more file than cores keeps the CPU busy; more only slows each file (rules/performance.md).
+export const defaultConcurrency = cores => Math.max(1, cores) + 1;
 
 /** CHECKS_TEST_CONCURRENCY_MAX: a whole number above 0; the cores-based default when unset or empty. Anything else throws a FlagError. */
 export function chooseConcurrency(env = process.env, cores = availableParallelism()) {

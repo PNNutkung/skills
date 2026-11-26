@@ -43,7 +43,7 @@ jobs:
       - name: Install ESLint and ruff
         shell: bash
         run: npm install -g eslint@9 && python -m pip install ruff
-      # run-tests.mjs runs node --test with the slowest files first (rules/checks/test-times.json), cores + 2 at once (rules/performance.md). The
+      # run-tests.mjs runs node --test with the slowest files first (rules/checks/test-times.json), cores + 1 at once (rules/performance.md). The
       # timings reporter writes each test file's wall time and the run's (rules/checks/test-time.mjs); spec stays the console output.
       - name: Run tests
         shell: bash

@@ -32,9 +32,9 @@ test('should derive the concurrency from the cores and read the override when it
     assert.equal(chooseConcurrency({}, cores), defaultConcurrency(cores));
     assert.ok(defaultConcurrency(cores) > Math.max(1, cores - 1), `more than node's default at ${cores} cores`);
   }
-  assert.equal(defaultConcurrency(4), 6);
+  assert.equal(defaultConcurrency(4), 5);
   assert.equal(chooseConcurrency({ [CONCURRENCY_FLAG]: ' 9 ' }, 4), 9);
-  assert.equal(chooseConcurrency({ [CONCURRENCY_FLAG]: '' }, 4), 6, 'empty is the default');
+  assert.equal(chooseConcurrency({ [CONCURRENCY_FLAG]: '' }, 4), 5, 'empty is the default');
 });
 
 test('should throw a FlagError naming the fix when the concurrency override is not a whole number above 0 (Concurrency)', () => {
