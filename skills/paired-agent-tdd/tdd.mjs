@@ -21,9 +21,10 @@
 // zero-trust-review skill (ZT_DIR overrides where it lives; exit 86 = no sandbox). Exit 124 = timeout, and the run id of each command is in RUN/exec.jsonl. RUN is made by `plan` under the per-user zt-review base (the only place the ledger tools approve) and gets NO marker:
 // the review-only guard hook must not restrict the agents that write the code. Gates write RUN/gates/*.json and RUN/diff/*.patch.
 // Exit: 0 (results are data, read `ok`); 2 usage or invalid plan; 3 no trusted run dir; 1 other error.
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';
-import { dirname, extname, join, resolve, sep } from 'node:path';
+import { dirname, extname, join, posix, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { LIM, worst } from './graph.mjs';
@@ -62,34 +63,79 @@ const readZt = cx => { try { return ztFlags.probeFlags(cx.env); } catch (e) { if
 // every flag off (no plan.speed, both zero-trust-review switches false, no process cap): the v2.0.0 gate, which read no mutation probe error
 const legacyGate = ctx => !ctx.plan.speed && ctx.zt.budgetStrict === false && ctx.zt.baselineReuse === false && ctx.zt.testProcessMax === null;
 
-function git(cx, repo, args, env = {}) {
-  try { return execFileSync('git', ['-C', repo, '-c', 'core.quotePath=false', ...args], { env: { ...cx.env, GIT_OPTIONAL_LOCKS: '0', ...env }, maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }); }
+function git(cx, repo, args, env = {}, input) {
+  try { return execFileSync('git', ['-C', repo, '-c', 'core.quotePath=false', ...args], { env: { ...cx.env, GIT_OPTIONAL_LOCKS: '0', ...env }, maxBuffer: 1 << 28, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], encoding: 'utf8', ...(input === undefined ? {} : { input }) }); }
   catch (e) { throw new Error(`git ${args[0]}: ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
 }
 const names = text => text.split('\0').filter(Boolean); // git ... -z: names stay raw (a quoted "caf\\303\\251.py" would never match the plan)
+// What one call (cx) already asked git: a rev resolved once, a commit id's tree and file texts (a commit never changes), a snapshot by its exact inputs. Per call, never per process.
+const memo = cx => (cx.gitMemo ??= { commit: new Map(), tree: new Map(), text: new Map(), snap: new Map() });
+const FULL = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const remembered = (map, key, make) => { if (!map.has(key)) map.set(key, make()); return map.get(key); }; // a throw stores nothing
+const commitOf = (cx, repo, rev) => remembered(memo(cx).commit, `${repo}\0${rev}`, () => git(cx, repo, ['rev-parse', '--verify', `${rev}^{commit}`]).trim());
 const has = (cx, repo, rev, path) => { try { git(cx, repo, ['cat-file', '-e', `${rev}:${path}`]); return true; } catch { return false; } };
-const showText = (cx, repo, rev, path) => (has(cx, repo, rev, path) ? git(cx, repo, ['show', `${rev}:${path}`]) : '');
+const readAt = (cx, repo, rev, path) => { try { return git(cx, repo, ['show', `${rev}:${path}`]); } catch { return ''; } }; // one call: a missing path is '', as has() + show said
+export const showText = (cx, repo, rev, path) => (FULL.test(rev) ? remembered(memo(cx).text, `${repo}\0${rev}:${path}`, () => readAt(cx, repo, rev, path)) : readAt(cx, repo, rev, path));
 
 // ---------------------------------------------------------------- snapshots
 const inside = (root, p) => { try { const r = realpathSync(dirname(p)); return r === root || r.startsWith(root + sep); } catch { return false; } };
+// a path git takes as it is: update-index normalizes a command-line path (./a, a//b) but not an --index-info one, so any other path takes the per-file steps
+const plainPath = f => f !== '' && !f.startsWith('/') && f !== '..' && !f.startsWith('../') && posix.normalize(f) === f;
+const blobId = (bytes, hexLen) => createHash(hexLen === 64 ? 'sha256' : 'sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex'); // git's id of a blob, in the repo's hash
 
-/** commit of `on` + the given working-tree files (undefined = every non-ignored file). Refuses links and anything that resolves outside the repo. */
-function snapshot(cx, scratch, repo, on, files) { // cx.counter: per call, never carried from one main() into the next
-  const index = join(scratch, `idx-${process.pid}-${cx.counter++}`), env = { ...COMMIT_ENV, GIT_INDEX_FILE: index }, g = (...a) => git(cx, repo, a, env).trim();
-  const parent = g('rev-parse', '--verify', `${on}^{commit}`), root = realpathSync(repo);
+/**
+ * commit of `on` + the given working-tree files (undefined = every non-ignored file). Refuses links and anything that resolves outside the repo.
+ * One hash-object and one update-index for all files: the same tree, parent and message as the old one call per file. The same inputs again in one call reuse the commit.
+ */
+export function snapshot(cx, scratch, repo, on, files) { // cx.counter: per call, never carried from one main() into the next
+  const index = join(scratch, `idx-${process.pid}-${cx.counter++}`), env = { ...COMMIT_ENV, GIT_INDEX_FILE: index }, g = (a, input) => git(cx, repo, a, env, input).trim();
+  const parent = commitOf(cx, repo, on), root = realpathSync(repo), list = files === undefined ? undefined : [...new Set(files)], entries = [];
+  let refused = null;
+  for (const f of list ?? []) { // in order up to the first refused file: the old loop added the files before it, then threw
+    const p = join(root, f), st = lstatSync(p, { throwIfNoEntry: false });
+    if (!st) { entries.push({ f }); continue; }
+    if (!st.isFile() || !inside(root, p)) { refused = f; break; }
+    let bytes = null;
+    try { bytes = readFileSync(p); } catch { /* git reads it below and says why it cannot */ }
+    entries.push({ f, p, mode: st.mode & 0o111 ? '100755' : '100644', bytes });
+  }
+  const batch = list !== undefined && entries.every(e => plainPath(e.f));
+  // the key: the parent and each file's path, mode and blob id; sorted unless one path is under another (then the order can decide what update-index does)
+  const nested = entries.some(a => entries.some(b => b.f.startsWith(`${a.f}/`)));
+  const key = batch && refused === null && entries.every(e => !e.p || e.bytes)
+    ? `${repo}\0${parent}\0${(nested ? entries : [...entries].sort((a, b) => (a.f < b.f ? -1 : a.f > b.f ? 1 : 0))).map(e => (e.p ? `${e.mode} ${blobId(e.bytes, parent.length)} ${e.f}` : `0 ${e.f}`)).join('\0')}` : null;
+  const known = key && memo(cx).snap.get(key);
+  if (known) return known;
   try {
-    g('read-tree', parent);
-    if (files === undefined) g('add', '-A', '--', '.');
-    else for (const f of [...new Set(files)]) {
-      const p = join(root, f), st = lstatSync(p, { throwIfNoEntry: false });
-      if (!st) { g('update-index', '--force-remove', '--', f); continue; }
-      if (!st.isFile() || !inside(root, p)) throw new Error(`refusing to snapshot ${f}: not a regular file inside the repo`);
-      g('update-index', '--add', '--cacheinfo', `${st.mode & 0o111 ? '100755' : '100644'},${g('hash-object', '-w', '--no-filters', '--', p)},${f}`);
+    g(['read-tree', parent]);
+    let same = true; // git hashed the bytes this call read (no edit in between): only then is the key the commit's true input
+    const perFile = () => { // the old steps, one call per file
+      for (const e of entries) {
+        if (!e.p) g(['update-index', '--force-remove', '--', e.f]);
+        else g(['update-index', '--add', '--cacheinfo', `${e.mode},${g(['hash-object', '-w', '--no-filters', '--', e.p])},${e.f}`]);
+      }
+    };
+    if (list === undefined) g(['add', '-A', '--', '.']);
+    else if (!batch) perFile();
+    else if (entries.length) {
+      const added = entries.filter(e => e.p), lined = added.filter(e => !e.p.includes('\n')); // --stdin-paths reads lines: a name with a newline is hashed alone
+      const ids = lined.length ? g(['hash-object', '-w', '--no-filters', '--stdin-paths'], lined.map(e => `${e.p}\n`).join('')).split('\n') : [];
+      lined.forEach((e, i) => { e.id = ids[i]; });
+      for (const e of added) if (!e.id) e.id = g(['hash-object', '-w', '--no-filters', '--', e.p]);
+      same = added.every(e => e.bytes && blobId(e.bytes, e.id.length) === e.id);
+      const r = spawnSync('git', ['-C', repo, '-c', 'core.quotePath=false', 'update-index', '-z', '--add', '--index-info'], { env: { ...cx.env, GIT_OPTIONAL_LOCKS: '0', ...env }, maxBuffer: 1 << 28, encoding: 'utf8',
+        input: entries.map(e => (e.p ? `${e.mode} ${e.id}\t${e.f}\0` : `0 ${'0'.repeat(parent.length)}\t${e.f}\0`)).join('') }); // mode 0 removes
+      // --index-info skips a path git refuses (.git/...) where --cacheinfo failed: then the old steps again, for the old error
+      if (r.status !== 0 || /^Ignoring path /m.test(r.stderr)) { g(['read-tree', parent]); same = false; perFile(); }
     }
-    return g('commit-tree', g('write-tree'), '-p', parent, '-m', 'paired-agent-tdd snapshot');
+    if (refused !== null) throw new Error(`refusing to snapshot ${refused}: not a regular file inside the repo`);
+    const tree = g(['write-tree']), commit = g(['commit-tree', tree, '-p', parent, '-m', 'paired-agent-tdd snapshot']);
+    memo(cx).tree.set(commit, tree);
+    if (key && same) memo(cx).snap.set(key, commit);
+    return commit;
   } finally { rmSync(index, { force: true }); }
 }
-const baseSnapshot = (cx, scratch, repo) => (git(cx, repo, ['status', '--porcelain']).trim() ? snapshot(cx, scratch, repo, 'HEAD') : git(cx, repo, ['rev-parse', '--verify', 'HEAD^{commit}']).trim());
+const baseSnapshot = (cx, scratch, repo) => (git(cx, repo, ['status', '--porcelain']).trim() ? snapshot(cx, scratch, repo, 'HEAD') : commitOf(cx, repo, 'HEAD'));
 
 // ---------------------------------------------------------------- plan and run folder
 const group = (plan, id) => plan.groups.find(g => g.id === id) ?? fail(2, `unknown group ${id}`);
@@ -129,7 +175,7 @@ const gatePath = (ctx, name) => join(ctx.run, 'gates', name);
 const writeGate = (ctx, name, obj) => writeSafe(ctx.run, gatePath(ctx, name), `${JSON.stringify(obj)}\n`);
 const readGate = (ctx, name) => { try { return JSON.parse(readFileSync(gatePath(ctx, name), 'utf8')); } catch { return null; } };
 const storeGate = (ctx, gate, key, result) => writeEntry(gatePath(ctx, cacheName(gate)), key, result, (f, text) => writeSafe(ctx.run, f, text));
-const treeOf = (ctx, rev) => git(ctx, ctx.plan.repo, ['rev-parse', `${rev}^{tree}`]).trim();
+const treeOf = (ctx, rev) => { const read = () => git(ctx, ctx.plan.repo, ['rev-parse', `${rev}^{tree}`]).trim(); return FULL.test(rev) ? remembered(memo(ctx).tree, rev, read) : read(); };
 const bytesOf = (ctx, files) => files.map(f => { try { return [f, readFileSync(join(ctx.plan.repo, f))]; } catch { return [f, null]; } }); // a missing file is part of the key too
 // the mutation policy and the sandbox image decide a result as much as the command does: resolved values, so `TRUE` and `true` are one key
 const runArgs = ctx => JSON.stringify({ cmd: ctx.plan.cmd, base: ctx.plan.base, runner: ctx.probe.runner, env: ctx.probe.env, ro: ctx.probe.ro, link: ctx.plan.link ?? [], timeout: ctx.probe.timeout, jobs: ctx.jobs,
