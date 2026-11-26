@@ -187,6 +187,8 @@ test('should wait for a free slot before starting a command, and not start it wh
   const stop = new AbortController(), slots = limiter(1);
   const first = runIn({ ...o, slots, signal: stop.signal }, dir, 'sleep 30');
   const second = runIn({ ...o, slots, signal: stop.signal }, dir, 'exit 0');
+  // a node runner can take over 300 ms to start on a busy CI host: wait for the first command, then give the second time to (wrongly) start
+  for (const until = performance.now() + 10_000; groups().length === 0 && performance.now() < until;) await tick(50);
   await tick(300);
   assert.equal(groups().length, 1, 'the second command waits for the slot');
   stop.abort();
