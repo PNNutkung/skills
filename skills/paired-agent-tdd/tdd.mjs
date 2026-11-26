@@ -152,6 +152,8 @@ function needs(plan, g) { // every group g waits for, directly or not
 const DIRECT_RUNNER = join(HERE, 'direct-run.mjs');
 const runnerOf = (cx, plan, o) => abs(cx, o.runner ?? (plan.sandbox ? join(ZT, 'sandbox-run.mjs') : DIRECT_RUNNER));
 // PTDD_INPROCESS_RUNNER_ENABLED (ADR 0008): the built-in direct runner runs in this process (and in the probes this process starts), not as a node process per command
+// the probes import only the direct-run.mjs beside their own skill (probelib's trust rule): with ZT_DIR elsewhere they start the runner per command, as with the flag off
+const PROBES_INPROC = (() => { try { return lib.builtInDirectRunner() === realpathSync(DIRECT_RUNNER); } catch { return false; } })();
 const inprocOf = (cx, runner) => { try { return inprocessRunner(cx.env) && runner === DIRECT_RUNNER; } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; } };
 const trustedRun = (cx, dir) => { // the explicit flag alone: another candidate (env, marker) must never stand in for a bad one
   let real = '';
@@ -205,7 +207,7 @@ function strayFiles(ctx) {
 function child(ctx, script, base, head, tests, tag, extra = [], max = null) { // max: the share of ZT_TEST_PROCESS_MAX this probe gets (null: what the environment says)
   const { plan } = ctx, scratch = mkdtempSync(join(plan.scratch, `${tag}-`));
   const argv = [join(ZT, script), '--repo', plan.repo, '--base', base, '--head', head, '--scratch', scratch, '--cmd', plan.cmd, '--tests', tests.join(','), '--runner', ctx.probe.runner,
-    '--jobs', String(ctx.jobs), '--timeout', String(ctx.probe.timeout), ...(plan.link ?? []).flatMap(n => ['--link', n]), ...(plan.ro ?? []).flatMap(p => ['--ro', p]), ...ctx.probe.env.flatMap(e => ['--env', e]), ...(ctx.probe.inproc ? ['--runner-inprocess'] : []), ...extra];
+    '--jobs', String(ctx.jobs), '--timeout', String(ctx.probe.timeout), ...(plan.link ?? []).flatMap(n => ['--link', n]), ...(plan.ro ?? []).flatMap(p => ['--ro', p]), ...ctx.probe.env.flatMap(e => ['--env', e]), ...(ctx.probe.inproc && PROBES_INPROC ? ['--runner-inprocess'] : []), ...extra];
   return new Promise(done => {
     const p = spawn(process.execPath, argv, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: max === null ? ctx.env : { ...ctx.env, ZT_TEST_PROCESS_MAX: String(max) } });
     let out = '', err = '';

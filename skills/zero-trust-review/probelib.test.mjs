@@ -3,11 +3,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FlagError } from './flags.mjs';
-import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, inprocRunner, parseProbeArgs, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
+import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, builtInDirectRunner, inprocRunner, parseProbeArgs, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
 
 // a seeded generator, so a failing case can be replayed
 const rng = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -356,4 +356,18 @@ test('should accept --runner-inprocess only with a direct-run.mjs runner and loa
   assert.equal(typeof await inprocRunner(builtIn), 'function');
   writeFileSync(join(dir, 'direct-run.mjs'), 'export const other = 1;\n');
   await assert.rejects(inprocRunner(join(dir, 'direct-run.mjs')), /exports no runDirect\(\)/);
+});
+
+test('should accept --runner-inprocess only for the paired-agent-tdd direct-run.mjs beside this skill by real path, and name the fix, when --runner is another file named direct-run.mjs (RunnerFlag)', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'plib-trust-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const builtIn = realpathSync(join(import.meta.dirname, '..', 'paired-agent-tdd', 'direct-run.mjs'));
+  const args = runner => ['--repo', 'r', '--base', 'HEAD', '--head', 'HEAD', '--scratch', 's', '--cmd', 'sh {file}', '--runner', runner, '--runner-inprocess'];
+  mkdirSync(join(dir, 'paired-agent-tdd'));
+  writeFileSync(join(dir, 'paired-agent-tdd', 'direct-run.mjs'), readFileSync(builtIn)); // a byte copy elsewhere is not the built-in
+  assert.throws(() => parseProbeArgs({}, { args: args(join(dir, 'paired-agent-tdd', 'direct-run.mjs')), cwd: dir }),
+    e => e.message.includes(`next to this skill (${builtIn})`) && /pass that runner or drop --runner-inprocess$/.test(e.message));
+  symlinkSync(builtIn, join(dir, 'direct-run.mjs'));
+  assert.equal(parseProbeArgs({}, { args: args(join(dir, 'direct-run.mjs')), cwd: dir }).inprocess, true, 'a link to the built-in is the built-in');
+  assert.equal(builtInDirectRunner(), builtIn);
 });

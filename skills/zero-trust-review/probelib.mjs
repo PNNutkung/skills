@@ -34,13 +34,17 @@ export function parseProbeArgs(extra = {}, { optional = [], args, cwd } = {}) {
   for (const e of v.env) if (!/^[A-Za-z_]\w*=/.test(e)) throw new Error(`--env wants K=V, got ${e}`);
   const runner = abs(v.runner ?? join(dirname(fileURLToPath(import.meta.url)), 'sandbox-run.mjs'));
   if (!existsSync(runner)) throw new Error(`runner not found: ${runner}`);
-  if (v['runner-inprocess'] && basename(runner) !== DIRECT_RUNNER) throw new Error(`--runner-inprocess needs --runner to be the built-in ${DIRECT_RUNNER} of paired-agent-tdd, not ${runner}`);
+  if (v['runner-inprocess'] && !isBuiltInDirectRunner(runner)) throw new Error(`--runner-inprocess needs --runner to be the built-in ${DIRECT_RUNNER} of paired-agent-tdd next to this skill (${builtInDirectRunner() ?? `none at ${siblingRunner()}`}), not ${runner}: pass that runner or drop --runner-inprocess`);
   return { values: v, repo: abs(v.repo), base: v.base, head: v.head, scratch: abs(v.scratch), cmd: v.cmd, runner, inprocess: v['runner-inprocess'], env: v.env, link: v.link.map(rel),
     extraRo: v.ro.map(p => abs(p)), tests: v.tests?.split(',').filter(Boolean).map(rel), jobs: intOption(v, 'jobs', 1), timeout: intOption(v, 'timeout', 1) };
 }
 
 // --runner-inprocess: the probe imports runDirect() of the --runner file (paired-agent-tdd's direct-run.mjs) and passes it to runIn as o.inproc: no node start per command
+// Trust: only the paired-agent-tdd skill installed beside this one is imported into the probe, compared by real path (a file merely named direct-run.mjs is not)
 const DIRECT_RUNNER = 'direct-run.mjs';
+const siblingRunner = () => join(dirname(fileURLToPath(import.meta.url)), '..', 'paired-agent-tdd', DIRECT_RUNNER);
+export function builtInDirectRunner() { try { return realpathSync(siblingRunner()); } catch { return null; } }
+const isBuiltInDirectRunner = runner => { try { return realpathSync(runner) === builtInDirectRunner(); } catch { return false; } };
 export async function inprocRunner(runner) {
   const { runDirect } = await import(pathToFileURL(runner).href);
   if (typeof runDirect !== 'function') throw new Error(`--runner-inprocess: ${runner} exports no runDirect()`);
