@@ -678,3 +678,23 @@ test('should share no state between two in-process calls when a failing call com
   assert.deepEqual(normalize(again), normalize(fresh), 'no flag, limiter or output buffer carried over');
   assert.equal(again.stdout.split('\n').length, 2, 'the output of one call only');
 });
+
+// ---------------------------------------------------------------- --runner-inprocess (ADR 0008 A18)
+const DIRECT_RUN = join(HERE, '..', 'paired-agent-tdd', 'direct-run.mjs');
+
+test('should give the same mutants and verdicts with --runner-inprocess as with the spawned direct runner when --runner is direct-run.mjs (RunnerFlag, Parity)', { skip }, async t => {
+  const fx = fixture(t);
+  const slim = r => { const o = JSON.parse(r.stdout); return { ...o, summary: o.summary.replace(/\(run \S+\)/g, ''), mutants: o.mutants.map(({ run, ...m }) => ({ ...m, run: typeof run })) }; };
+  const argv = extra => mutateArgs(fx, stubDir(fx, {}), 'python3 {file}', DIRECT_RUN, ['--max', '3', ...extra]);
+  const [spawned, inproc] = await Promise.all([inProc(argv([])), inProc(argv(['--runner-inprocess']))]);
+  assert.equal(inproc.status, 0, inproc.stderr);
+  assert.deepEqual(slim(inproc), slim(spawned));
+  assert.deepEqual([JSON.parse(inproc.stdout).backend, slim(inproc).mutants.length > 0], ['direct', true]);
+});
+
+test('should exit 2 naming the fix when --runner-inprocess is given with a runner that is not direct-run.mjs (RunnerFlag)', async t => {
+  const fx = fixture(t);
+  const r = await inProc(mutateArgs(fx, stubDir(fx, {}), 'python3 {file}', undefined, ['--runner-inprocess']));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^mutate: --runner-inprocess needs --runner to be the built-in direct-run.mjs of paired-agent-tdd/);
+});

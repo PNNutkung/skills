@@ -104,6 +104,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `PTDD_GATE_REUSE_ENABLED` | `true` \| `false` | `true` | a navigator, and `verify`, reuse a gate result when a sha256 of the snapshot, the group's files and the gate's arguments matches (the flake check still re-runs) |
 | `PTDD_COURIER_SKIP_ENABLED` | `true` \| `false` | `true` | no final courier when every fixer reports its gate ok; `tdd.mjs verify` is the check |
 | `PTDD_PARALLEL_REVIEW_ENABLED` | `true` \| `false` | `true` | the integration-tester and the reviewer run at the same time; the integration test is still gated but not read by the reviewer |
+| `PTDD_INPROCESS_RUNNER_ENABLED` | `true` \| `false` | `true` | the built-in `direct-run.mjs` runs each test command inside `tdd.mjs` (and inside the `testprobe.mjs` and `mutate.mjs` it starts: `--runner-inprocess`), not as a node process per command; the same exit codes, ledger lines and `ZT-RUN` line; no effect with `--runner` set to another file or `plan.sandbox`; `false` starts `direct-run.mjs` per command as before |
 | `QA_ADR_AUTO_FIND_ENABLED` | `true` \| `false` | `true` | with neither `requirements` nor `dodFile` in `findings.json`, use the ADR whose `touches` cover the files the findings name |
 | `RETRO_RATCHET_PRECOMMIT_HOOK_ENABLED` | `true` \| `false` | `true` | `ratchet.mjs install` adds the git pre-commit hook, and the hook refuses a count in `.ratchet.json` that went up |
 | `RETRO_TRANSCRIPTS_ENABLED` | `true` \| `false` | `true` | retro reads Claude Code session transcripts (redacted) |

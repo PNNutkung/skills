@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FlagError } from './flags.mjs';
-import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, parseProbeArgs, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
+import { HEAD_RUN_KIND, HEAD_RUN_REFUSED, HEAD_RUN_SCHEMA, backendOf, inprocRunner, parseProbeArgs, baselineFrom, headRunDoc, limiter, readBaseline, runIn, testProcessSlots } from './probelib.mjs';
 
 // a seeded generator, so a failing case can be replayed
 const rng = seed => () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
@@ -285,4 +285,75 @@ test('should let the process exit at once when the runner cannot start, instead 
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', `const { runIn } = await import(${JSON.stringify(lib)}); const r = await runIn(${JSON.stringify(o)}, ${JSON.stringify(dir)}, 'exit 0'); console.log(r.exit);`], { encoding: 'utf8', timeout: 30000 });
   assert.equal(r.stdout.trim(), '1', r.stderr);
   assert.ok(performance.now() - t0 < 10000, `took ${Math.round(performance.now() - t0)} ms`);
+});
+
+// ---------------------------------------------------------------- o.inproc (ADR 0008 A18): the caller runs the runner in this process
+// a fake runDirect: records what it was given, prints like the runner, honors the stop signals
+const fakeInproc = (calls, { exit = 0, out = 'hi\n', hang = false } = {}) => async o => {
+  calls.push(o);
+  o.onData(out);
+  if (hang) await new Promise(r => { o.signal.addEventListener('abort', r); o.kill.addEventListener('abort', r); });
+  if (o.kill.aborted) return { exit: null };
+  const code = o.signal.aborted ? 128 : exit;
+  o.onData(`ZT-RUN rfake-0001 exit=${code}\n`);
+  return { exit: code, run: 'rfake-0001' };
+};
+
+test('should call o.inproc with the command, cwd, env and timeout instead of starting the runner, and return the same fields when o.inproc is given (RunnerFlag)', async () => {
+  const calls = [], o = { runner: '/no/such/runner.mjs', env: ['K=V'], ro: ['/ro'], timeout: 7, procEnv: { A: '1' }, procCwd: '/x', inproc: fakeInproc(calls, { exit: 3 }) };
+  const r = await runIn(o, '/work', 'exit 3');
+  assert.deepEqual(Object.keys(r), ['exit', 'sec', 'tail', 'run']);
+  assert.deepEqual([r.exit, r.run, r.tail], [3, 'rfake-0001', 'hi\nZT-RUN rfake-0001 exit=3']);
+  const [c] = calls;
+  assert.deepEqual([c.cwd, c.timeout, c.env, c.cmd, c.procEnv, c.procCwd], ['/work', 7, ['K=V', 'PYTHONPATH=/work'], ['sh', '-c', 'exit 3'], { A: '1' }, '/x']);
+});
+
+test('should keep only the last o.tail characters of the output when the runner runs in-process (RunnerFlag)', async () => {
+  const r = await runIn({ env: [], ro: [], timeout: 5, tail: 10, inproc: fakeInproc([], { out: `${'x'.repeat(100)}end\n` }) }, '/w', 'true');
+  assert.equal(r.tail, '001 exit=0');
+});
+
+test('should send the in-process runner its stop signal and say aborted when o.signal aborts, and not call it once aborted (RunnerFlag)', async () => {
+  const calls = [], stop = new AbortController();
+  const pending = runIn({ env: [], ro: [], timeout: 60, signal: stop.signal, inproc: fakeInproc(calls, { hang: true }) }, '/w', 'sleep 30');
+  await tick(20);
+  stop.abort();
+  const r = await pending;
+  assert.deepEqual([r.exit, r.aborted, calls[0].signal.aborted, calls[0].kill.aborted], [128, true, true, false]);
+  assert.deepEqual(await runIn({ env: [], ro: [], timeout: 60, signal: stop.signal, inproc: fakeInproc(calls) }, '/w', 'true'), { exit: null, sec: 0, tail: '', run: undefined, aborted: true });
+  assert.equal(calls.length, 1);
+});
+
+test('should apply the slots limiter to in-process commands when o.slots is given (RunnerFlag)', async () => {
+  let live = 0, peak = 0;
+  const inproc = async o => { live++; peak = Math.max(peak, live); await tick(20); live--; o.onData('ok\n'); return { exit: 0 }; };
+  const o = { env: [], ro: [], timeout: 5, slots: limiter(2), inproc };
+  const rs = await Promise.all(Array.from({ length: 6 }, () => runIn(o, '/w', 'true')));
+  assert.deepEqual([peak, rs.every(r => r.exit === 0)], [2, true]);
+});
+
+test('should give exit 1 with the message when the in-process runner rejects, and the timeout exit when it was hard-stopped (RunnerFlag)', async () => {
+  const bad = await runIn({ env: [], ro: [], timeout: 5, inproc: async () => { throw new Error('boom'); } }, '/w', 'true');
+  assert.deepEqual([bad.exit, bad.tail], [1, 'boom']);
+  const gone = await runIn({ env: [], ro: [], timeout: 5, inproc: async () => ({ exit: null }) }, '/w', 'true');
+  assert.equal(gone.exit, 124);
+});
+
+test('should say direct without starting the runner when the caller runs it in-process (RunnerFlag)', () => {
+  assert.equal(backendOf('/no/such/direct-run.mjs', undefined, { inprocess: true }), 'direct');
+  assert.equal(backendOf('/no/such/direct-run.mjs'), 'none', 'without it the runner is still started (and here fails)');
+});
+
+test('should accept --runner-inprocess only with a direct-run.mjs runner and load its runDirect when the probe asks for it (RunnerFlag)', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'plib-inproc-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'runner.mjs'), '');
+  const args = runner => ['--repo', 'r', '--base', 'HEAD', '--head', 'HEAD', '--scratch', 's', '--cmd', 'sh {file}', '--runner', runner];
+  assert.equal(parseProbeArgs({}, { args: args('runner.mjs'), cwd: dir }).inprocess, false);
+  assert.throws(() => parseProbeArgs({}, { args: [...args('runner.mjs'), '--runner-inprocess'], cwd: dir }), /--runner-inprocess needs --runner to be the built-in direct-run.mjs of paired-agent-tdd/);
+  const builtIn = join(import.meta.dirname, '..', 'paired-agent-tdd', 'direct-run.mjs');
+  assert.equal(parseProbeArgs({}, { args: [...args(builtIn), '--runner-inprocess'], cwd: dir }).inprocess, true);
+  assert.equal(typeof await inprocRunner(builtIn), 'function');
+  writeFileSync(join(dir, 'direct-run.mjs'), 'export const other = 1;\n');
+  await assert.rejects(inprocRunner(join(dir, 'direct-run.mjs')), /exports no runDirect\(\)/);
 });

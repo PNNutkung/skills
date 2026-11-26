@@ -1,7 +1,7 @@
 // Tests for flags.mjs: a flag means what it says or the run stops. Unset or empty keeps the default; any other value, or an old name, is an error.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FlagError, enabled, oneOf, positiveInt } from './flags.mjs';
+import { FlagError, INPROCESS_RUNNER_FLAG, enabled, inprocessRunner, oneOf, positiveInt } from './flags.mjs';
 
 test('should read true and false in any case, and use the default when the flag is unset or empty', () => {
   for (const [v, d, want] of [['true', false, true], ['TRUE', false, true], [' False ', true, false], ['false', true, false], [undefined, true, true], ['', false, false]]) {
@@ -34,4 +34,13 @@ test('should read one of the listed modes, the default when unset, and stop on a
   assert.equal(oneOf({}, 'M_MODE', ['auto', 'docker'], 'auto'), 'auto');
   assert.throws(() => oneOf({ M_MODE: 'podman' }, 'M_MODE', ['auto', 'docker'], 'auto'), { message: 'M_MODE=podman is not valid: use one of auto, docker' });
   assert.throws(() => oneOf({ M_FORCE: 'docker' }, 'M_MODE', ['auto', 'docker'], 'auto', { renamedFrom: 'M_FORCE' }), /M_FORCE was renamed: use M_MODE=auto\|docker/);
+});
+
+test('should run the direct runner in-process by default and as its own process when PTDD_INPROCESS_RUNNER_ENABLED is false (RunnerFlag)', () => {
+  assert.equal(INPROCESS_RUNNER_FLAG, 'PTDD_INPROCESS_RUNNER_ENABLED');
+  for (const [v, want] of [[undefined, true], ['', true], ['true', true], ['FALSE', false], ['false', false]]) assert.equal(inprocessRunner({ PTDD_INPROCESS_RUNNER_ENABLED: v }), want, String(v));
+});
+
+test('should stop with the fix when PTDD_INPROCESS_RUNNER_ENABLED is neither true nor false (RunnerFlag)', () => {
+  assert.throws(() => inprocessRunner({ PTDD_INPROCESS_RUNNER_ENABLED: 'yes' }), e => e instanceof FlagError && e.message === 'PTDD_INPROCESS_RUNNER_ENABLED=yes is not valid: use true or false');
 });

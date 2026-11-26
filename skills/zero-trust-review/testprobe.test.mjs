@@ -354,3 +354,23 @@ test('should stop with exit 2 naming the fix for any ZT_TEST_PROCESS_MAX that is
     }
   }
 });
+
+// ---------------------------------------------------------------- --runner-inprocess (ADR 0008 A18)
+const DIRECT_RUN = join(HERE, '..', 'paired-agent-tdd', 'direct-run.mjs');
+const spawnProbe = (fx, args) => spawnSync(process.execPath, [PROBE, '--repo', fx.repo, '--base', fx.base, '--head', fx.head, '--scratch', fx.scratch, '--cmd', 'sh {file}', ...args], { encoding: 'utf8' });
+
+test('should give the same verdicts with --runner-inprocess as with the spawned direct runner, and report it as direct, when --runner is direct-run.mjs (RunnerFlag, Parity)', t => {
+  const fx = fixture(t, { head: { 'tests/always.sh': 'exit 0\n' } });
+  const slim = out => ({ ...out, tests: out.tests.map(({ head, base, ...r }) => ({ ...r, head: head.exit, base: base.exit })) });
+  const [spawned, inproc] = [[], ['--runner-inprocess']].map(extra => spawnProbe(fx, ['--runner', DIRECT_RUN, '--flake', '1', ...extra]));
+  assert.equal(inproc.status, 0, inproc.stderr);
+  assert.deepEqual(slim(JSON.parse(inproc.stdout)), slim(JSON.parse(spawned.stdout)));
+  assert.equal(JSON.parse(inproc.stdout).backend, 'direct');
+});
+
+test('should exit 2 naming the fix when --runner-inprocess is given with a runner that is not direct-run.mjs (RunnerFlag)', t => {
+  const fx = fixture(t);
+  const r = spawnProbe(fx, ['--runner', join(HERE, 'sandbox-run.mjs'), '--runner-inprocess']);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^testprobe: --runner-inprocess needs --runner to be the built-in direct-run.mjs of paired-agent-tdd/);
+});
