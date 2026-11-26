@@ -38,11 +38,13 @@ const layoutProblems = src => [
 ];
 const dataUrl = js => new URL(`data:text/javascript,${encodeURIComponent(js)}`);
 
+// ADR 0008 A6: tests that assert on the same run share it in one file; every other file holds one test
+const SHARED = { 'e2e.speed.vmeasure.test.mjs': 2 };
 test('should hold one top-level test and at most one scripted run awaited in turn when an e2e.speed file is read', () => {
   const files = speedFiles();
-  assert.equal(files.length, NAMES.length, files.map(f => f.name).join(', '));
+  assert.equal(files.length, NAMES.length - Object.values(SHARED).reduce((n, k) => n + k - 1, 0), files.map(f => f.name).join(', '));
   for (const { name, src } of files) {
-    assert.equal(count(src, /^test\(/gm), 1, name);
+    assert.equal(count(src, /^test\(/gm), SHARED[name] ?? 1, name);
     assert.deepEqual(layoutProblems(src), [], name);
   }
 });
@@ -59,7 +61,7 @@ test('should name a problem when a file starts two main-thread runs or awaits on
 });
 
 test('should run the same 9 test names as before the split when the names of every e2e.speed file are put together', () => {
-  const names = speedFiles().map(({ src }) => /^test\((['"])(.*?)(?<!\\)\1,/m.exec(src)?.[2].replace(/\\(.)/g, '$1'));
+  const names = speedFiles().flatMap(({ src }) => [...src.matchAll(/^test\((['"])(.*?)(?<!\\)\1,/gm)].map(m => m[2].replace(/\\(.)/g, '$1')));
   assert.deepEqual(names.sort(), [...NAMES].sort());
 });
 

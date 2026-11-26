@@ -74,6 +74,8 @@ It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofc
 
 `PTDD_PIPELINE_MODE=fast|paired`, default **fast**: a group that waits for no other gets ONE `tdd-driver` (tests, RED gate, code, GREEN gate) and ONE navigator over both gates. `plan.mode` `"fast"`/`"paired"` overrides it. **Use `paired`** for security-critical or tightly coupled groups: in fast mode the code's author also wrote its tests. Switches, default `true`: `PTDD_QUICK_DRIVER_GATE_ENABLED` (a driver's middle GREEN run skips mutants), `PTDD_GATE_REUSE_ENABLED` (the navigator and `verify` reuse a gate result on byte-identical files), `PTDD_COURIER_SKIP_ENABLED` (no final courier when every fixer's gate is ok: `verify` is the check), `PTDD_PARALLEL_REVIEW_ENABLED` (integration tester and reviewer together). An invalid value stops `plan`. All off is v2.0.0 byte for byte. [`probes.md`](./probes.md) "Speed flags".
 
+`PTDD_INPROCESS_RUNNER_ENABLED`, default `true`, read by every gate (not stored in the plan): the built-in `direct-run.mjs` runs inside the gate's process, no node start per test command; results, ledger and exit codes are the same; `false` spawns it per command.
+
 ## The graph
 
 <!-- GENERATED:graph -->

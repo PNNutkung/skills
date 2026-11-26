@@ -6,11 +6,12 @@
 //   node testprobe.mjs --repo DIR --base REV --head REV --scratch DIR --cmd 'pytest -q {file}' [--tests a,b] [--flake 3] [--jobs 4]
 //     [--timeout 120] [--link NAME]... [--ro DIR]... [--env K=V]... [--runner PATH]   (--ro: extra read-only dirs, e.g. the interpreter install behind a venv)
 //     [--head-out FILE]   (writes each file's HEAD run, keyed to the tree and command, for mutate.mjs --baseline-from)
+//     [--runner-inprocess]   (--runner is paired-agent-tdd's direct-run.mjs: run it in this process, no node start per command and no --check)
 // ZT_TEST_PROCESS_MAX caps how many test commands run at once (default unlimited).
 // Prints one JSON object and exits 0 (results are data); usage errors exit 2.
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { NO_SANDBOX, TEST, TIMEOUT, DOC, backendOf, changes, clear, editableRoots, extract, headRunDoc, intOption, isSource, parseProbeArgs, pool, restore, runIdentity, runIn, shq,
+import { NO_SANDBOX, TEST, TIMEOUT, DOC, backendOf, changes, clear, editableRoots, extract, headRunDoc, inprocRunner, intOption, isSource, parseProbeArgs, pool, restore, runIdentity, runIn, shq,
   testProcessSlots, writeHeadRun } from './probelib.mjs';
 
 const MAX_LINES = 6;
@@ -58,7 +59,8 @@ async function main() {
   const o = parse();
   const changed = changes(o.repo, o.base, o.head), sources = changed.filter(c => isSource(c.path) || o.src.has(c.path));
   const files = o.tests ?? changed.filter(c => c.status !== 'D' && TEST.test(c.path) && !DOC.test(c.path)).map(c => c.path);
-  let backend = backendOf(o.runner), tests = [];
+  if (o.inprocess) o.inproc = await inprocRunner(o.runner);
+  let backend = backendOf(o.runner, undefined, { inprocess: o.inprocess }), tests = [];
   if (files.length) {
     mkdirSync(o.scratch, { recursive: true });
     const scratch = realpathSync(o.scratch);

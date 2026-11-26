@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,13 +14,23 @@ const { createRunDir } = await import(pathToFileURL(join(ZT, 'runctx.mjs')).href
 const data = JSON.parse(readFileSync(join(FIX, 'findings.json'), 'utf8'));
 const mk = p => mkdtempSync(join(tmpdir(), p));
 
+// The repo is built once a process and copied into each fixture (ADR 0008): git init, add and commit cost tens of ms CPU, a copy a few.
+let template;
+const templateRepo = () => {
+  if (template) return template;
+  template = mk('qa-fnd-tpl-');
+  process.on('exit', () => rmSync(template, { recursive: true, force: true }));
+  mkdirSync(join(template, 'docs')); mkdirSync(join(template, 'src'));
+  writeFileSync(join(template, 'docs/spec.md'), '# Spec\nRefunds\nRefunds over 30 days are refused.\nEnd\n');
+  writeFileSync(join(template, 'src/a.py'), 'def refund(days):\n    if days > 30:\n        return False\n    return True\n');
+  for (const c of [['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'maintenance.auto=false', 'commit', '-qm', 'x']]) execFileSync('git', ['-C', template, ...c]);
+  return template;
+};
+
 // a git repo at HEAD with a spec and a source file, plus a run dir holding the fixture ledger and answers
 function fixture() {
   const repo = mk('qa-fnd-repo-');
-  mkdirSync(join(repo, 'docs')); mkdirSync(join(repo, 'src'));
-  writeFileSync(join(repo, 'docs/spec.md'), '# Spec\nRefunds\nRefunds over 30 days are refused.\nEnd\n');
-  writeFileSync(join(repo, 'src/a.py'), 'def refund(days):\n    if days > 30:\n        return False\n    return True\n');
-  for (const c of [['init', '-q'], ['add', '.'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'x']]) execFileSync('git', ['-C', repo, ...c]);
+  cpSync(templateRepo(), repo, { recursive: true });
   const tmp = mk('qa-fnd-tmp-');
   const run = createRunDir('qa-fnd-' + Math.random().toString(36).slice(2), { tmp });
   for (const f of ['exec.jsonl', 'answers.md']) { copyFileSync(join(FIX, f), join(run, f)); chmodSync(join(run, f), 0o600); }
