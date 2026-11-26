@@ -2,7 +2,7 @@
 // Claude Code SessionStart hook: puts rules/reply-style.md into the session context (startup, resume, clear, compact).
 // On by default; REPLY_STYLE_ENABLED=false turns it off. Any other value exits 2 with the fix. A missing rule file warns on stderr
 // and exits 0, so the session still starts (docs/adr/0010-reply-style.md).
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,7 +29,7 @@ export function handle(input, env = process.env) {
   return { code: 0, stdout: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } } };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   let out;
   try {
     let input = {};

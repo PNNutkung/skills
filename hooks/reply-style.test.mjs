@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,6 +79,16 @@ test('should warn on stderr and exit 0 when the rule file is missing (Missing)',
     assert.equal(r.code, 0);
     assert.equal(r.out, null);
     assert.match(r.err, /reply-style: .*rules[\\/]reply-style\.md/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('should inject the rule when the plugin folder is reached through a symlink (Hook, rules/paths.md)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'reply-style-link-'));
+  try {
+    symlinkSync(ROOT, join(dir, 'plugin'), 'dir');
+    const r = fire({ hook_event_name: 'SessionStart', source: 'startup' }, {}, join(dir, 'plugin', 'hooks', 'reply-style.mjs'));
+    assert.equal(r.code, 0);
+    assert.equal(r.out?.hookSpecificOutput?.additionalContext, RULE);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
