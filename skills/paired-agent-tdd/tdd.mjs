@@ -119,7 +119,7 @@ export function snapshot(cx, scratch, repo, on, files) { // cx.counter: per call
     if (list === undefined) g(['add', '-A', '--', '.']);
     else if (!batch) perFile();
     else if (entries.length) {
-      const added = entries.filter(e => e.p), lined = added.filter(e => !e.p.includes('\n')); // --stdin-paths reads lines: a name with a newline is hashed alone
+      const added = entries.filter(e => e.p), lined = added.filter(e => !/[\r\n]/.test(e.p)); // --stdin-paths reads lines and drops a CR before the newline: a name with either is hashed alone
       const ids = lined.length ? g(['hash-object', '-w', '--no-filters', '--stdin-paths'], lined.map(e => `${e.p}\n`).join('')).split('\n') : [];
       lined.forEach((e, i) => { e.id = ids[i]; });
       for (const e of added) if (!e.id) e.id = g(['hash-object', '-w', '--no-filters', '--', e.p]);

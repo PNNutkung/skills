@@ -81,6 +81,14 @@ test('should make the commit of the old algorithm when file names hold spaces, q
   assert.equal(gone, oldGone, 'deleted names with a space and a newline');
 });
 
+test('should make the commit of the old algorithm when a file name ends in or holds a carriage return (Parity)', t => {
+  const fx = setup(t);
+  const names = ['cr-end.txt\r', 'mid\rcr.txt', 'plain.txt'];
+  try { write(fx.repo, Object.fromEntries(names.map((n, i) => [n, `content ${i}\n`]))); } catch (e) { t.skip(`this file system refuses a CR in a name: ${e.code}`); return; }
+  const [now, old] = both(fx, 'HEAD', names);
+  assert.equal(now, old);
+});
+
 test('should make the commit of the old algorithm when the whole working tree is snapshot (Parity)', t => {
   const fx = setup(t);
   write(fx.repo, { 'keep.txt': 'x\n', 'gone.txt': null, 'more/new.txt': 'y\n' });
