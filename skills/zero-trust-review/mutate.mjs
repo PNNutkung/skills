@@ -7,7 +7,8 @@
 // the tree and write the change request's own bytes anywhere the user can. So a mutant is applied AND undone by the sandboxed command itself (where such a write is
 // refused); a tree whose run did not end cleanly (timeout, kill, no stamp) is deleted and re-extracted instead of repaired.
 //   node mutate.mjs --repo DIR --base REV --head REV --scratch DIR --cmd 'pytest -q {file}' [--tests a,b] [--max 30] [--jobs 4] [--timeout 120] [--budget 600]
-//     [--kill-exits 1] [--link NAME]... [--ro DIR]... [--env K=V]... [--runner PATH] [--files a.py:10-40,b.py]
+//     [--kill-exits 1] [--link NAME]... [--ro DIR]... [--env K=V]... [--runner PATH] [--runner-inprocess] [--files a.py:10-40,b.py]
+//   --runner-inprocess: --runner is paired-agent-tdd's direct-run.mjs: run it in this process, no node start per command and no --check
 //   --files: mutate these files (or line ranges; a bare path = every line) at --head instead of the lines a diff touched; --base is then optional and --tests required
 //   --kill-exits: only these non-zero exits count as a kill (pytest: 1 = a test failed; 2 = collection error from a mutant that does not even import = inconclusive)
 //   --baseline-from FILE: the HEAD run testprobe.mjs --head-out wrote; used instead of an own baseline run only when it is from this exact tree, command and environment
@@ -20,7 +21,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changedLines, fileRanges, generateMutants, sample } from './mutants.mjs';
 import { enabled } from './flags.mjs';
-import { DOC, NO_SANDBOX, TEST, TIMEOUT, backendOf, changes, clear, editableRoots, extract, gitOut, intOption, isSource, parseProbeArgs, pool, readBaseline, runIdentity, runIn, shq,
+import { DOC, NO_SANDBOX, TEST, TIMEOUT, backendOf, changes, clear, editableRoots, extract, gitOut, inprocRunner, intOption, isSource, parseProbeArgs, pool, readBaseline, runIdentity, runIn, shq,
   testProcessSlots } from './probelib.mjs';
 
 const MAX_SURVIVORS_SHOWN = 3, LINE_CUT = 40; // the lead pastes this summary into FACTS, which reviewers see clipped to ~800 chars
@@ -112,7 +113,8 @@ async function run(argv, env, cwd, write) {
   const o = parse(argv, env, cwd);
   const identity = o.baselineFrom && runIdentity(o); // the caller's environment, as testprobe.mjs saw it
   if (!o.env.some(e => e.startsWith('PYTHONDONTWRITEBYTECODE='))) o.env.push('PYTHONDONTWRITEBYTECODE=1'); // a same-size edit in the same second would run stale .pyc
-  const backend = backendOf(o.runner, env);
+  if (o.inprocess) o.inproc = await inprocRunner(o.runner);
+  const backend = backendOf(o.runner, env, { inprocess: o.inprocess });
   const done = extra => {
     const out = { backend, available: 0, mutants: [], ...extra };
     out.score = tally(out.mutants);

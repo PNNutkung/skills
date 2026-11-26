@@ -35,3 +35,7 @@ export function oneOf(env, name, modes, dflt, { renamedFrom } = {}) {
   if (modes.includes(v)) return v;
   throw new FlagError(`${name}=${env[name]} is not valid: use one of ${modes.join(', ')}`);
 }
+
+// ADR 0008 A4: the built-in direct runner (direct-run.mjs) runs in tdd.mjs's own process and in the probes it starts; false starts a node process per command, as before
+export const INPROCESS_RUNNER_FLAG = 'PTDD_INPROCESS_RUNNER_ENABLED';
+export const inprocessRunner = env => enabled(env, INPROCESS_RUNNER_FLAG, true);

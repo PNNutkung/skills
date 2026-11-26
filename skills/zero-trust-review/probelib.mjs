@@ -3,7 +3,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { positiveInt } from './flags.mjs';
 
@@ -28,14 +28,23 @@ export const rel = p => { const n = normalize(p).replace(/\/+$/, ''); if (n === 
 export function parseProbeArgs(extra = {}, { optional = [], args, cwd } = {}) {
   const str = { type: 'string' }, many = { type: 'string', multiple: true, default: [] }, abs = p => (cwd === undefined ? resolve(p) : resolve(cwd, p));
   const { values: v } = parseArgs({ ...(args === undefined ? {} : { args }), options: { repo: str, base: str, head: str, scratch: str, cmd: str, tests: str, runner: str, link: many, ro: many, env: many,
-    jobs: { ...str, default: '4' }, timeout: { ...str, default: '120' }, ...extra } });
+    jobs: { ...str, default: '4' }, timeout: { ...str, default: '120' }, 'runner-inprocess': { type: 'boolean', default: false }, ...extra } });
   for (const k of ['repo', 'base', 'head', 'scratch', 'cmd']) if (!v[k] && !optional.includes(k)) throw new Error(`--${k} is required`);
   if (!v.cmd.includes('{file}')) throw new Error('--cmd must contain {file}');
   for (const e of v.env) if (!/^[A-Za-z_]\w*=/.test(e)) throw new Error(`--env wants K=V, got ${e}`);
   const runner = abs(v.runner ?? join(dirname(fileURLToPath(import.meta.url)), 'sandbox-run.mjs'));
   if (!existsSync(runner)) throw new Error(`runner not found: ${runner}`);
-  return { values: v, repo: abs(v.repo), base: v.base, head: v.head, scratch: abs(v.scratch), cmd: v.cmd, runner, env: v.env, link: v.link.map(rel),
+  if (v['runner-inprocess'] && basename(runner) !== DIRECT_RUNNER) throw new Error(`--runner-inprocess needs --runner to be the built-in ${DIRECT_RUNNER} of paired-agent-tdd, not ${runner}`);
+  return { values: v, repo: abs(v.repo), base: v.base, head: v.head, scratch: abs(v.scratch), cmd: v.cmd, runner, inprocess: v['runner-inprocess'], env: v.env, link: v.link.map(rel),
     extraRo: v.ro.map(p => abs(p)), tests: v.tests?.split(',').filter(Boolean).map(rel), jobs: intOption(v, 'jobs', 1), timeout: intOption(v, 'timeout', 1) };
+}
+
+// --runner-inprocess: the probe imports runDirect() of the --runner file (paired-agent-tdd's direct-run.mjs) and passes it to runIn as o.inproc: no node start per command
+const DIRECT_RUNNER = 'direct-run.mjs';
+export async function inprocRunner(runner) {
+  const { runDirect } = await import(pathToFileURL(runner).href);
+  if (typeof runDirect !== 'function') throw new Error(`--runner-inprocess: ${runner} exports no runDirect()`);
+  return runDirect;
 }
 
 // An editable install (pip -e) imports from absolute directories listed in site-packages/*.pth. The sandbox reads only what it is granted, so grant
@@ -117,6 +126,8 @@ export function restore(repo, copy, srcChanges) {
 // o.slots (a limiter) caps how many commands run at once. o.signal (an AbortSignal) stops the command: SIGTERM makes the runner kill the command's process group;
 // a stopped or never-started command comes back with aborted: true and decides nothing.
 // o.procEnv / o.procCwd: the runner process's own environment and cwd (an in-process caller's injected ones; unset: this process's).
+// o.inproc (ADR 0008 A18): a function with the shape of paired-agent-tdd's direct-run.mjs runDirect(); the caller says the runner runs in this process, so it is
+// called instead of starting o.runner. Same result, same ledger entry and ZT-RUN line, same timeout, stop and backstop behavior.
 export function runIn(o, dir, command) {
   return o.slots ? o.slots(() => spawnRun(o, dir, command)) : spawnRun(o, dir, command);
 }
@@ -125,6 +136,7 @@ function spawnRun(o, dir, command) {
   if (o.signal?.aborted) return Promise.resolve({ ...NOT_STARTED });
   const t0 = performance.now(), keep = o.tail ?? TAIL; // o.tail: trailing output chars the caller needs (the RED classifier reads more than the review probes)
   const env = o.env.some(e => e.startsWith('PYTHONPATH=')) ? o.env : [...o.env, `PYTHONPATH=${dir}`]; // editable installs would import the original tree
+  if (o.inproc) return inprocRun(o, dir, command, env, t0, keep);
   const argv = [o.runner, '--cwd', dir, '--rw', dir, '--timeout', String(o.timeout), ...o.ro.flatMap(p => ['--ro', p]), ...env.flatMap(e => ['--env', e]),
     '--', 'sh', '-c', command];
   return new Promise(done => {
@@ -152,6 +164,31 @@ function spawnRun(o, dir, command) {
   });
 }
 const NOT_STARTED = { exit: null, sec: 0, tail: '', run: undefined, aborted: true };
+
+// spawnRun with the runner in this process: `term` is the SIGTERM probelib sends the runner, `hard` its SIGKILL (the runner gone: exit null -> TIMEOUT, no ledger entry)
+function inprocRun(o, dir, command, env, t0, keep) {
+  return new Promise(done => {
+    const term = new AbortController(), hard = new AbortController();
+    const hung = setTimeout(() => hard.abort(), (o.timeout + KILL_GRACE_SEC) * 1000);
+    let tail = '', aborted = false, backstop;
+    const stop = () => {
+      aborted = true;
+      term.abort();
+      backstop = setTimeout(() => hard.abort(), KILL_GRACE_SEC * 1000);
+      backstop.unref();
+    };
+    o.signal?.addEventListener('abort', stop, { once: true });
+    const end = exit => {
+      o.signal?.removeEventListener('abort', stop);
+      clearTimeout(backstop);
+      clearTimeout(hung);
+      done({ exit, sec: Math.round((performance.now() - t0) / 100) / 10, tail: tail.trim().slice(-keep), run: /ZT-RUN (\S+) exit=/.exec(tail)?.[1], ...(aborted && { aborted }) });
+    };
+    o.inproc({ cwd: dir, timeout: o.timeout, env, cmd: ['sh', '-c', command], procEnv: o.procEnv ?? process.env, procCwd: o.procCwd, signal: term.signal, kill: hard.signal,
+      onData: d => (tail = (tail + d).slice(-keep * 4)) })
+      .then(r => end(r.exit ?? TIMEOUT), e => { tail = e.message; end(1); });
+  });
+}
 
 // At most `max` calls of run(fn) at once, the rest wait in order; null when there is no limit. A finished call hands its slot straight to the next waiter.
 export function limiter(max) {
@@ -222,7 +259,9 @@ export async function pool(items, n, fn) {
 const NODE_FILE = /\.(mjs|js|cjs)$/i;
 const runnerCommand = argv => (NODE_FILE.test(argv[0]) ? [process.execPath, argv] : [argv[0], argv.slice(1)]);
 
-export function backendOf(runner, env) { // env: the runner's own environment (undefined: this process's)
+// env: the runner's own environment (undefined: this process's); inprocess: the caller runs the built-in direct runner in this process (its --check prints `direct`)
+export function backendOf(runner, env, { inprocess = false } = {}) {
+  if (inprocess) return 'direct';
   const r = spawnSync(...runnerCommand([runner, '--check']), { ...(env ? { env } : {}), encoding: 'utf8', timeout: 15000 });
   return r.status === 0 ? r.stdout.trim().split('\n')[0].slice(0, 40) || 'sandbox' : 'none';
 }

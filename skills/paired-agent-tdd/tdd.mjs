@@ -45,7 +45,8 @@ const imp = f => import(pathToFileURL(join(ZT, f)).href);
 const lib = await imp('probelib.mjs');
 const { createRunDir, markerDir, readMarker, resolveRun, writeSafe } = await imp('runctx.mjs');
 const { FENCE_ENV, OLD_FENCE_ENV, clearFence, writeFence } = await import('./fence.mjs');
-const { FlagError, enabled, positiveInt } = await import('./flags.mjs');
+const { FlagError, enabled, inprocessRunner, positiveInt } = await import('./flags.mjs');
+const { runDirect } = await import('./direct-run.mjs');
 const { resolveDod } = await import('./dodfile.mjs');
 const { cacheName, gateKey, readEntry, writeEntry } = await import('./gatecache.mjs');
 const { mayStore, pipelineOf, processShares, readSpeed, speedForArgs, speedOf, untrustedByFinal, verifyReuses } = await import('./speed.mjs');
@@ -148,7 +149,10 @@ function needs(plan, g) { // every group g waits for, directly or not
 }
 
 // where the test commands run: direct (no confinement) unless plan.sandbox asks for the zero-trust-review sandbox; --runner overrides both
-const runnerOf = (cx, plan, o) => abs(cx, o.runner ?? (plan.sandbox ? join(ZT, 'sandbox-run.mjs') : join(HERE, 'direct-run.mjs')));
+const DIRECT_RUNNER = join(HERE, 'direct-run.mjs');
+const runnerOf = (cx, plan, o) => abs(cx, o.runner ?? (plan.sandbox ? join(ZT, 'sandbox-run.mjs') : DIRECT_RUNNER));
+// PTDD_INPROCESS_RUNNER_ENABLED (ADR 0008): the built-in direct runner runs in this process (and in the probes this process starts), not as a node process per command
+const inprocOf = (cx, runner) => { try { return inprocessRunner(cx.env) && runner === DIRECT_RUNNER; } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; } };
 const trustedRun = (cx, dir) => { // the explicit flag alone: another candidate (env, marker) must never stand in for a bad one
   let real = '';
   try { real = realpathSync(abs(cx, dir ?? '')); } catch { /* missing */ }
@@ -164,12 +168,12 @@ function load(cx, o, testing = false) {
   const linked = (plan.link ?? []).map(n => realpathSync(join(plan.repo, n)));
   const env = [...(plan.env ?? []), ...(plan.env ?? []).some(e => e.startsWith('PYTHONDONTWRITEBYTECODE=')) ? [] : ['PYTHONDONTWRITEBYTECODE=1']];
   const ro = [...linked, ...lib.editableRoots(linked, plan.repo), ...(plan.ro ?? []).map(p => abs(cx, p))];
-  const runner = runnerOf(cx, plan, o), zt = testing ? readZt(cx) : null;
+  const runner = runnerOf(cx, plan, o), zt = testing ? readZt(cx) : null, inproc = testing && inprocOf(cx, runner) ? { inproc: runDirect } : {};
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   mkdirSync(join(run, 'diff'), { recursive: true, mode: 0o700 });
   // ZT_TEST_PROCESS_MAX caps the whole gate: this process's own test commands share one limiter, and `green` splits the cap with the probes it starts (processShares)
   const slots = zt?.testProcessMax ? { slots: lib.limiter(zt.testProcessMax) } : {};
-  return Object.assign(cx, { run, plan, linked, zt, jobs: plan.jobs ?? 4, probe: { runner, env, ro, timeout: plan.timeout ?? 120, tail: TAIL_KEPT, ...slots, procEnv: cx.env, procCwd: cx.cwd } });
+  return Object.assign(cx, { run, plan, linked, zt, jobs: plan.jobs ?? 4, probe: { runner, env, ro, timeout: plan.timeout ?? 120, tail: TAIL_KEPT, ...slots, ...inproc, procEnv: cx.env, procCwd: cx.cwd } });
 }
 const gatePath = (ctx, name) => join(ctx.run, 'gates', name);
 const writeGate = (ctx, name, obj) => writeSafe(ctx.run, gatePath(ctx, name), `${JSON.stringify(obj)}\n`);
@@ -201,7 +205,7 @@ function strayFiles(ctx) {
 function child(ctx, script, base, head, tests, tag, extra = [], max = null) { // max: the share of ZT_TEST_PROCESS_MAX this probe gets (null: what the environment says)
   const { plan } = ctx, scratch = mkdtempSync(join(plan.scratch, `${tag}-`));
   const argv = [join(ZT, script), '--repo', plan.repo, '--base', base, '--head', head, '--scratch', scratch, '--cmd', plan.cmd, '--tests', tests.join(','), '--runner', ctx.probe.runner,
-    '--jobs', String(ctx.jobs), '--timeout', String(ctx.probe.timeout), ...(plan.link ?? []).flatMap(n => ['--link', n]), ...(plan.ro ?? []).flatMap(p => ['--ro', p]), ...ctx.probe.env.flatMap(e => ['--env', e]), ...extra];
+    '--jobs', String(ctx.jobs), '--timeout', String(ctx.probe.timeout), ...(plan.link ?? []).flatMap(n => ['--link', n]), ...(plan.ro ?? []).flatMap(p => ['--ro', p]), ...ctx.probe.env.flatMap(e => ['--env', e]), ...(ctx.probe.inproc ? ['--runner-inprocess'] : []), ...extra];
   return new Promise(done => {
     const p = spawn(process.execPath, argv, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: max === null ? ctx.env : { ...ctx.env, ZT_TEST_PROCESS_MAX: String(max) } });
     let out = '', err = '';
@@ -567,6 +571,7 @@ async function cmdPlan(cx, o) {
     speed = readSpeed(cx.env); // ADR 0001: PTDD_PIPELINE_MODE and the four speed switches, read once here and carried in the args and plan.json
     fence = enabled(cx.env, FENCE_ENV, false, { renamedFrom: OLD_FENCE_ENV }); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
     cap = positiveInt(cx.env, 'PTDD_AGENT_MAX', { renamedFrom: 'PTDD_AGENT_CAP' }); // opt-in hard ceiling, enforced by workflow.js
+    inprocessRunner(cx.env); // read again where each command runs its tests: it changes how a command starts, never a result
   } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; }
   readZt(cx); // and zero-trust-review's probe flags, which every gate passes on to its probes
   let plan;
@@ -587,7 +592,7 @@ async function cmdPlan(cx, o) {
   if (testLike.length) fail(2, `src files with a test-like path: ${testLike.join(', ')}; the probes would count them as tests and the group could never be judged green. Move them out of src.`);
   const marker = readMarker({ env: cx.env });
   if (marker) fail(3, `a zero-trust-review run is still active (${marker}): its guard hook would deny the test commands of the agents that write code. Finish it or run: node ${join(ZT, 'note.mjs')} deactivate`);
-  const runner = runnerOf(cx, plan, o), backend = lib.backendOf(runner, cx.env);
+  const runner = runnerOf(cx, plan, o), backend = lib.backendOf(runner, cx.env, { inprocess: inprocOf(cx, runner) });
   if (backend === 'none') fail(3, `no usable runner (${runner} --check failed): every gate would be unverifiable.${plan.sandbox ? ' plan.sandbox is true: fix the sandbox (see zero-trust-review) or drop plan.sandbox to run the tests directly.' : ''} Fix it and run plan again`);
   const scratch = plan.scratch ? abs(cx, plan.scratch) : join(realpathSync(tmpOf(cx.env)), `pat-${process.pid}-${Date.now().toString(36)}`);
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
