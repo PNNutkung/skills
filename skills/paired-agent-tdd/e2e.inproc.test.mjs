@@ -13,7 +13,7 @@ const SAME_TIME = { GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z', GIT_COMMITTER_DATE:
 const lastJson = out => JSON.parse(out.trim().split('\n').pop());
 // one JS group, so the mutation probe has mutants to run through the runner too
 const CALC_PLAN = { dod: [{ id: 'AC1', text: 'f gives 2', source: 'assumed', kinds: ['happy'] }], groups: [{ id: 'a', tests: ['tests/test_calc.sh'], src: ['src/calc.mjs'], dod: ['AC1'], after: [] }] };
-const CALC_TEST = `# test_ac1_happy\n${process.execPath} -e "import('./src/calc.mjs').then(m => process.exit(m.f(1) === 2 ? 0 : 1))"\n`;
+const CALC_TEST = `# test_ac1_happy\ntest -f src/calc.mjs || { echo 'no src/calc.mjs'; exit 1; }\n${process.execPath} -e "import('./src/calc.mjs').then(m => process.exit(m.f(1) === 2 ? 0 : 1))"\n`;
 
 // timings and the ids of ledger entries differ from run to run; everything else must not
 const TIMING = new Set(['sec', 'ms', 'seconds', 'elapsed', 'durationMs']);
