@@ -26,7 +26,9 @@ const scrub = (v, runs) => {
   return s.replace(/\/(\w+)-[A-Za-z0-9]{6}\b/g, '/$1-<tmp>').replace(/r[0-9a-z]{6,}-[0-9a-z]{4}/g, '<id>').replace(/\b\d+(\.\d+)? ?s\b/g, '<t>');
 };
 const gates = run => Object.fromEntries(readdirSync(join(run, 'gates')).filter(f => f.endsWith('.json')).sort().map(f => [f, JSON.parse(readFileSync(join(run, 'gates', f), 'utf8'))]));
-const ledger = run => readFileSync(join(run, 'exec.jsonl'), 'utf8').trim().split('\n').map(l => { const { id: _i, ts: _t, sec: _s, ...e } = JSON.parse(l); return e; });
+// stdout and stderr reach the ledger through two pipes, so their lines may interleave in either order (both runners, a race of the OS): compare the lines as a set
+const lines = s => (typeof s === 'string' ? s.split('\n').sort().join('\n') : s);
+const ledger = run => readFileSync(join(run, 'exec.jsonl'), 'utf8').trim().split('\n').map(l => { const { id: _i, ts: _t, sec: _s, ...e } = JSON.parse(l); return { ...e, out: lines(e.out) }; });
 
 test('should give the same gate JSON, ledger and exit codes for plan, RED and GREEN when PTDD_INPROCESS_RUNNER_ENABLED is true or false (RunnerFlag, Parity)', async t => {
   const fx = fixture(t, { plan: CALC_PLAN });
