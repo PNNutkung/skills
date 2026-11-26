@@ -35,6 +35,18 @@ test('should pass when every item and required section has a verbatim quote', ()
   assert.deepEqual(checkDod(goodDod(), ctx()), []);
 });
 
+test('should refuse an item text when it ends with its own source ref (the ADR adds the ref again)', () => {
+  const d = goodDod(); d.items[0].text = 'Export button on sales and stock (A1)'; d.items[1].text = 'CSV opens in Excel (A1, T1)';
+  const errs = checkDod(d, ctx());
+  assert.ok(errs.includes('AC1: text ends with a source ref "(A1)": remove it, the ADR adds the source ref itself'), errs.join('\n'));
+  assert.ok(errs.some(e => e.startsWith('AC2: text ends with a source ref "(A1, T1)"')), errs.join('\n'));
+});
+
+test('should accept an item text when a ref is in the middle or the last bracket is not a ref', () => {
+  const d = goodDod(); d.items[0].text = 'Export button (see A1) on sales and stock'; d.items[1].text = 'CSV opens in Excel (any version)';
+  assert.deepEqual(checkDod(d, ctx()), []);
+});
+
 test('should list all five required sections when the required block is missing', () => {
   const d = goodDod(); delete d.required;
   const errs = checkDod(d, ctx());

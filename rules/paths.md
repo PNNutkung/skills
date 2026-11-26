@@ -10,3 +10,5 @@ Compare two paths only after resolving both to their real paths.
 Found by the retro of the retro skill (2026-11-22): sessions in temp folders matched on Linux but not on macOS. Fixed in `skills/retro/sessions.mjs`.
 
 Found again by the retro of issue #19 (2026-11-23): the in-process `mutate.mjs` main printed `/var/...` where the CLI printed `/private/var/...`, and macOS CI failed twice (fixed in b31ba12).
+
+Found a third time by the retro of the verify skill (2026-11-25): `skills/verify/verify.mjs` compared the git repo root (real) with `VERIFY_CACHE_DIR` (linked), and only the macOS CI jobs failed (fixed in 8e01a32). Since then the ratchet rule `path-relative` (`.ratchet.json`) counts `relative(` calls per file: a new one stops the commit. Resolve both paths first, then raise the count with `node skills/retro/ratchet.mjs accept --rule path-relative --file <path> --reason "<why both sides are real paths>"`.

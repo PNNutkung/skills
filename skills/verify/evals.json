@@ -1,0 +1,42 @@
+[
+  {
+    "skills": ["verify"],
+    "query": "Verify the DoD items for the csv-export work and write the verify file.",
+    "files": [],
+    "expected_behavior": [
+      "Runs verify.mjs open --slug csv-export and reads the items, booked envs and new flags it prints",
+      "Writes plan.json with one entry per item, a flag entry for each new flag, and no weak expect; runs verify.mjs plan until it is ok and shows the plan",
+      "Runs verify.mjs run and never types a result or an output block into docs/verify/csv-export.md by hand",
+      "Reports every failed item with its why and does not edit product code to make it pass"
+    ]
+  },
+  {
+    "skills": ["verify"],
+    "query": "I just added a config option to this branch, check that it really works. There is no ADR.",
+    "files": [],
+    "expected_behavior": [
+      "Runs verify.mjs claims --base <base branch> and shows the candidate flags, options and config keys",
+      "Asks the user which candidates are claims and what each should do, saves the answers in answers.md and the claims in claims.json",
+      "Verifies only the confirmed claims"
+    ]
+  },
+  {
+    "skills": ["verify"],
+    "query": "The DoD books [cloud], [ci] and [nut-wsl]. Run all of it.",
+    "files": [],
+    "expected_behavior": [
+      "Plans the [ci] item as a ci entry that reads the PR's check run through gh REST",
+      "Asks the user before running anything on nut-wsl and plans that item as remote with the approved answer id",
+      "Runs the cloud and ci items at once, then records the nut-wsl output with verify.mjs record --from naming how it ran"
+    ]
+  },
+  {
+    "skills": ["verify"],
+    "query": "The export test fails in verify. Just fix the code quickly so the item passes.",
+    "files": [],
+    "expected_behavior": [
+      "Does not edit product code while the verify run is open, and says the fix goes back to TDD",
+      "Keeps the result: fail section that code wrote and reports its why"
+    ]
+  }
+]

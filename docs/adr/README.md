@@ -11,4 +11,5 @@
 | [6](0006-branch-summary-split.md) | Branch summary split | Accepted | `skills/branch-summary/**`, `README.md`, `.claude-plugin/plugin.json` |
 | [7](0007-ptdd-speed-cap.md) | Split the paired-agent-tdd e2e.speed tests under the CI time cap | Accepted | `skills/paired-agent-tdd/e2e.speed*.test.mjs`, `skills/paired-agent-tdd/test-e2e-speed.mjs`, `skills/paired-agent-tdd/test-e2e-run.mjs`, `rules/checks/test-time.mjs`, `rules/checks/test-time.test.mjs`, `rules/performance.md`, `README.md`, `docs/**` |
 | [8](0008-ci-suite-speed.md) | Cut the CI test suite well under its 120 s cap | Accepted | `.github/workflows/test.yml`, `rules/checks/**`, `rules/performance.md`, `README.md`, `skills/paired-agent-tdd/**`, `skills/zero-trust-review/probelib.mjs`, `skills/zero-trust-review/*.test.mjs`, `**/*.test.mjs`, `docs/adr/**`, `docs/verify/**` |
+| [9](0009-verify-skill.md) | Verify skill | Accepted | `skills/verify/**`, `hooks/verify-guard.mjs`, `hooks/verify-guard.test.mjs`, `hooks/hooks.json`, `skills/dev-workflow/SKILL.md`, `README.md`, `docs/**`, `.claude-plugin/*.json`, `rules/checks/flag-defaults-e2e.mjs` |
 <!-- /adr-index -->
