@@ -2,8 +2,8 @@
 // Run: node --test rules/checks/run-tests.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -140,10 +140,40 @@ test('should run every CI test step through run-tests.mjs with no filter and kee
   assert.match(yml, /uses: actions\/upload-artifact@v\d+\n[\s\S]*?path: test-time\.jsonl\n[\s\S]*?if-no-files-found: ignore/);
 });
 
-test('should list exactly the tracked test files when it is given no file (NoSkip)', () => {
+test('should list every existing tracked test file when it is given no file in this repo (NoSkip)', () => {
   const r = spawnSync(process.execPath, [RUN, '--dry-run'], { cwd: ROOT, encoding: 'utf8', env: cleanEnv() });
   assert.equal(r.status, 0, r.stderr);
-  const files = JSON.parse(r.stdout).args.filter(a => !a.startsWith('-'));
-  const tracked = git(ROOT, 'ls-files', '*.test.mjs').stdout.trim().split('\n').filter(Boolean);
-  assert.deepEqual([...files].sort(), [...tracked].sort());
+  const files = new Set(JSON.parse(r.stdout).args.filter(a => !a.startsWith('-')));
+  const tracked = git(ROOT, 'ls-files', '*.test.mjs').stdout.trim().split('\n').filter(f => f && existsSync(join(ROOT, f)));
+  assert.deepEqual(tracked.filter(f => !files.has(f)), []);
+});
+
+test('should list the tracked and the new untracked test files, not ignored or deleted ones, once each, when it is given no file (NoSkip)', t => {
+  const d = tmp(t);
+  git(d, 'init', '-q');
+  for (const f of ['kept.test.mjs', 'deleted.test.mjs', 'new.test.mjs', 'ignored.test.mjs', 'helper.mjs']) writeFileSync(join(d, f), '');
+  writeFileSync(join(d, '.gitignore'), 'ignored.test.mjs\n');
+  git(d, 'add', 'kept.test.mjs', 'deleted.test.mjs', '.gitignore');
+  rmSync(join(d, 'deleted.test.mjs'));
+  const r = spawnSync(process.execPath, [RUN, '--dry-run', '--times', 'none.json'], { cwd: d, encoding: 'utf8', env: cleanEnv() });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout).args.filter(a => !a.startsWith('-')).sort(), ['kept.test.mjs', 'new.test.mjs']);
+});
+
+test('should stop the node child and exit with its code when only run-tests.mjs gets SIGINT or SIGTERM (Concurrency)', async t => {
+  const d = tmp(t);
+  git(d, 'init', '-q');
+  writeFileSync(join(d, 'slow.test.mjs'), "import { test } from 'node:test';\nimport { writeFileSync } from 'node:fs';\ntest('slow', async () => { writeFileSync('started', ''); await new Promise(r => setTimeout(r, 60000)); });\n");
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    rmSync(join(d, 'started'), { force: true });
+    const p = spawn(process.execPath, [RUN, '--times', 'none.json', '--test-reporter=dot'], { cwd: d, env: cleanEnv(), stdio: 'ignore' });
+    const ended = new Promise(r => p.on('close', (code, s) => r({ code, s })));
+    const until = performance.now() + 15000;
+    while (!existsSync(join(d, 'started')) && performance.now() < until) await new Promise(r => setTimeout(r, 50));
+    p.kill(sig);
+    const end = await Promise.race([ended, new Promise(r => setTimeout(() => r('hung'), 10000))]);
+    if (end === 'hung') p.kill('SIGKILL');
+    assert.notEqual(end, 'hung', `${sig}: run-tests.mjs ended`);
+    assert.ok(Number.isInteger(end.code) && end.code !== 0, `${sig}: the child's failing exit code, got ${JSON.stringify(end)}`);
+  }
 });

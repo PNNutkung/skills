@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs the test suite the way CI does (rules/performance.md). Node 22+, no dependencies.
 //   node rules/checks/run-tests.mjs [node --test options] [test files]
-//     lists `git ls-files '*.test.mjs'` (or the files given), starts the slowest first by rules/checks/test-times.json (files missing from it
+//     lists the tracked and untracked, not ignored, `*.test.mjs` files that exist (or the files given), starts the slowest first by rules/checks/test-times.json (files missing from it
 //     first: a new file's time is unknown) and runs `node --test --test-concurrency=<N>` with every other argument passed through. N is
 //     CHECKS_TEST_CONCURRENCY_MAX, or cores + 1 (os.availableParallelism()); a --test-concurrency you pass wins. Exits with node's exit code;
 //     2 for a flag value that is not valid. Give an option's value after `=` or a space; a bare word that is not an option's value is a file.
@@ -9,7 +9,7 @@
 //     rewrites test-times.json from what the test-time.mjs reporter wrote: new times win, files no longer tracked drop out.
 //   --times <file> reads (or writes) another timings file; --dry-run prints the node command as JSON instead of running it.
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,6 +83,10 @@ const gitLines = (cwd, ...args) => {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
   return r.status === 0 ? r.stdout.split('\n').filter(Boolean) : null;
 };
+const gitFiles = cwd => {
+  const r = spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '*.test.mjs'], { cwd, encoding: 'utf8' });
+  return r.status === 0 ? [...new Set(r.stdout.split('\0').filter(Boolean))].filter(f => existsSync(resolve(cwd, f))) : null;
+};
 const readTimes = file => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return {}; } };
 
 function run(argv, env = process.env, cwd = process.cwd()) {
@@ -101,7 +105,8 @@ function run(argv, env = process.env, cwd = process.cwd()) {
     writeFileSync(timesFile, renderTimes(times));
     return { code: 0, print: JSON.stringify({ ok: true, wrote: relative(cwd, timesFile), files: Object.keys(times).length }) };
   }
-  const listed = o.files.length ? o.files : gitLines(cwd, 'ls-files', '*.test.mjs');
+  // the default list: tracked and new untracked (not ignored) test files, as the TDD flow adds them before a commit; a tracked file deleted in the tree is gone
+  const listed = o.files.length ? o.files : gitFiles(cwd);
   if (!listed) return { code: 2, error: 'git ls-files failed: run inside the repo, or name the test files' };
   const args = nodeArgs({ files: orderFiles(listed, readTimes(timesFile), key), pass: o.pass, concurrency });
   if (o.dryRun) return { code: 0, print: JSON.stringify({ cores: availableParallelism(), concurrency, args }) };
@@ -115,9 +120,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!r.args) process.exitCode = r.code;
   else {
     const child = spawn(process.execPath, r.args, { stdio: 'inherit' });
-    // Ctrl-C reaches the child through the terminal's process group: wait for its exit code; forward what is sent to this process alone
-    process.on('SIGINT', () => {});
-    for (const sig of ['SIGTERM', 'SIGHUP']) process.on(sig, () => child.kill(sig));
+    // Ctrl-C reaches the child through the terminal's process group too; forwarding it again is harmless. Either way: wait for the child's exit code
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => child.kill(sig));
     child.on('error', e => { console.error(e.message); process.exitCode = 1; });
     child.on('close', (code, signal) => { process.exitCode = code ?? 128 + ({ SIGINT: 2, SIGTERM: 15, SIGHUP: 1, SIGKILL: 9 }[signal] ?? 0); });
   }
