@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const OWNERS = { BRANCH: 'branch-summary', CHECKS: 'rules/checks', DOD: 'definition-of-done', PTDD: 'paired-agent-tdd', QA: 'qa-sweep', RETRO: 'retro', VERIFY: 'verify', WORKFLOW: 'dev-workflow', ZT: 'zero-trust-review' };
+export const OWNERS = { BRANCH: 'branch-summary', CHECKS: 'rules/checks', DOD: 'definition-of-done', PTDD: 'paired-agent-tdd', QA: 'qa-sweep', REPLY: 'hooks', RETRO: 'retro', VERIFY: 'verify', WORKFLOW: 'dev-workflow', ZT: 'zero-trust-review' };
 export const MARKER = /\bflags:\s*defaults\b/;
 const SPAWN = /\b(?:spawnSync|spawn|execFileSync|execFile|fork)\s*\(/;
 
@@ -164,7 +164,7 @@ export function loadRepo(root) {
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
   const filesBySkill = {};
   for (const skill of Object.values(OWNERS)) {
-    const dir = join(root, 'skills', skill);
+    const dir = existsSync(join(root, 'skills', skill)) ? join(root, 'skills', skill) : join(root, skill); // a hook flag's tests live in hooks/
     if (!existsSync(dir)) continue;
     filesBySkill[skill] = readdirSync(dir).filter(n => n.endsWith('.test.mjs')).sort().map(name => ({ name, text: readFileSync(join(dir, name), 'utf8') }));
   }

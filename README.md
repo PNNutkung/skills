@@ -22,7 +22,7 @@ npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --ski
 mkdir -p ~/.claude/hooks && curl -fsSL -o ~/.claude/hooks/pr-test-tiers.py https://raw.githubusercontent.com/PNNutkung/skills/main/hooks/pr-test-tiers/pr-test-tiers.py   # qa-sweep reads test tiers through it ($TIERS_PY); registering it as a hook is optional
 ```
 
-Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook, the telemetry-capture hook, the opt-in `paired-agent-tdd` file fence, the `dev-workflow` guard, the opt-in `definition-of-done` guard and its `dod-adr-sync` hook, the `verify-guard` hook, and the `retro-collect` hook (skills alone do not include hooks; every switch is in [Flags](#flags)). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
+Claude Code only, to also get the `zero-trust-review` guard, the `qa-guard` hook, the telemetry-capture hook, the opt-in `paired-agent-tdd` file fence, the `dev-workflow` guard, the opt-in `definition-of-done` guard and its `dod-adr-sync` hook, the `verify-guard` hook, the `retro-collect` hook, and the `reply-style` hook that puts [`rules/reply-style.md`](rules/reply-style.md) into each session (skills alone do not include hooks; every switch is in [Flags](#flags)). While a `qa-sweep` run is open, `qa-guard` keeps that session to adding tests: it denies edits to product code, any change that removes or rewrites an existing test line, and `git commit` / `git push`, and every deny prints the command that ends the run.
 
 ```sh
 /plugin marketplace add PNNutkung/skills
@@ -91,6 +91,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 
 | Flag | Values | Default | What it does |
 |---|---|---|---|
+| `REPLY_STYLE_ENABLED` | `true` \| `false` | `true` | reply-style hook (`hooks/reply-style.mjs`): at session start, resume, clear and compact, puts [`rules/reply-style.md`](rules/reply-style.md) into the session (technical terms in English with a short note in brackets, ASD-STE100 sentences); `false` adds nothing |
 | `WORKFLOW_GUARD_ENABLED` | `true` \| `false` | `true` | dev-workflow guard (`hooks/workflow-guard.mjs`): while a run is open on the branch, no product code before the design is locked and no merge before verify and retro |
 | `WORKFLOW_VERIFY_ENV_CHECK_ENABLED` | `true` \| `false` | `true` | dev-workflow verify gate: when the ADR's verify env books names (`[cloud] ...; [ci] ...`), each passing item's `env:` must start with one of them and every name needs a passing item; no names booked passes with a warning (ADR 0005) |
 | `VERIFY_GUARD_ENABLED` | `true` \| `false` | `true` | verify guard (`hooks/verify-guard.mjs`): while a verify run is open in the session, no edit in the repo outside `docs/verify/`, no hand edit of a section `verify.mjs` wrote, and no Bash write, commit or push in the repo |

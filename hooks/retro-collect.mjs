@@ -3,7 +3,7 @@
 // saves the session's numbers (tokens, tool calls, repeated reads, failed commands) into a run folder and reminds the user that /retro can
 // review the work. Code only: no agent, no tokens. On by default; RETRO_AUTO_COLLECT_ENABLED=false turns it off. A flag value that is not
 // valid blocks (PostToolUse) or is printed (SessionEnd). Anything else fails open: exit 0, nothing printed.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -28,7 +28,7 @@ export async function handle(input, env = process.env) {
   return event === 'PostToolUse' ? { stdout: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: msg } } } : { stderr: msg };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     const out = await handle(JSON.parse(readFileSync(0, 'utf8') || '{}'));
     if (out.stdout) process.stdout.write(`${JSON.stringify(out.stdout)}\n`);

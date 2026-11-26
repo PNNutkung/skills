@@ -11,6 +11,8 @@ Finds **defects**, **weak tests** and **test gaps** in a whole repo or one featu
 
 **Requires:** Node 22+, Python 3, git, and the sibling skills `zero-trust-review` (mutation, run folder, sandbox) and `paired-agent-tdd` (its `direct-run.mjs`). The `qa-guard` hook comes with the plugin install. Without it the rules below still hold, but nothing enforces them.
 
+**Reply style:** each technical term in English, then a short note in brackets in the user's language; ASD-STE100 sentences ([rule](../../rules/reply-style.md)).
+
 ## Paths
 
 ```bash

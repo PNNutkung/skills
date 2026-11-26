@@ -10,7 +10,7 @@ A paired-agent-tdd bug passed every test because each e2e test set its flags exp
 
 ## How to satisfy it
 
-In one `skills/<skill>/*.test.mjs` file:
+In one `skills/<skill>/*.test.mjs` file (for a flag that only a plugin hook reads, such as `REPLY_`, one `hooks/*.test.mjs` file):
 
 - Put the comment `// flags: defaults` in it.
 - Start a process: `spawnSync`, `spawn`, `execFile`, `execFileSync` or `fork`. This is the proxy for "end to end".
