@@ -13,4 +13,5 @@
 | [8](0008-ci-suite-speed.md) | Cut the CI test suite well under its 120 s cap | Accepted | `.github/workflows/test.yml`, `rules/checks/**`, `rules/performance.md`, `README.md`, `skills/paired-agent-tdd/**`, `skills/zero-trust-review/probelib.mjs`, `skills/zero-trust-review/*.test.mjs`, `**/*.test.mjs`, `docs/adr/**`, `docs/verify/**` |
 | [9](0009-verify-skill.md) | Verify skill | Accepted | `skills/verify/**`, `hooks/verify-guard.mjs`, `hooks/verify-guard.test.mjs`, `hooks/hooks.json`, `skills/dev-workflow/SKILL.md`, `README.md`, `docs/**`, `.claude-plugin/*.json`, `rules/checks/flag-defaults-e2e.mjs` |
 | [10](0010-reply-style.md) | Reply style | Accepted | `rules/reply-style.md`, `rules/README.md`, `hooks/reply-style.mjs`, `hooks/reply-style.test.mjs`, `hooks/hooks.json`, `skills/*/SKILL.md`, `rules/checks/flag-defaults-e2e.mjs`, `README.md`, `.claude-plugin/*.json`, `docs/**` |
+| [13](0013-rule-enforcers.md) | Rule enforcers | Accepted | `rules/**`, `skills/retro/**`, `docs/retro/rule-hits.json`, `README.md`, `.claude-plugin/*.json`, `docs/adr/**`, `docs/verify/rule-enforcers.md` |
 <!-- /adr-index -->
