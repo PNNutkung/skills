@@ -46,7 +46,7 @@ const cli = args => {
 
 // checkEnforcer
 
-test('should accept a path, a folder, a path#symbol and a ratchet id when each exists', () => {
+test('should accept a path, a folder, a path#symbol and a ratchet id when each exists (EnfRef)', () => {
   const root = fixture();
   const ratchet = { r1: {} };
   assert.equal(checkEnforcer(root, 'rules/checks/a.mjs', ratchet), null);
@@ -70,7 +70,7 @@ test('should give a reason when the symbol is not in the file or the file is mis
   }
 });
 
-test('should give a reason when the ratchet id is not in .ratchet.json rules', () => {
+test('should give a reason when the ratchet id is not in .ratchet.json rules (EnfRef)', () => {
   const why = checkEnforcer(fixture(), 'ratchet:zzz', { r1: {} });
   assert.equal(typeof why, 'string');
   assert.ok(why.length > 0);
@@ -107,34 +107,34 @@ test('should report the line when one id is used twice in a file', () => {
   assert.ok(violations.some(v => /^rules\/alpha\.md:8: /.test(v)), JSON.stringify(violations));
 });
 
-test('should report an id with no entry when a rule file has an id rules/enforcers.json lacks', () => {
+test('should report an id with no entry when a rule file has an id rules/enforcers.json lacks (PerBullet, CheckRefuse)', () => {
   const { violations } = checkRepo(fixture({ 'rules/alpha.md': `${ALPHA}- three <!-- rule: alpha/three -->\n` }));
   assert.deepEqual(violations, ['alpha/three: no entry in rules/enforcers.json']);
 });
 
-test('should report an entry with no bullet when rules/enforcers.json names an id no rule file has', () => {
+test('should report an entry with no bullet when rules/enforcers.json names an id no rule file has (PerBullet, CheckRefuse)', () => {
   const { violations } = checkRepo(withEntries({ 'alpha/gone': { status: 'judgment', enforcers: [], reason: 'r' } }));
   assert.deepEqual(violations, ['rules/enforcers.json: alpha/gone has no rule bullet']);
 });
 
-test('should report the status when it is not enforced, partial or judgment', () => {
+test('should report the status when it is not enforced, partial or judgment (EnfFile, CheckRefuse)', () => {
   const { violations } = checkRepo(withEntries({ 'alpha/two': { status: 'maybe', enforcers: [], reason: 'r' } }));
   assert.ok(violations.includes('rules/enforcers.json: alpha/two: status maybe is not enforced, partial or judgment'), JSON.stringify(violations));
 });
 
-test('should report an enforced entry when it lists no enforcer', () => {
+test('should report an enforced entry when it lists no enforcer (EnfFile, CheckRefuse)', () => {
   const { violations } = checkRepo(withEntries({ 'alpha/one': { status: 'enforced', enforcers: [], reason: '' } }));
   assert.deepEqual(violations, ['rules/enforcers.json: alpha/one: enforced needs at least one enforcer']);
 });
 
-test('should report a judgment or partial entry when it has no reason', () => {
+test('should report a judgment or partial entry when it has no reason (EnfFile, CheckRefuse)', () => {
   assert.deepEqual(checkRepo(withEntries({ 'alpha/two': { status: 'judgment', enforcers: [], reason: '' } })).violations,
     ['rules/enforcers.json: alpha/two: judgment needs a reason']);
   assert.deepEqual(checkRepo(withEntries({ 'alpha/two': { status: 'partial', enforcers: ['rules/checks/a.mjs'] } })).violations,
     ['rules/enforcers.json: alpha/two: partial needs a reason']);
 });
 
-test('should report each bad enforcer ref with its reason when a path, symbol or ratchet id is missing', () => {
+test('should report each bad enforcer ref with its reason when a path, symbol or ratchet id is missing (EnfRef, CheckRefuse)', () => {
   const refs = ['rules/checks/missing.mjs', 'rules/checks/a.mjs#nope', 'ratchet:zzz'];
   const { violations } = checkRepo(withEntries({ 'alpha/one': { status: 'enforced', enforcers: ['rules/checks/a.mjs', ...refs], reason: '' } }));
   assert.equal(violations.length, 3, JSON.stringify(violations));
@@ -179,14 +179,14 @@ test('should exit 0 with one JSON line and no violations when the CLI runs on a 
   assert.deepEqual(r.out, { ok: true, violations: [] });
 });
 
-test('should exit 1 with one JSON line listing the violations when the fixture is broken', () => {
+test('should exit 1 with one JSON line listing the violations when the fixture is broken (CheckRefuse)', () => {
   const r = cli(['--root', withEntries({ 'alpha/one': { status: 'enforced', enforcers: [], reason: '' } })]);
   assert.equal(r.code, 1, r.err);
   assert.equal(r.lines.length, 1);
   assert.deepEqual(r.out, { ok: false, violations: ['rules/enforcers.json: alpha/one: enforced needs at least one enforcer'] });
 });
 
-test('should exit 2 with a usage error when an argument is unknown or --root has no value', () => {
+test('should exit 2 with a usage error when an argument is unknown or --root has no value (CheckRefuse)', () => {
   for (const args of [['--nope'], ['--root']]) {
     const r = cli(args);
     assert.equal(r.code, 2, args.join(' '));
@@ -233,7 +233,7 @@ test('should give a reason when a ../ path leaves the repo even though the file 
   } finally { rmSync(join(root, '..', name), { force: true }); }
 });
 
-test('should exit 0 with no violations when the check runs on this repo', () => {
+test('should exit 0 with no violations when the check runs on this repo (CheckCI, Rows, BulletIds, EnfFile)', () => {
   const r = cli(['--root', ROOT]);
   assert.deepEqual(r.out.violations, []);
   assert.equal(r.code, 0);

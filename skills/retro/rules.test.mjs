@@ -36,7 +36,7 @@ test('should return no ids and no errors when the file has no bullets', () => {
   assert.deepEqual(parseRuleIds(P, ''), { ids: [], errors: [] });
 });
 
-test('should report the path and line when a bullet has no id', () => {
+test('should report the path and line when a bullet has no id (BulletIds)', () => {
   const r = parseRuleIds(P, '# Paths\n\n- no id here\n- ok <!-- rule: paths/ok -->\n');
   assert.equal(r.errors.length, 1);
   assert.equal(startsAt(r.errors, 3).length, 1);
@@ -54,20 +54,20 @@ test('should report the line when the rule comment is followed by more text', ()
   assert.equal(startsAt(r.errors, 1).length, 1);
 });
 
-test('should report the line when the id has another file stem', () => {
+test('should report the line when the id has another file stem (IdShape)', () => {
   const r = parseRuleIds(P, '\n- x <!-- rule: performance/x -->\n');
   assert.equal(r.errors.length, 1);
   assert.equal(startsAt(r.errors, 2).length, 1);
 });
 
-test('should report the line when the slug is not lowercase kebab', () => {
+test('should report the line when the slug is not lowercase kebab (IdShape)', () => {
   for (const bad of ['paths/Real-Path', 'paths/real_path', 'paths/real--path', 'paths/-real', 'paths/real-', 'paths/', 'paths/a b', 'paths/a/b']) {
     const r = parseRuleIds(P, `- x <!-- rule: ${bad} -->\n`);
     assert.equal(startsAt(r.errors, 1).length, 1, bad);
   }
 });
 
-test('should report the second line when one id is used twice in the file', () => {
+test('should report the second line when one id is used twice in the file (IdShape)', () => {
   const r = parseRuleIds(P, '- a <!-- rule: paths/same -->\n- b <!-- rule: paths/same -->\n');
   assert.equal(r.errors.length, 1);
   assert.equal(startsAt(r.errors, 2).length, 1);
@@ -89,12 +89,12 @@ test('should ignore bullets inside a fenced code block when the fence is plain o
   assert.deepEqual(parseRuleIds(P, text), { ids: [{ id: 'paths/real', line: 1 }, { id: 'paths/after', line: 10 }], errors: [] });
 });
 
-test('should treat nested bullets and indented lines as part of the bullet above when they have no id', () => {
+test('should treat nested bullets and indented lines as part of the bullet above when they have no id (BulletIds)', () => {
   const text = '- parent <!-- rule: paths/p -->\n  - child with no id\n    - grandchild\n  more text of the parent\n\n  indented paragraph\n';
   assert.deepEqual(parseRuleIds(P, text), { ids: [{ id: 'paths/p', line: 1 }], errors: [] });
 });
 
-test('should ignore paragraphs, headings, table rows and other list markers when they are not top-level dash bullets', () => {
+test('should ignore paragraphs, headings, table rows and other list markers when they are not top-level dash bullets (BulletIds)', () => {
   const text = '# Heading - with dash\n\nA paragraph - with dash.\n\n| a | - |\n|---|---|\n\n* star item\n1. numbered\n-no space\n---\n  - indented bullet\n';
   assert.deepEqual(parseRuleIds(P, text), { ids: [], errors: [] });
 });
@@ -113,7 +113,7 @@ test('should use the file name without .md as the stem when the path is nested',
 
 // ruleFiles
 
-test('should list rules/*.md sorted without README and subfolders when ruleFiles reads a repo', () => {
+test('should list rules/*.md sorted without README and subfolders when ruleFiles reads a repo (CheckScope)', () => {
   const root = tmpRepo();
   for (const f of ['rules/zeta.md', 'rules/alpha.md', 'rules/README.md', 'rules/notes.txt', 'rules/sub/deep.md', 'other/x.md']) put(root, f, '- x\n');
   assert.deepEqual(ruleFiles(root), ['rules/alpha.md', 'rules/zeta.md']);
@@ -163,7 +163,7 @@ test('should throw naming rule-hits.json when the file is not JSON or not an arr
 
 // isUnenforced
 
-test('should say unenforced when there are no entries, no entry for the rule, or a judgment or partial status', () => {
+test('should say unenforced when there are no entries, no entry for the rule, or a judgment or partial status (Unenforced)', () => {
   const entries = { 'a/j': { status: 'judgment' }, 'a/p': { status: 'partial' }, 'a/e': { status: 'enforced' } };
   assert.equal(isUnenforced(null, 'a/e'), true);
   assert.equal(isUnenforced(entries, 'a/none'), true);
@@ -182,7 +182,7 @@ test('should not treat inherited object keys as entries when the rule is named l
 
 // addHits
 
-test('should append one hit per finding with a rule in findings order when addHits runs', () => {
+test('should append one hit per finding with a rule in findings order when addHits runs (RuleHits)', () => {
   const hits = deepFreeze([{ rule: 'old/r', date: '2026-01-01', branch: 'old', finding: 'F9' }]);
   const findings = deepFreeze([
     { id: 'F1', rule: 'paths/b' },
@@ -212,7 +212,7 @@ test('should return a copy equal to the old hits when no finding names a rule', 
 
 const ev = n => Array.from({ length: n }, (_, i) => ({ kind: 'file', ref: `a.md:${i + 1}`, quote: 'x' }));
 
-test('should mark a repeat with its earlier hits when another branch already hit the rule', () => {
+test('should mark a repeat with its earlier hits when another branch already hit the rule (Repeat)', () => {
   const hits = deepFreeze([
     { rule: 'paths/r', date: '2026-11-22', branch: 'old', finding: 'F2' },
     { rule: 'paths/r', date: '2026-11-27', branch: 'feat', finding: 'F1' },

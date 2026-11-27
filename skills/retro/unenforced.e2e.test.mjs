@@ -49,7 +49,7 @@ function setup() {
   return { repo, run, node, write, read, work: c.out.work };
 }
 
-test('should fail check naming F1 and the level when a repeat of an unenforced rule has no proposal (LevelGate, Repeat)', () => {
+test('should fail check naming F1 and the level when a repeat of an unenforced rule has no proposal (LevelGate, Repeat, FindingRule)', () => {
   const s = setup();
   s.write('findings.json', [F1]);
   const r = s.node(['check', '--run', s.run]);
