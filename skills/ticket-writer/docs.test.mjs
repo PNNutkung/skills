@@ -35,3 +35,11 @@ test('should keep evals for the skill when evals.json is read', () => {
   const evals = JSON.parse(readFileSync(join(HERE, 'evals.json'), 'utf8'));
   assert.ok(evals.length >= 3 && evals.every(e => e.skills.includes('ticket-writer')));
 });
+
+test('should point definition-of-done, dev-workflow and retro to ticket-writer and keep each SKILL.md at most 16,000 bytes when they write issues or PRs (SkillDocs)', () => {
+  for (const s of ['definition-of-done', 'dev-workflow', 'retro', 'ticket-writer']) {
+    const text = read(`skills/${s}/SKILL.md`);
+    if (s !== 'ticket-writer') assert.match(text, /ticket-writer/, s);
+    assert.ok(Buffer.byteLength(text, 'utf8') <= 16000, `${s}/SKILL.md is over 16,000 bytes`);
+  }
+});

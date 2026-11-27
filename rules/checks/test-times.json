@@ -103,6 +103,7 @@
   "skills/ticket-writer/docs.test.mjs": 56,
   "skills/ticket-writer/e2e.test.mjs": 267,
   "skills/ticket-writer/flags.test.mjs": 44,
+  "skills/ticket-writer/fuzz.test.mjs": 150,
   "skills/ticket-writer/ticket.test.mjs": 51,
   "skills/ticket-writer/why.test.mjs": 67,
   "skills/verify/adr.test.mjs": 46,

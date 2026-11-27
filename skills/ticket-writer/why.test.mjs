@@ -25,7 +25,7 @@ CI goes red at random.
 old text
 `;
 
-test('should list the 4 sections in order when the module loads', () => {
+test('should list the 4 sections in order when the module loads (Skill)', () => {
   assert.deepEqual(SECTIONS, ['why', 'outcome', 'cost', 'how']);
   assert.equal(HEADINGS.en.why, 'Why');
   assert.equal(HEADINGS.en.cost, 'If we do nothing');
