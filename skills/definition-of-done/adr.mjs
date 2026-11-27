@@ -5,7 +5,9 @@
 // The frontmatter `touches` globs say which code the ADR governs; syncTouches follows renames, the index lists every ADR.
 import { createHash } from 'node:crypto';
 import { KINDS, REQUIRED, answerText, sectionFields } from './dodcheck.mjs';
-import { renderSections } from '../ticket-writer/why.mjs';
+// ticket-writer is a sibling skill (ADR 0012). Installed alone (npx skills add), this skill still runs, without the 4 ticket sections.
+let tw = null;
+try { tw = await import('../ticket-writer/why.mjs'); } catch { tw = null; }
 
 export const DOD_HEADING = '## Definition of done';
 const DOD_MARKER = '<!-- dod: written by dod.mjs adr; do not edit; sha256:';
@@ -161,8 +163,8 @@ export function renderAdr({ dod, answers, questions, ticket, number, date, statu
 
 /** Why, Expected outcome, If we do nothing and How we know as ### headings under Context (ADR 0012 Adr); none without the fields. */
 function whySections(dod, on) {
-  const fields = on ? sectionFields(dod) : null;
-  return fields ? [renderSections(fields, { lang: 'en' }).replace(/^## /gm, '### ').trimEnd(), ''] : [];
+  const fields = on && tw ? sectionFields(dod) : null;
+  return fields ? [tw.renderSections(fields, { lang: 'en' }).replace(/^## /gm, '### ').trimEnd(), ''] : [];
 }
 
 // ---------------------------------------------------------------- parse

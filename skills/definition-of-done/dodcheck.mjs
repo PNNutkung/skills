@@ -2,9 +2,12 @@
 // renderTicket/ticketCheck keep a rewritten ticket description honest (every original sentence kept, every DoD item on its checklist).
 // ctx = { answers: answers.md text, ticket: ticket.md text, show(path) -> file text at HEAD or null }.
 // checkWhy gates the why / outcomes / costOfInaction fields (ADR 0012); the 4 ticket sections come from skills/ticket-writer/why.mjs.
-import { checkBody, outcomeResults, renderSections } from '../ticket-writer/why.mjs';
-
-export { outcomeResults };
+// ticket-writer is a sibling skill (ADR 0012). Installed alone (npx skills add), this skill still runs, without the 4 ticket sections.
+let tw = null;
+try { tw = await import('../ticket-writer/why.mjs'); } catch { tw = null; }
+/** True when the ticket-writer sections are available. */
+export const sectionsAvailable = () => tw !== null;
+export const outcomeResults = (outcomes, results) => (tw ? tw.outcomeResults(outcomes, results) : {});
 
 export const REQUIRED = ['featureFlag', 'backwardCompat', 'nonGoals', 'verifyEnv', 'testTiers'];
 export const KINDS = ['happy', 'fail', 'edge'];
@@ -280,8 +283,8 @@ export function renderTicket(dod, original, { lang = 'en', file, sections = fals
   const h = HEADINGS[lang] ?? HEADINGS.en;
   const ticked = new Set(String(original ?? '').split('\n').map(l => /^\s*[-*+]\s+\[[xX]\]\s+([A-Za-z][A-Za-z0-9]*)\b/.exec(l)?.[1]).filter(Boolean));
   const r = dod.required ?? {};
-  const fields = sections ? sectionFields(dod) : null;
-  const out = [...(fields ? [renderSections(fields, { lang })] : []), `## ${h.dod}`, '', ...dod.items.map(i => `- [${ticked.has(i.id) ? 'x' : ' '}] ${checklistLine(i)}`), ''];
+  const fields = sections && tw ? sectionFields(dod) : null;
+  const out = [...(fields ? [tw.renderSections(fields, { lang })] : []), `## ${h.dod}`, '', ...dod.items.map(i => `- [${ticked.has(i.id) ? 'x' : ' '}] ${checklistLine(i)}`), ''];
   const section = (title, req) => { if (req) out.push(`## ${title}`, '', ...valueLines(req.value), ''); };
   section(h.flag, r.featureFlag); section(h.compat, r.backwardCompat); section(h.nonGoals, r.nonGoals); section(h.env, r.verifyEnv); section(h.tiers, r.testTiers);
   const notes = sentences(original);
@@ -293,7 +296,7 @@ export function renderTicket(dod, original, { lang = 'en', file, sections = fals
 /** -> { ok, missing: original sentences not found in the rewrite, missingItems: DoD ids with no checklist line, sections: 4-section errors } */
 export function ticketCheck(original, rewritten, dod, { sections = false } = {}) {
   const flat = norm(rewritten);
-  const sectionErrors = sections && isObj(dod?.why) ? checkBody(String(rewritten ?? '')) : [];
+  const sectionErrors = sections && tw && isObj(dod?.why) ? tw.checkBody(String(rewritten ?? '')) : [];
   const missing = [...new Set(sentences(original))].filter(s => !flat.includes(norm(s)));
   const lines = String(rewritten ?? '').split('\n').map(l => norm(l));
   const missingItems = (Array.isArray(dod?.items) ? dod.items : [])
@@ -343,9 +346,9 @@ export function verifyResults(md) {
 
 /** The top of a PR body: the 4 sections from the DoD and the ticket link; results ({itemId: result}) add a result column. */
 export function renderPrTop(dod, { lang = 'en', ticketUrl, results } = {}) {
-  const fields = sectionFields(dod);
+  const fields = tw ? sectionFields(dod) : null;
   if (!fields) return '';
   const res = results ? outcomeResults(fields.outcomes, results) : undefined;
-  const link = ticketUrl ? [`${lang === 'th' ? 'Ticket' : 'Ticket'}: ${ticketUrl}`, ''] : [];
-  return [renderSections(fields, { lang, results: res }), ...link].join('\n');
+  const link = ticketUrl ? [`Ticket: ${ticketUrl}`, ''] : [];
+  return [tw.renderSections(fields, { lang, results: res }), ...link].join('\n');
 }

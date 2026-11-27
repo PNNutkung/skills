@@ -38,7 +38,7 @@ import { parseArgs } from 'node:util';
 import { checkAdrSources, checkAnswersHaveQuestions, checkQuestions, renderAdr } from './adr.mjs';
 import { FlagError, enabled } from './flags.mjs';
 import { HOOK_ENV, adrTarget, findAdrsFor, installHook, repoFiles, stagedRenames, syncRepo, topLevel, writeIndex } from './adrio.mjs';
-import { checkDod, checkTimeFloors, checkWhy, exportPtdd, exportQa, renderMarkdown, renderPrTop, renderTicket, ticketCheck, verifyResults } from './dodcheck.mjs';
+import { checkDod, checkTimeFloors, checkWhy, exportPtdd, exportQa, renderMarkdown, renderPrTop, renderTicket, sectionsAvailable, ticketCheck, verifyResults } from './dodcheck.mjs';
 import { RENDERED_FILE, approve, close, open, readActive, recordAdr, toolFor, touch, trust } from './session.mjs';
 
 const COMMANDS = ['open', 'questions', 'check', 'render', 'ticket-check', 'tools', 'export', 'adr', 'adr-check', 'adrs', 'approve', 'trust', 'close'];
@@ -112,6 +112,7 @@ export function run(cmd, v, env = process.env) {
   if (cmd === 'render' && v.pr) {
     if (!why) return { ok: false, errors: [`render --pr needs ${TICKET_WHY_ENV} on (it is false)`] };
     if (!dod.why) return { ok: false, errors: ['render --pr needs why, outcomes and costOfInaction in the DoD'] };
+    if (!sectionsAvailable()) return { ok: false, errors: ['render --pr needs the ticket-writer skill next to definition-of-done: install it'] };
     const vf = join(active.repo, 'docs', 'verify', `${dod.slug}.md`);
     const text = renderPrTop(dod, { lang: v.lang, ticketUrl: v['ticket-url'], results: existsSync(vf) ? verifyResults(readFileSync(vf, 'utf8')) : undefined });
     const file = join(active.run, PR_TOP_FILE);

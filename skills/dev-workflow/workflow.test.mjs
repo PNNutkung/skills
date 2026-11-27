@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main } from './workflow.mjs';
-import { SIBLING_DOD, cacheBase, openRuns, runDir } from './io.mjs';
+import { SIBLING_DOD, cacheBase, openRuns, readState, runDir, writeState } from './io.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, stdio: 'ignore' });
@@ -29,6 +29,7 @@ export const BOARD = { slug: 'demo', question: 'Q2', concept: 'demo concept', va
 export const VERIFY = '## Skill\nenv: local\nrun: node --test\nresult: pass\n```\n# pass 3\n```\n\n## Gate\nenv: local\nresult: accepted A3\n';
 
 const noGh = () => { throw new Error('no gh'); };
+export const PR_BODY = '## Why\n\nx\n\n## Expected outcome\n\nnot measurable: demo\n\n## If we do nothing\n\ny\n\n## How we know\n\nz\n';
 
 test('should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)', () => {
   const f = fixture();
@@ -57,7 +58,9 @@ test('should walk every step to done when each gate gets its evidence (Order, Ga
     writeFileSync(join(f.repo, 'docs', 'adr', '0001-demo.md'), ADR('demo'));
     assert.equal(call(['next']).out.step, 'tdd');
     assert.match(call(['next']).out.errors.join(), /pull request/);
-    assert.equal(call(['next', '--pr', 'https://github.com/o/r/pull/9']).out.step, 'verify');
+    assert.match(call(['next', '--pr', 'https://github.com/o/r/pull/9']).out.errors.join(), /cannot read the body/, 'gh is down and no --pr-body (WorkflowPr)');
+    writeFileSync(join(f.base, 'pr.md'), PR_BODY);
+    assert.equal(call(['next', '--pr', 'https://github.com/o/r/pull/9', '--pr-body', join(f.base, 'pr.md')]).out.step, 'verify');
 
     mkdirSync(join(f.repo, 'docs', 'verify'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'verify', 'demo.md'), VERIFY);
@@ -129,7 +132,8 @@ test('should pass the DoD gate only when the real dod.mjs check passes in an ope
     writeFileSync(join(dodRun, 'questions.md'), 'Q1: Which?\ncontext: c\n(A) a\n  + p\n  - c\n(B) b\n  + p\n  - c\nrecommended: A\ntime: t\n');
     writeFileSync(join(dodRun, 'answers.md'), 'A1: A\ntime: t\n');
     const u = { kind: 'user', ref: 'A1', quote: 'A', question: 'Q1 Which? (A) a (B) b' };
-    const good = { slug: 'demo', touches: ['a.js'], items: [{ id: 'Skill', text: 'a skill', source: u }], required: Object.fromEntries(['featureFlag', 'backwardCompat', 'nonGoals', 'verifyEnv', 'testTiers'].map(k => [k, { value: 'x', source: u }])), unconfirmed: [] };
+    const good = { slug: 'demo', touches: ['a.js'], items: [{ id: 'Skill', text: 'a skill', source: u }], required: Object.fromEntries(['featureFlag', 'backwardCompat', 'nonGoals', 'verifyEnv', 'testTiers'].map(k => [k, { value: 'x', source: u }])),
+      why: { text: 'w', source: u }, outcomes: [{ id: 'O1', metric: 'm', baseline: '0', target: '1', provenBy: ['Skill'], source: u }], costOfInaction: { text: 'c', source: u }, unconfirmed: [] };
     const dodFile = join(dodRun, 'dod.json');
     writeFileSync(dodFile, JSON.stringify({ ...good, items: [{ id: 'Skill', text: 'a skill', source: { kind: 'assumed' } }] }));
     const call = argv => main(argv, { env: f.env, cwd: f.repo, gh: noGh });
@@ -196,5 +200,38 @@ test('should give the same run folder and dod path spawned and in-process when t
     main(['next', '--slug', 'lnk', '--dod', 'dod.json'], { env: f.env, cwd: linked });
     const state = JSON.parse(readFileSync(join(opened.out.run, 'state.json'), 'utf8'));
     assert.equal(state.dod, join(realpathSync(f.repo), 'dod.json'));
+  } finally { f.done(); }
+});
+
+test('should refuse tdd -> verify and name the sections when the PR body lacks them, read through gh (WorkflowPr)', () => {
+  const f = fixture();
+  try {
+    const call = (argv, gh, env = f.env) => main(argv, { env, cwd: f.repo, gh, dodMjs: '/none' });
+    const run = call(['open', '--slug', 'demo'], noGh).out.run;
+    writeState(run, { ...readState(run), step: 'tdd' });
+    mkdirSync(join(f.repo, 'docs', 'adr'), { recursive: true });
+    writeFileSync(join(f.repo, 'docs', 'adr', '0001-demo.md'), ADR('demo'));
+    const seen = [];
+    const ghBody = body => args => { seen.push(args.join(' ')); return body; };
+    const bad = call(['next', '--pr', 'https://github.com/o/r/pull/7'], ghBody('## Summary\nchange'));
+    assert.equal(bad.code, 1);
+    assert.match(bad.out.errors.join(), /PR body: missing section "Why"/);
+    assert.ok(seen.some(a => a.startsWith('api repos/o/r/pulls/7')), seen.join('; '));
+    assert.equal(call(['next'], ghBody(PR_BODY)).out.step, 'verify');
+  } finally { f.done(); }
+});
+
+test('should move on without reading the body when WORKFLOW_PR_WHY_CHECK_ENABLED is false (WorkflowPr)', () => {
+  const f = fixture();
+  try {
+    const env = { ...f.env, WORKFLOW_PR_WHY_CHECK_ENABLED: 'false' };
+    const run = main(['open', '--slug', 'demo'], { env, cwd: f.repo, gh: noGh, dodMjs: '/none' }).out.run;
+    writeState(run, { ...readState(run), step: 'tdd' });
+    mkdirSync(join(f.repo, 'docs', 'adr'), { recursive: true });
+    writeFileSync(join(f.repo, 'docs', 'adr', '0001-demo.md'), ADR('demo'));
+    assert.equal(main(['next', '--pr', 'https://github.com/o/r/pull/7'], { env, cwd: f.repo, gh: noGh, dodMjs: '/none' }).out.step, 'verify');
+    const bad = main(['status'], { env: { ...f.env, WORKFLOW_PR_WHY_CHECK_ENABLED: 'on' }, cwd: f.repo, gh: noGh, dodMjs: '/none' });
+    assert.equal(bad.code, 2);
+    assert.match(bad.out.errors.join(), /WORKFLOW_PR_WHY_CHECK_ENABLED=on is not valid: use true or false/);
   } finally { f.done(); }
 });
