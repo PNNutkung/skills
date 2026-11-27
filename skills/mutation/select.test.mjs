@@ -4,6 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { commit, git, tempDir } from './fixtures/repo.mjs';
 import { testsFor } from './select.mjs';
 
@@ -55,4 +57,59 @@ test('should follow re-exports and stop on import cycles when it walks the graph
   const repo = graphRepo(t);
   assert.deepEqual(await sel('src/lone.mjs', repo), ['test/helper-user.test.mjs'], 'export ... from in a helper counts as an import');
   assert.deepEqual(await sel('src/y.mjs', repo), ['test/cycle.test.mjs'], 'x <-> y cycle ends');
+});
+
+// Dynamic import() (ADR 0011 Interface, select.mjs): a computed path is an unknown edge that reaches every file, so the test is kept; a literal path
+// (a quoted string, or a template literal with no ${}) is followed like a static import.
+const DYN_TESTS = ['test/dyn.test.mjs', 'test/via-helper.test.mjs', 'test/lit.test.mjs', 'test/tpl.test.mjs', 'test/tplvar.test.mjs', 'test/plain.test.mjs'];
+function dynRepo(t) {
+  const { repo } = tempDir(t, 'mutation-select-dyn-');
+  mkdirSync(repo);
+  git(repo, 'init', '-q');
+  commit(repo, {
+    'src/a.mjs': "import { c } from './deep/c.mjs';\nexport const a = () => c();\n",
+    'src/deep/c.mjs': 'export const c = () => 1;\n',
+    'src/unrelated.mjs': 'export const u = 1;\n',
+    'src/dyn.mjs': "import { join } from 'node:path';\nconst DIR = process.env.X_DIR ?? '.';\nexport const m = await import(join(DIR, 'c.mjs'));\n",
+    'src/lit.mjs': "export const load = () => import('./deep/c.mjs');\n",
+    'src/tpl.mjs': 'export const load = () => import(`./deep/c.mjs`);\n',
+    'src/tplvar.mjs': "const n = 'c';\nexport const load = () => import(`./deep/${n}.mjs`);\n",
+    'test/helper.mjs': "export { m } from '../src/dyn.mjs';\n",
+    'test/dyn.test.mjs': "import { m } from '../src/dyn.mjs';\nconsole.log(m);\n",
+    'test/via-helper.test.mjs': "import { m } from './helper.mjs';\nconsole.log(m);\n",
+    'test/lit.test.mjs': "import { load } from '../src/lit.mjs';\nawait load();\n",
+    'test/tpl.test.mjs': "import { load } from '../src/tpl.mjs';\nawait load();\n",
+    'test/tplvar.test.mjs': "import { load } from '../src/tplvar.mjs';\nawait load();\n",
+    'test/plain.test.mjs': "import { a } from '../src/a.mjs';\nconsole.log(a());\n",
+  });
+  return repo;
+}
+
+test('should keep a test whose graph holds an import() with a computed path when the target is an unrelated file (TestSelect happy)', async t => {
+  const repo = dynRepo(t);
+  const got = await sel('src/unrelated.mjs', repo, DYN_TESTS);
+  assert.ok(got.includes('test/dyn.test.mjs'), `direct: ${got}`);
+  assert.ok(got.includes('test/via-helper.test.mjs'), `through a helper: ${got}`);
+});
+
+test('should not return a test whose graph has only string-literal imports that do not reach the target (TestSelect fail)', async t => {
+  const repo = dynRepo(t);
+  assert.deepEqual(await sel('src/unrelated.mjs', repo, ['test/plain.test.mjs']), []);
+  // plain, lit and tpl only import literal paths that miss src/unrelated.mjs; tplvar has ${} so it is unknown
+  assert.deepEqual(await sel('src/unrelated.mjs', repo, DYN_TESTS), ['test/dyn.test.mjs', 'test/tplvar.test.mjs', 'test/via-helper.test.mjs']);
+});
+
+test('should follow import() with a quoted or plain template literal path and treat a template with ${} as unknown (TestSelect edge)', async t => {
+  const repo = dynRepo(t);
+  const toC = await sel('src/deep/c.mjs', repo, ['test/lit.test.mjs', 'test/tpl.test.mjs', 'test/plain.test.mjs']);
+  assert.deepEqual(toC, ['test/lit.test.mjs', 'test/plain.test.mjs', 'test/tpl.test.mjs'], 'literal import() paths are followed');
+  assert.deepEqual(await sel('src/unrelated.mjs', repo, ['test/lit.test.mjs', 'test/tpl.test.mjs']), [], 'a literal path is not an unknown edge');
+  assert.deepEqual(await sel('src/unrelated.mjs', repo, ['test/tplvar.test.mjs']), ['test/tplvar.test.mjs'], '`${}` is unknown');
+});
+
+test('should keep the zero-trust-review tests that reach skills/mutation through MUTATION_SKILL_DIR when it runs on this repo (TestSelect edge)', async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const zt = ['skills/zero-trust-review/probelib.test.mjs', 'skills/zero-trust-review/mutants.test.mjs'];
+  assert.deepEqual(await sel('skills/mutation/proc.mjs', root, zt), [...zt].sort());
+  assert.deepEqual(await sel('skills/mutation/mutants.mjs', root, ['skills/zero-trust-review/mutants.test.mjs']), ['skills/zero-trust-review/mutants.test.mjs']);
 });
