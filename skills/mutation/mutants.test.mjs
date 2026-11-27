@@ -184,3 +184,11 @@ test('should keep the line length when the line ends in a backslash inside or ou
     assert.equal(got, want, JSON.stringify(line));
   }
 });
+
+test('should keep a string open when a backslash escapes the quote that ends the line (Mask edge)', () => {
+  for (const [line, lang, want] of [
+    ['x = "\\"', 'j', `x = "${F.repeat(2)}`],
+    ["x = '\\'", 'p', `x = '${F.repeat(2)}`],
+    ['f(`a\\`', 'j', `f(\`${F.repeat(3)}`],
+  ]) assert.equal(mask(line, lang), want, JSON.stringify(line));
+});
