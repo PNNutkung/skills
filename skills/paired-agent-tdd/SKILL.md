@@ -7,7 +7,7 @@ description: Use for a non-trivial, multi-file feature or bugfix that must be bu
 
 TDD (RED, GREEN) as **driver/navigator pairs**, one pipeline per file group, run by a Workflow script ([`workflow.js`](./workflow.js)) from an execution graph ([`graph.mjs`](./graph.mjs)). Plain-code **gates** ([`tdd.mjs`](./tdd.mjs), [`probes.md`](./probes.md)) produce the facts: tests run, new code is mutated, scope is diffed, the DoD is closed against real runs. Agents judge those facts and never grade their own work. **A stage is a loop, never one shot** (repair loop, Rules below).
 
-**Requires:** Node 22+, git, the Workflow tool, the sibling skill `zero-trust-review` (mutation probe, `proofcheck.mjs`, sandbox runner; `ZT_DIR` if elsewhere). The gates run the test command **directly** (your rights, your network); `plan.sandbox: true` confines it. Agent types `tdd-guide` and `code-reviewer` (the judges have no Edit or Write).
+**Requires:** Node 22+, git, the Workflow tool, the sibling skills `zero-trust-review` (probes, `proofcheck.mjs`, sandbox runner; `ZT_DIR`) and `mutation` (the engine; `MUTATION_DIR`). The gates run the test command **directly** (your rights, your network); `plan.sandbox: true` confines it. Agent types `tdd-guide` and `code-reviewer` (the judges have no Edit or Write).
 
 **Reply style:** each technical term in English, then a short note in brackets in the user's language; ASD-STE100 sentences ([rule](../../rules/reply-style.md)).
 
@@ -24,22 +24,21 @@ TDD (RED, GREEN) as **driver/navigator pairs**, one pipeline per file group, run
 
 ## When to use
 
-- A multi-file change with tests expected, whose files split into groups that can be owned independently (**one owner per file**: teammates share one working tree).
-- Not for single-file or one-line changes (use `tdd` or a lone subagent), exploration, or work with no tests. One group with no fan-out still gets independent verification.
+- A multi-file change with tests, whose files split into groups owned independently (**one owner per file**: one shared working tree). Not for one-file changes (`tdd`), exploration, or work with no tests.
 
 ## Step 0 — Write plan.json (the lead, no agent)
 
 | Field | Rule |
 |---|---|
-| `dod[]` | One observable behavior each: `{id, text, source, kinds?}`. `id` is alphanumeric (`AC1`: it goes into test names). `source` = a **verbatim quote** from the ticket or request, else `"assumed"`; list the assumed items for the user before spending. `kinds` defaults to `happy, fail, edge`; narrow it only with a reason you state in the report. |
-| `dodFile` | In place of `dod[]`: the ADR the definition-of-done skill wrote (`docs/adr/NNNN-<slug>.md`, committed). With neither, the one active ADR whose `touches` cover the groups' `src` (`PTDD_ADR_AUTO_FIND_ENABLED`, default `true`). Rules: [`probes.md`](./probes.md#planjson). |
-| `groups[]` | `{id, goal, tests[], src[], dod[], after[], mirror?}`: files each group owns, the DoD ids it covers (every id in some group), `after` only when its code imports another group's new code (its GREEN waits; its RED does not), `mirror` = a sibling file whose pattern to copy. |
-| `cmd` | The project's one-test-file command with `{file}`, e.g. `pytest -q {file}`. Agents and gates both run it. `link` (venv dir), `env`, and with the sandbox `ro` (interpreter install), as in [`probes.md`](./probes.md). |
-| options | `ticket` (path: DoD quotes are checked against it), `cover` + `coverMin` (an lcov-writing command, default minimum 80% of changed lines), `integration {file, goal}` only when the change crosses a process, DB or network boundary, `mutation {max, budget, off}`, `rounds` (repair rounds per stage, 1-4, default 3), `maxRepairs` (repairs for the first run, default 2 per group), `smoke` (1-3 tests that pass at the base, to prove the runner), `sandbox` (true = confined gates), `mode` (`"fast"` or `"paired"`, below). `src` may hold config files; never a test-like path. |
+| `dod[]` | One observable behavior each: `{id, text, source, kinds?}`. `id` alphanumeric (`AC1`: it goes into test names). `source` = a **verbatim quote** from the request, else `"assumed"` (list those for the user). `kinds` default `happy, fail, edge`; narrow only with a stated reason. |
+| `dodFile` | In place of `dod[]`: the committed ADR of the definition-of-done skill; needed by the test writer (its `## Interface`). With neither, the ADR whose `touches` cover the `src` (`PTDD_ADR_AUTO_FIND_ENABLED`). [`probes.md`](./probes.md#planjson). |
+| `groups[]` | `{id, goal, tests[], src[], dod[], after[], mirror?}`: owned files, the DoD ids covered (each id in some group), `after` only when its code imports another group's new code (its GREEN waits), `mirror` = a sibling file to copy. |
+| `cmd` | The one-test-file command with `{file}` (`pytest -q {file}`), run by agents and gates; `link`, `env`, `ro`: [`probes.md`](./probes.md). |
+| options | `ticket` (DoD quotes are checked against it), `cover` + `coverMin` (lcov command, default 80% of changed lines), `integration {file, goal}` only across a process, DB or network boundary, `mutation {max, budget, off, accept}` (`off` and each `accept` value: a user answer id, `"A9"`), `rounds` (repair rounds per stage, 1-4, default 3), `maxRepairs` (first-run repairs, default 2 a group), `smoke` (1-3 tests that pass at the base), `sandbox` (true = confined gates), `mode` (`"fast"`/`"paired"`). `src` may hold config files; never a test-like path. |
 
-Mutation covers only these source types (`mutants.mjs` in zero-trust-review): `.py`, `.js` `.jsx` `.mjs` `.cjs` `.ts` `.tsx`, and the C-like `.go` `.java` `.c` `.h` `.cc` `.cpp` `.cs` `.rs` `.kt` `.swift` `.php` `.scala`. Any other source (`.sh`, `.txt`, ...) gets 0 mutants, so a test or fixture that asserts on mutation needs one of these.
+Mutation covers only these source types (`skills/mutation/mutants.mjs`): `.py`, `.js` `.jsx` `.mjs` `.cjs` `.ts` `.tsx`, and the C-like `.go` `.java` `.c` `.h` `.cc` `.cpp` `.cs` `.rs` `.kt` `.swift` `.php` `.scala`. Any other source (`.sh`, `.txt`, ...) gets 0 mutants: a changed code file of that kind needs `mutation.accept` (data and config files are exempt).
 
-Partition by file ownership, never by chore. Run the `graph-planner` (opus, one agent) only when files import one another and the groups are unclear. If a driver would need a file another group owns, the groups are wrong: merge them.
+Partition by file ownership, never by chore; the `graph-planner` (opus) only when imports make the groups unclear. A driver that needs another group's file means: merge the groups.
 
 ## Step 1 — Plan
 
@@ -50,7 +49,7 @@ node $SK/tdd.mjs plan --plan $W/plan.json   # validates, snapshots the base, mak
 node $SK/graph.mjs --plan <groups> <integration 0|1> <groups expected to get findings> [fast]
 ```
 
-`plan` refuses an invalid plan with every error at once and a runner that cannot run the repo's tests (**preflight**, [`probes.md`](./probes.md); `--skip-preflight` goes on unproven). The base is HEAD, or a snapshot of the dirty working tree; your repo's index, refs and files are never touched. Show the user the groups, the DoD (assumed items marked), the agent count and the ceiling `--plan` prints. **Over 25: confirm first** ([cap](./probes.md#planjson)).
+`plan` refuses an invalid plan (every error at once) and a runner that cannot run the repo's tests (**preflight**; `--skip-preflight` goes on unproven). The base is HEAD, or a snapshot of a dirty tree; your index, refs and files are never touched. Show the user the groups, the DoD (assumed items marked), the agent count and the ceiling `--plan` prints. **Over 25: confirm first** ([cap](./probes.md#planjson)).
 
 ## Step 2 — Run
 
@@ -58,9 +57,9 @@ node $SK/graph.mjs --plan <groups> <integration 0|1> <groups expected to get fin
 Workflow({ scriptPath: "$SK/workflow.js", args: <$RUN/args.json> })
 ```
 
-`mode: "plan"`: a dry run (counts, ceiling, prompt sizes). Read the **compact return** only: `{groups{state, reason, red, green, matrix, files}, clusters, fixes, verified, notDone, stats, boardMd, postmortemMd}`. Save it as `$RUN/return.json`; write `boardMd` and `postmortemMd` into `$RUN`.
+`mode: "plan"`: a dry run (counts, ceiling, prompt sizes). Read the **compact return** only (`groups`, `clusters`, `fixes`, `verified`, `judge`, `notDone`, `stats`); save it as `$RUN/return.json`, write `boardMd` and `postmortemMd` into `$RUN`.
 
-**Continue after a failure** (a group `failed`, `blocked` or `paused`, or the run died): `node $SK/tdd.mjs resume --run $RUN [--ret $RUN/return.json] [--max-repairs N]` reads the gate files (no agent, no tokens), prints the next run's budget and agent ceiling, and writes `$RUN/continue.json`. Run the Workflow again with `args: {...args, resume: <that file>}`: it sets the budget, done groups cost nothing, the others restart where they stopped. A group on `env` (a gate said `unverifiable`: fix the runner) or `hold` (the same defects stalled; [`probes.md`](./probes.md) "resume") spends nothing until you decide.
+**Continue after a failure** (a group `failed`, `blocked` or `paused`, or the run died): `node $SK/tdd.mjs resume --run $RUN [--ret $RUN/return.json] [--max-repairs N]` reads the gate files (no agent) and writes `$RUN/continue.json`; run the Workflow again with `args: {...args, resume: <that file>}`. A group on `env` (fix the runner) or `hold` (the same defects stalled; [`probes.md`](./probes.md) "resume") spends nothing until you decide.
 
 ## Step 3 — Verify, then report
 
@@ -68,15 +67,15 @@ Workflow({ scriptPath: "$SK/workflow.js", args: <$RUN/args.json> })
 node $SK/tdd.mjs verify --run $RUN --ret $RUN/return.json
 ```
 
-It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** a DoD gap, `final: false`, an `overridden` entry (a navigator said PASS against its gate), an `unfixed` finding or a `notDone` entry remains; say so with the numbers. Then rename tests to the repo's naming rule, if any (probes.md, "Naming rule"), run the project's full suite once (background) and lint on the changed files only. Report: DoD matrix, blocked groups and why, findings by proof status, assumed DoD items.
+It prints `{dod{covered,total,gaps}, final, overridden, unfixed, notDone, proofcheck}` and writes `$RUN/dod-matrix.md`. **Not done while** a DoD gap, `final: false`, an `overridden` entry, an `unfixed` finding or a `notDone` entry remains; say so with the numbers. Then rename tests to the naming rule (probes.md), run the full suite once and lint the changed files. Report: DoD matrix, blocked groups, findings by proof status, assumed DoD items, and the judge's equivalent mutants (final report) for the PR body.
 
-**Record every real run** (one line, no baseline): `node $SK/record.mjs --run $RUN --ret $RUN/return.json --transcript <the transcript dir the Workflow result prints> --note "<job>" --append $SK/runs.md`. Run `verify` first; cost and time come from the transcript.
+**Record every real run** after `verify`: `node $SK/record.mjs --run $RUN --ret $RUN/return.json --transcript <the Workflow transcript dir> --note "<job>" --append $SK/runs.md`.
 
 ## Speed flags (env, read once by `plan`)
 
-`PTDD_PIPELINE_MODE=fast|paired`, default **fast**: a group that waits for no other gets ONE `tdd-driver` (tests, RED gate, code, GREEN gate) and ONE navigator over both gates. `plan.mode` `"fast"`/`"paired"` overrides it. **Use `paired`** for security-critical or tightly coupled groups: in fast mode the code's author also wrote its tests. Switches, default `true`: `PTDD_QUICK_DRIVER_GATE_ENABLED` (a driver's middle GREEN run skips mutants), `PTDD_GATE_REUSE_ENABLED` (the navigator and `verify` reuse a gate result on byte-identical files), `PTDD_COURIER_SKIP_ENABLED` (no final courier when every fixer's gate is ok: `verify` is the check), `PTDD_PARALLEL_REVIEW_ENABLED` (integration tester and reviewer together). An invalid value stops `plan`. All off is v2.0.0 byte for byte. [`probes.md`](./probes.md) "Speed flags".
+`PTDD_PIPELINE_MODE=fast|paired`, default **fast**: a group that waits for no other gets one maker pass and ONE navigator over both gates (`plan.mode` overrides). Switches, default `true`: `PTDD_QUICK_DRIVER_GATE_ENABLED`, `PTDD_GATE_REUSE_ENABLED`, `PTDD_COURIER_SKIP_ENABLED`, `PTDD_PARALLEL_REVIEW_ENABLED`; all off is v2.0.0. `PTDD_INPROCESS_RUNNER_ENABLED` (default `true`, read by every gate) runs `direct-run.mjs` in the gate's process. An invalid value stops the command. [`probes.md`](./probes.md) "Speed flags".
 
-`PTDD_INPROCESS_RUNNER_ENABLED`, default `true`, read by every gate (not stored in the plan): the built-in `direct-run.mjs` runs inside the gate's process, no node start per test command; results, ledger and exit codes are the same; `false` spawns it per command.
+**Mutation gate** (ADR 0011, read by every gate): `PTDD_MUTATION_SCORE_MIN` (0-100, default 100; a survivor always fails), `PTDD_MUTATION_MAX` (final gate count, default `unlimited`: every changed line, no time limit). **`PTDD_TEST_WRITER_ENABLED`** (default `true`): in fast mode a `test-writer` writes the tests from the DoD and the ADR `## Interface` (plan needs that `dodFile`), a `code-driver` the code (a wrong test: a `testWrong` note, never an edit), a `judge` marks final survivors equivalent; `false`: one `tdd-driver`. [`probes.md`](./probes.md) "Mutation gate".
 
 ## The graph
 
@@ -87,67 +86,74 @@ graph TD
   graph-planner["graph-planner<br/>opus/high · gated"]
   plan["plan<br/>code"]
   red-driver["red-driver<br/>sonnet/medium · per group"]
+  test-writer["test-writer<br/>sonnet/medium · per group · gated"]
   red-gate["red-gate<br/>code · per group"]
   red-navigator["red-navigator<br/>sonnet/high · per group"]
   green-driver["green-driver<br/>sonnet/medium · per group"]
   tdd-driver["tdd-driver<br/>sonnet/medium · per group · gated"]
+  code-driver["code-driver<br/>sonnet/medium · per group · gated"]
   green-gate["green-gate<br/>code · per group"]
   green-navigator["green-navigator<br/>sonnet/high · per group"]
   integration-tester["integration-tester<br/>sonnet/high · gated"]
   final-gate["final-gate<br/>code"]
   reviewer["reviewer<br/>opus/high"]
+  judge["judge<br/>sonnet/high · gated"]
   fixer["fixer<br/>sonnet/medium · per group · gated"]
   final-verifier["final-verifier<br/>haiku/low · gated"]
   verify["verify<br/>code"]
   graph-planner --> plan
   plan --> red-driver
+  plan --> test-writer
   red-driver --> red-gate
+  test-writer --> red-gate
   red-gate --> red-navigator
   red-navigator --> green-driver
   plan --> tdd-driver
+  test-writer --> code-driver
   green-driver --> green-gate
   tdd-driver --> green-gate
+  code-driver --> green-gate
   green-gate --> green-navigator
   green-navigator --> integration-tester
   green-navigator --> final-gate
   integration-tester --> final-gate
   final-gate --> reviewer
+  reviewer --> judge
   reviewer --> fixer
+  judge --> fixer
   fixer --> final-verifier
   final-verifier --> verify
 ```
 
 <!-- /GENERATED:graph -->
 
-`node graph.mjs --check` fails on drift (`--write` regenerates the generated blocks here and in `workflow.js`). Protect: every group starts RED at once; `after` delays only GREEN; the reviewer reads the whole diff **once**.
+`node graph.mjs --check` fails on drift (`--write` regenerates). Protect: every group starts RED at once; `after` delays only GREEN; the reviewer reads the whole diff **once**.
 
 ## What the gates check (T0, [`probes.md`](./probes.md))
 
 | Gate | Run by | Facts |
 |---|---|---|
 | `red` | red-driver (its loop), red-navigator | each new test file **fails now**, and how: assertion, load error, passes already, missing |
-| `green` | green-driver (its loop), green-navigator | tests pass and **fail once the group's code is reverted**, no flake, **tests unchanged since RED**, **mutants of the new lines** (a survivor is a test gap), coverage |
-| `dod` | makers and navigators | the group's DoD pairs: each test **named in its file**, its file failed at RED and passes at GREEN, the gate file **not stale**; instant, runs nothing |
-| `final` | reviewer, final courier | all group tests together, existing tests that mention the changed modules, stray files, the whole-diff patch; `--again` = the re-run after fixes |
-| `verify` | lead | DoD closure from the gate files, fixes still present, reviewer proofs re-checked |
+| `green` | makers (their loop), green-navigator | tests pass and **fail once the group's code is reverted**, no flake, **tests unchanged since RED** (`red --rewrite` re-baselines), **mutants of the new lines** at the score min (a survivor is a test gap), code files no mutator covers, coverage |
+| `dod` | makers and navigators | DoD pairs: each test **named in its file**, failed at RED, passes at GREEN, gate **not stale**; runs nothing |
+| `final` | reviewer, judge, final courier | all group tests together, existing tests that mention the changed modules, stray files, the whole-diff patch, **every changed line mutated** (judge's marks applied); `--again` = the re-run after fixes |
+| `verify` | lead | DoD closure from the gate files, fixes present, proofs re-checked |
 
-A group is judged on the base plus **only its own files**: another group's half-written edit never fails it.
+A group is judged on the base plus **only its own files** (never another group's half-written edit).
 
 ## Rules
 
-- **Lead-only.** The lead plans, launches, reads, verifies. It never writes test or code (a one-line fix it fully understands is the only exception) and never re-verifies what a gate already proved.
-- **A verifier is always a separate node.** A navigator did not write the work, runs the gate first and judges the output; a claim it did not see in a gate or a file it read is not a fact.
-- **DoD closure.** Every DoD id needs a test per required kind, its name carrying the id set apart (`test_ac1_happy`), one test per (id, kind). `verify` re-derives coverage from gate files: a pair counts only if its test file failed at RED and passes at GREEN.
-- **Repair loop (R4).** No stage is one shot: the maker edits and runs the real gate and `dod` (3 gate runs at most); only a navigator on fresh gate facts ends a stage. Defects go back until PASS, the same defects return (`blocked`, and so is what waits) or `rounds` repairs. One run-wide budget pays every repair: spent, the group is `paused` and nothing is reviewed until `resume`. `unverifiable` is the environment: no repair. A survivor is a test gap (strengthen, never weaken); a changed frozen test is restored. A defect is fixed or listed under `notDone`. Full rules: [`probes.md`](./probes.md) "The repair loop".
-- **Frozen tests.** GREEN never edits a test; a wrong test is reported (`testDefects`), not patched.
-- **Hard scope fence.** Every driver and fixer prompt names the only files it may edit and what to report instead; `final` lists any other changed file.
-- **Precedent and research first** (every driver prompt): sibling tests before a fail or edge assertion; an existing helper, then the docs.
-- **Tool discipline.** Bash only for the test command, the gates, read-only git and linters; never `sed` or a heredoc to edit.
-- **Ponytail** per node (column above): never compress validation at trust boundaries, data-loss handling, security or accessibility.
+- **Lead-only.** The lead plans, launches, reads, verifies; it writes no test or code (a one-line fix it fully understands excepted).
+- **A verifier is always a separate node**: it did not write the work, runs the gate first, and takes no claim it did not see in a gate or a file.
+- **DoD closure.** One test per (id, kind), its name carrying the id (`test_ac1_happy`); a pair counts only if its test file failed at RED and passes at GREEN (`verify`, from gate files).
+- **Repair loop (R4).** No stage is one shot: the maker runs the real gate and `dod` (3 runs at most); only a navigator on fresh gate facts ends a stage. Defects go back until PASS, no progress (`blocked`) or `rounds`; one run-wide budget pays every repair (spent: `paused` until `resume`). `unverifiable` is the environment. A survivor is a test gap (strengthen, never weaken). [`probes.md`](./probes.md) "The repair loop".
+- **Frozen tests.** GREEN never edits a test; a wrong test is reported (`testDefects`, or a `testWrong` note to the test writer), not patched.
+- **Hard scope fence.** Each maker prompt names the only files it may edit; `final` lists any other changed file.
+- **Precedent and research first**; **tool discipline** (Bash only for tests, gates, read-only git, linters); **ponytail** per node never compresses validation, data-loss handling, security or accessibility.
 
 ## Tiering
 
-T0 code for anything deterministic, T2 sonnet to analyse and implement, T3 opus only for once-per-run judges. Rules R1-R6 and measured costs: [`tiering.md`](./tiering.md).
+T0 code when deterministic, T2 sonnet to analyse and implement, T3 opus for once-per-run judges ([`tiering.md`](./tiering.md)).
 
 <!-- GENERATED:tiers -->
 
@@ -155,23 +161,26 @@ T0 code for anything deterministic, T2 sonnet to analyse and implement, T3 opus 
 |---|---|---|---|---|---|---|---|
 | graph-planner | T3 | opus | high | planner | full | - | only when the import structure is unknown |
 | red-driver | T2 | sonnet | medium | tdd-guide | ultra | 40 | per group |
+| test-writer | T2 | sonnet | medium | tdd-guide | ultra | 40 | per group, test writer on, group with no after |
 | red-navigator | T2 | sonnet | high | code-reviewer | full | 25 | per group |
 | green-driver | T2 | sonnet | medium | tdd-guide | ultra | 45 | per group |
 | tdd-driver | T2 | sonnet | medium | tdd-guide | ultra | 75 | per group, fast mode, group with no after |
+| code-driver | T2 | sonnet | medium | tdd-guide | ultra | 45 | per group, test writer on, group with no after |
 | green-navigator | T2 | sonnet | high | code-reviewer | full | 25 | per group |
 | integration-tester | T2 | sonnet | high | tdd-guide | lite | 35 | only when the change crosses a process, DB or network boundary |
 | reviewer | T3 | opus | high | code-reviewer | off | 40 | - |
+| judge | T2 | sonnet | high | code-reviewer | full | 20 | test writer on, final survivors only |
 | fixer | T2 | sonnet | medium | tdd-guide | full | 35 | per group, only for groups with findings |
 | final-verifier | T1 | haiku | low | code-reviewer | off | 6 | only after fixers ran |
 
 <!-- /GENERATED:tiers -->
 
-`graph.mjs --check` also guards tiers, opus placement, navigator >= driver and read-only judges.
+`--check` also guards tiers, opus placement, checker >= maker and read-only judges.
 
 ## Iterate from measurements
 
-`record.mjs` logs each real run in [`runs.md`](./runs.md); change a node's model, effort or agent type only from those numbers. Evals: [`evals.json`](./evals.json).
+Change a node's model, effort or agent type only from the numbers in [`runs.md`](./runs.md). Evals: [`evals.json`](./evals.json).
 
 ## Links out
 
-`tdd` (RED/GREEN/REFACTOR mechanics), `zero-trust-review` (review the finished diff with it in a fresh session), `ai-code-delivery`, `e2e-runner` (a frontend integration test), `wayfinder` / `grill-with-docs`, `prototype` (unclear RED shape).
+`tdd`, `zero-trust-review` (review the finished diff in a fresh session), `mutation` (mutation-test a change alone), `ai-code-delivery`, `e2e-runner`, `wayfinder` / `grill-with-docs`, `prototype` (unclear RED shape).

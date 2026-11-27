@@ -6,7 +6,18 @@ export const KINDS = ['happy', 'fail', 'edge'];
 const DOD_ID = /^[A-Za-z][A-Za-z0-9]{0,11}$/; // usable inside a test name: AC1, DOD2
 const GROUP_ID = /^[A-Za-z0-9_-]{1,40}$/;
 const squash = s => String(s ?? '').replace(/\s+/g, ' ').trim();
+const ANSWER_ID = /^A\d+$/; // a user's answer id (A9): only the user can switch a part of the mutation gate off (ADR 0011 A3, A4)
 const relPath = p => typeof p === 'string' && p !== '' && p !== '.' && !p.includes('\0') && !p.includes(',') && posix.normalize(p) === p && !p.startsWith('/') && !p.split('/').includes('..');
+
+/** plan.mutation: off and every accept value must be a user answer id ("A9"); -> error strings */
+export function mutationErrors(m) {
+  if (m === undefined) return [];
+  if (typeof m !== 'object' || m === null || Array.isArray(m)) return ['mutation must be an object ({max, budget, off, accept})'];
+  const out = [];
+  if (m.off !== undefined && m.off !== false && !(typeof m.off === 'string' && ANSWER_ID.test(m.off))) out.push('mutation.off needs a user answer id: {off: "A9"} (the id of the answer in which the user switched mutation off; plain off is no longer read)');
+  if (m.accept !== undefined && (typeof m.accept !== 'object' || m.accept === null || Array.isArray(m.accept) || Object.entries(m.accept).some(([f, id]) => !relPath(f) || typeof id !== 'string' || !ANSWER_ID.test(id)))) out.push('mutation.accept must map each code file with no mutant to a user answer id: {"accept": {"src/run.sh": "A4"}}');
+  return out;
+}
 
 /** -> list of error strings (empty = the plan can run). `ticketText` (optional) is what every DoD `source` quote must be found in. */
 export function validatePlan(plan, ticketText) {
@@ -20,6 +31,7 @@ export function validatePlan(plan, ticketText) {
   if (plan?.maxRepairs !== undefined && !(Number.isInteger(plan.maxRepairs) && plan.maxRepairs >= 0 && plan.maxRepairs <= 40)) bad('maxRepairs must be an integer from 0 to 40 (repair passes for the whole run; groups still failing then are paused, not blocked)');
   if (plan?.smoke !== undefined && !(Array.isArray(plan.smoke) && plan.smoke.length >= 1 && plan.smoke.length <= 3 && plan.smoke.every(relPath))) bad('smoke must list 1 to 3 relative test files that already pass at the base (plan runs one first: it proves the sandbox and the test command work)');
   if (plan?.sandbox !== undefined && typeof plan.sandbox !== 'boolean') bad('sandbox must be true or false (true runs the gates in the zero-trust-review sandbox; the default runs the test command directly)');
+  mutationErrors(plan?.mutation).forEach(bad);
   for (const n of plan?.link ?? []) if (!relPath(n)) bad(`link ${JSON.stringify(n)} must be a normalized relative path inside the repo`);
   for (const p of plan?.ro ?? []) if (typeof p !== 'string' || !p.startsWith('/')) bad(`ro ${JSON.stringify(p)} must be an absolute path`);
   for (const e of plan?.env ?? []) if (!/^[A-Za-z_]\w*=/.test(String(e))) bad(`env ${JSON.stringify(e)} must be K=V`);

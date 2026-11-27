@@ -28,7 +28,7 @@ A **snapshot** is a git commit built with a temporary index from `base + chosen 
 | `sandbox` | `true` runs every gate in the zero-trust-review sandbox (no network; `plan` refuses when there is none); default `false`: `direct-run.mjs`, no confinement. `src` files may be config or data files (`config/app.json`): the GREEN probe reverts them like code (`testprobe.mjs --src`), the mutation probe leaves them alone; a test-like path in `src` is refused |
 | `dodFile` | in place of `dod[]` (both at once exit 2): the ADR that the definition-of-done skill wrote, `"docs/adr/NNNN-<slug>.md"`. `plan` reads its `## Definition of done` section as committed at HEAD (commit it first; a working copy that differs exits 2), refuses a hand-edited section or a file that is not such an ADR, needs no `ticket`, and passes the model only each item's id, text and kinds. With neither field, the one active ADR whose `touches` cover the groups' `src` is used; none or several exit 2 with the list (`PTDD_ADR_AUTO_FIND_ENABLED`, default `true`; `false`: no lookup). The skill is found next to this one or at `$DOD_DIR`. A `touches` glob that matches no file prints a `plan warning` |
 | `mode` | `"fast"` or `"paired"` overrides `PTDD_PIPELINE_MODE` (see "Speed flags"); unset follows the flag. `"fast"`: one driver and one navigator over both gates for a group with no `after`, the default pipeline for every other group (see "Fast mode" below). Any other value = the paired pipeline, validated as before; `plan` prints the effective mode (`mode fast` or `mode standard`), so a typo shows |
-| `mutation` | `{max: 12, budget: 60, off}`; `killExits: [1]` for pytest (exit 2 = collection error = inconclusive) |
+| `mutation` | `{max: 12, budget: 60, off, accept}` for GREEN; `off` and each `accept` value are a **user answer id** (`{off: "A9"}`, `{accept: {"src/run.sh": "A4"}}`): a plain `off: true`, or any value that is not `A<n>`, stops `plan` with exit 2 (ADR 0011 A3, A4). `killExits: [1]` for pytest (exit 2 = collection error = inconclusive) |
 | `cover`, `coverMin` | command that writes an lcov file to `{out}` (`{files}` = the group's test files); minimum % of changed lines covered (80) |
 | `integration` | `{file, goal}`: the one file the integration tester may create |
 | `scratch`, `base` | optional overrides (scratch must be outside the repo) |
@@ -41,11 +41,15 @@ A **snapshot** is a git commit built with a temporary index from `base + chosen 
 
 Before any agent is paid: a test that already passes at the base must pass through the runner with `plan.cmd`. Without it a broken environment (a wrong command, a missing venv, no runner) looks like a valid RED (`fails-to-load`) and every verdict after it stands on sand. `plan` refuses (exit 3, no Workflow args printed) when there is no usable runner (with `plan.sandbox: true`: no sandbox), or the verdict is `unverifiable` (86, or 127: the command cannot start), `timeout` or `broken` (the test fails here although it passes at the base); `--skip-preflight` goes on unproven. `skipped` (no existing test at the base: name some in `plan.smoke`) is let through. The default candidates are files named like a test (`test_*`, `*_test.*`, `*.spec.*`, `*Test.*`) of the groups' file type, then other files of that type under a test dir that are not `__init__`, `conftest`, helpers or fixtures, smallest first; the plan's own files are never tried. At most 3 are tried, the first that passes ends it, and a file that collected no test (exit 5 `collected 0 items`) is skipped as evidence: when none ran a test the verdict is `skipped`. the result is `gates/preflight.json`. A tiny test can pass in a broken environment: this proves the command starts and a real test passes, not that every import resolves. Re-run the command after fixing the environment. Because `plan` proved it, a later `timeout` is the code's, not the machine's (resume).
 
-## red (`tdd.mjs red --run RUN --group G`)
+## red (`tdd.mjs red --run RUN --group G [--rewrite]`)
+
+`--rewrite`: the test writer changed the tests after RED (a `testWrong` note, a strengthening): this run becomes the new RED reference (in fast mode it also resets `firstSnapshot`), so `green` compares against it without `--retest`. It works with the test writer off too; a rewritten test that already passes is `passes-already`, `ok=false`.
 
 Per new test file: `fails` (an assertion), `fails-to-load` (import or compile error before any assertion: right only when the code under test does not exist yet), `passes-already` (no new behavior pinned, needs a stated reason), `no-tests`, `missing`, `unverifiable`, `timeout`. `ok` = every file is `fails` or `fails-to-load`. The classifier reads the last 1200 characters of output; it is a heuristic, which is why the navigator judges "right reason" and the gate only reports the class. Output names `diff/G.red.patch`.
 
 ## green (`tdd.mjs green --run RUN --group G [--retest] [--quick] [--reuse]`)
+
+`--retest` is refused (exit 2) in fast mode with the test writer on (`PTDD_TEST_WRITER_ENABLED`): only the test writer changes a test after RED, through `red --rewrite`.
 
 `--quick` runs no mutants (a driver's middle run, `PTDD_QUICK_DRIVER_GATE_ENABLED`): it prints `ok=… (quick: …)`, writes `quick: true` and stores nothing; only a run without it ends a loop. `--reuse` takes the stored result of the last full run when the key matches (see "Speed flags") and re-runs only the flake check; the gate file gets `reused: true`.
 
@@ -56,7 +60,9 @@ Runs `testprobe.mjs` (pass on HEAD, fail with the group's code reverted, 2 extra
 | a test file is not `exercises-change` | `no-signal`: it passes without the code (it pins nothing); `fails-on-head`: it does not pass |
 | flaky | the 3 runs disagree |
 | tests changed since RED | blob diff of the group's tests against the RED snapshot; `--retest` accepts it when a strengthening pass changed them on purpose, and the line count removed is printed so the navigator can see a weakening |
-| N mutants survived | each is a test gap, with an id, `file:line`, the operator and a stamp `ZT-MUTANT <id> <file>:<line> <op> exit=0` that is citable as `{mode: executed, ref: <run>}` |
+| mutation score below `PTDD_MUTATION_SCORE_MIN` | (killed + timeout) / all sampled mutants; skipped, inconclusive and unverifiable count as not killed; nothing sampled (no mutable line) has no score to miss. See "Mutation gate" |
+| changed code file(s) with no mutant | a changed source in a language no mutator covers (`.sh` ...), not a data or config file, with no `plan.mutation.accept` answer id; only while the score min is above 0 |
+| N mutants survived | always fails, whatever the score min; each is a test gap, with an id, `file:line`, the operator and a stamp `ZT-MUTANT <id> <file>:<line> <op> exit=0` that is citable as `{mode: executed, ref: <run>}` |
 | changed-line coverage below `coverMin` | instrumented changed lines only; a file with no lcov entry is listed as no data, not as 100% |
 
 ## dod (`tdd.mjs dod --run RUN --group G --stage red|green --row ID:kind:test:file ...`)
@@ -84,6 +90,12 @@ A fresh GREEN verdict outranks a stale RED one (tests grow after GREEN on purpos
 ## final (`tdd.mjs final --run RUN [--again]`)
 
 `--again` is the re-run after fixes (the final courier): it prints and writes `final.json` but never `reviewed.json`, which stays the tree the reviewer saw. All groups' tests run together on the integrated snapshot (they can pass alone and fail together). Existing tests that **mention a changed module by name** (heuristic, over-approximates, capped at 12) run on the integrated tree; one that fails is re-run on the base: failing now but not before = **regression**, failing in both = already failing. The stray-file scope check **blocks here** (a scan that fails because a file vanished mid-scan is reported as `strayScan`, never as a failure), and `diff/final.patch` is written. The integration test is **not** run by the gates (it needs its real dependency, which the sandbox has not): its agent runs it for real and `verify` reads the exit code from the return.
+
+Beside the tests, the **full mutation run** (ADR 0011 A6, A10): the engine of the mutation skill mutates every changed line of every group once, at most `PTDD_MUTATION_MAX` mutants (default `unlimited`), with **no time budget**, all cores, the A21 test set; a mutant the GREEN gates killed on the same bytes is not run again; the judge's marks in `RUN/mutation-equivalent.json` apply. A survivor, or a score below the min, makes final not ok; the report lists each survivor and each equivalent mutant with the judge's reason (for the PR body). Its Result is `RUN/gates/final.mutation.json`; `plan.mutation.off` (an answer id) skips it.
+
+## equivalent (`tdd.mjs equivalent --run RUN --add ID --reason TEXT [--judge NAME]`)
+
+The judge marks a survivor equivalent (no input can tell the mutant from the original). Checked by `skills/mutation/equivalent.mjs` against the last final result (else the GREEN results): an id that is not a survivor, or a reason under 20 characters, exits 1 and writes nothing. The mark goes to `RUN/mutation-equivalent.json` and applies only while the mutant id (file, line and edit) is the same; `final --again` then reads it.
 
 ## verify (`tdd.mjs verify --run RUN --ret return.json`)
 
@@ -144,10 +156,20 @@ Every other group (a group with `after`, a continue-file restart, every repair) 
 
 **Not for** security-critical or tightly coupled groups, or whenever an independent read of the tests matters: the author of the code also wrote its tests, and the tests are judged once, after the code exists. The final gate, the whole-diff reviewer, fixers, mutation gate, scope fences, DoD closure and the repair budget are unchanged.
 
+## Mutation gate (ADR 0011)
+
+Flags, read by every command from its own environment (an invalid value stops it with exit 2 and the fix): `PTDD_MUTATION_SCORE_MIN` (0-100, default 100), `PTDD_MUTATION_MAX` (a number or `unlimited`, default `unlimited`: the final gate's count; GREEN keeps its sample of 12), `PTDD_TEST_WRITER_ENABLED` (`true` default). The engine is `skills/mutation` (`MUTATION_DIR` overrides where it lives, like `ZT_DIR`); GREEN still runs it through zero-trust-review's `mutate.mjs`.
+
+- **Score** = 100 x (killed + timeout) / (all sampled - equivalent). A survivor fails GREEN and final whatever the min, as before; the min decides how many skipped, inconclusive and unverifiable mutants pass. `0` is the gate before ADR 0011.
+- **Test set (A21)**: the changed tests plus every existing test file of the plan's kind (its extension) whose import graph reaches a changed source (`select.mjs`; for a language with no graph, the existing tests that name the module). At final each mutant runs only the tests whose graph reaches its file.
+- **All flags off** (`PTDD_MUTATION_SCORE_MIN=0`, `PTDD_TEST_WRITER_ENABLED=false`, `PTDD_MUTATION_MAX=12`): the gates act as before, except a plain `mutation.off`, which stops `plan`.
+
+**Test writer** (fast mode, `PTDD_TEST_WRITER_ENABLED=true`, a group with no `after`). `plan` needs `dodFile` naming an ADR with a non-empty `## Interface` section (names, inputs, outputs, errors; an inline `dod[]` or a missing or empty section exits 2 and names the fix); it passes that section to the Workflow as `args.interface`. A `test-writer` (tdd-guide) writes the group's tests from the DoD, the plan's file list, the base code and the Interface, and proves RED; it never sees the code driver's source or notes. A `code-driver` (tdd-guide) writes the code and proves GREEN; it never edits a test: it returns `testWrong: [{test, reason}]`, the test writer fixes the test (`red --rewrite`) or returns it under `rejected` with a reason, which the next code driver gets. The green navigator then judges both gates; test defects of its repairs go to the test writer, code defects to a code driver. After a not-ok final with survivors (the reviewer reports `final: {ok, survivors}`), a `judge` (code-reviewer: no Edit or Write, neither of the two makers) marks survivors through `equivalent --add` and runs `final --again`; each unmarked survivor goes back to the test writer of the group that owns its file. Known limit: a gate cannot prove which agent ran a command; the prompts, the frozen check and the judge's missing Edit tool are the guard.
+
 ## Limits, stated
 
 - Granularity is the **test file**: a row is credited when its file failed at RED and passes at GREEN, not per test function (runner-neutral, no junit parsing). The matrix check in code stops a row from naming a test that does not exist.
-- Mutants are single-line text edits of python, javascript/typescript and c-like sources, sampled (`max`); a survivor can be an equivalent mutant (the share is unmeasured: [`runs.md`](./runs.md)). Other languages report `no mutable changed lines`.
+- Mutants are single-line text edits of python, javascript/typescript and c-like sources, sampled (`max`) at GREEN and every changed line at final; a survivor can be an equivalent mutant, which only the judge marks. Other languages report `no mutable changed lines`, and their changed code files need a user answer id (`mutation.accept`).
 - Exit 127 is read as "the test command cannot start" at RED and GREEN: a shell test whose last command is a not-yet-written script reads as an environment failure there.
 - With `plan.sandbox: true` the sandbox has no network and no DB: a test that needs one fails in the gate. The gate then says `fails-on-head` or `unverifiable`, and the navigator must say so instead of trusting its own run. Without it (the default) the gates run the test command with your rights and your network: right for code you and your agents wrote, not for code you do not trust. With no usable runner `plan` stops (a `Workflow` given such args returns an error and starts no agent); `preflight` proves the environment once, at plan time: a sandbox that breaks later is caught by the first `unverifiable` verdict (`env`).
 - Coverage is lcov only. The affected-test pick is a name heuristic, not a call graph.
