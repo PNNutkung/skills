@@ -92,14 +92,14 @@ test('should keep a test whose graph holds an import() with a computed path when
   assert.ok(got.includes('test/via-helper.test.mjs'), `through a helper: ${got}`);
 });
 
-test('should not return a test whose graph has only string-literal imports that do not reach the target (TestSelect fail)', async t => {
+test('should not return a test when its graph has only string-literal imports that miss the target (TestSelect fail)', async t => {
   const repo = dynRepo(t);
   assert.deepEqual(await sel('src/unrelated.mjs', repo, ['test/plain.test.mjs']), []);
   // plain, lit and tpl only import literal paths that miss src/unrelated.mjs; tplvar has ${} so it is unknown
   assert.deepEqual(await sel('src/unrelated.mjs', repo, DYN_TESTS), ['test/dyn.test.mjs', 'test/tplvar.test.mjs', 'test/via-helper.test.mjs']);
 });
 
-test('should follow import() with a quoted or plain template literal path and treat a template with ${} as unknown (TestSelect edge)', async t => {
+test('should follow import() with a quoted or plain template literal path and treat a template with ${} as unknown when the graph is walked (TestSelect edge)', async t => {
   const repo = dynRepo(t);
   const toC = await sel('src/deep/c.mjs', repo, ['test/lit.test.mjs', 'test/tpl.test.mjs', 'test/plain.test.mjs']);
   assert.deepEqual(toC, ['test/lit.test.mjs', 'test/plain.test.mjs', 'test/tpl.test.mjs'], 'literal import() paths are followed');
@@ -149,4 +149,32 @@ test('should not follow an import that leaves the repo when the file out of the 
   const { dir, repo } = plainRepo(t, { 'src/a.mjs': 'export const a = 1;\n', 'test/out.test.mjs': "import '../../evil.mjs';\n" });
   writeFileSync(join(dir, 'evil.mjs'), 'const name = process.argv[2];\nawait import(name);\n');
   assert.deepEqual(await sel('src/a.mjs', repo, ['test/out.test.mjs']), []);
+});
+
+// ---------------------------------------------------------------- a test that runs a file as a child process names it in a string literal (no import edge)
+const SPAWN_HEAD = "import { spawnSync } from 'node:child_process';\nimport { dirname, join } from 'node:path';\nimport { fileURLToPath } from 'node:url';\nconst HERE = dirname(fileURLToPath(import.meta.url));\n";
+const spawnRepo = t => plainRepo(t, {
+  'src/cli.mjs': 'console.log(1);\n', 'src/mycli.mjs': 'console.log(2);\n', 'src/other.mjs': 'export const o = 1;\n',
+  'test/cli.test.mjs': `${SPAWN_HEAD}spawnSync(process.execPath, [join(HERE, '..', 'src', 'cli.mjs')]);\n`,
+  'test/other.test.mjs': `${SPAWN_HEAD}spawnSync(process.execPath, [join(HERE, '..', 'src', 'other.mjs')]);\n`,
+  'test/comment.test.mjs': `${SPAWN_HEAD}// runs cli.mjs by hand: see src/cli.mjs\nspawnSync('true');\n`,
+  'test/mycli.test.mjs': `${SPAWN_HEAD}spawnSync(process.execPath, [join(HERE, '..', 'src', 'mycli.mjs')]);\n`,
+  'test/helper.mjs': `${SPAWN_HEAD}export const CLI = join(HERE, '..', "src", "cli.mjs");\n`,
+  'test/via-helper.test.mjs': "import { spawnSync } from 'node:child_process';\nimport { CLI } from './helper.mjs';\nspawnSync(process.execPath, [CLI]);\n",
+}).repo;
+const SPAWN_TESTS = ['test/cli.test.mjs', 'test/other.test.mjs', 'test/comment.test.mjs', 'test/mycli.test.mjs', 'test/via-helper.test.mjs'];
+
+test('should return a test that spawns the file by its base name when it has no import edge to it (TestSelect happy)', async t => {
+  assert.deepEqual(await sel('src/cli.mjs', spawnRepo(t), ['test/cli.test.mjs']), ['test/cli.test.mjs']);
+});
+
+test('should not return a test when it names another file or names the file only in a comment (TestSelect fail)', async t => {
+  const repo = spawnRepo(t);
+  assert.deepEqual(await sel('src/cli.mjs', repo, ['test/other.test.mjs', 'test/comment.test.mjs']), []);
+});
+
+test('should match the base name exactly and count a helper in the graph that names it when tests are picked by name (TestSelect edge)', async t => {
+  const repo = spawnRepo(t);
+  assert.deepEqual(await sel('src/cli.mjs', repo, SPAWN_TESTS), ['test/cli.test.mjs', 'test/via-helper.test.mjs'], "'mycli.mjs' does not name cli.mjs");
+  assert.deepEqual(await sel('src/mycli.mjs', repo, SPAWN_TESTS), ['test/mycli.test.mjs'], "'cli.mjs' does not name mycli.mjs");
 });

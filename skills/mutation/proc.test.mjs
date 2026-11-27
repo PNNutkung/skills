@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { git, put, tempDir } from './fixtures/repo.mjs';
-import { HEAD_RUN_REFUSED, baselineFrom, changes, clear, editableRoots, ensureDir, extract, gitOut, headRunDoc, rel, restore, runIn } from './proc.mjs';
+import { HEAD_RUN_REFUSED, TEST, baselineFrom, changes, clear, editableRoots, ensureDir, extract, gitOut, headRunDoc, isSource, rel, restore, runIn } from './proc.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const realSetTimeout = setTimeout; // captured before any test mocks the timers
@@ -15,7 +15,20 @@ const sleep = ms => new Promise(r => realSetTimeout(r, ms));
 const PENDING = Symbol('pending');
 const settled = async (p, ms) => Promise.race([p, new Promise(r => realSetTimeout(r, ms, PENDING).unref())]);
 
-// ---------------------------------------------------------------- rel, editableRoots, gitOut, changes
+// ---------------------------------------------------------------- isSource, rel, editableRoots, gitOut, changes
+
+test('should say not source when a file sits under a fixtures/ folder at any depth (Proc happy)', () => {
+  for (const p of ['skills/mutation/fixtures/repo.mjs', 'fixtures/a.js', 'pkg/test-support/fixtures/deep/b.py']) assert.equal(isSource(p), false, p);
+});
+
+test('should say source when fixtures is only part of a file name or a folder is named fixture (Proc edge)', () => {
+  for (const p of ['src/fixtures.mjs', 'src/fixtures-x/a.mjs', 'a/fixture/b.js', 'src/myfixtures/c.js']) assert.equal(isSource(p), true, p);
+});
+
+test('should keep TEST matching what zero-trust-review triage.py matches when a fixtures file is checked (Proc fail)', () => {
+  assert.equal(TEST.test('skills/mutation/fixtures/repo.mjs'), false, 'fixtures are not tests: TEST stays as triage.py has it');
+  assert.equal(TEST.test('skills/mutation/proc.test.mjs'), true);
+});
 
 test('should refuse the repo root, an absolute path and a path that climbs out when a path is made repo-relative (Proc fail)', () => {
   for (const p of ['.', '', './', '/etc/passwd', 'a/../..', '../x']) assert.throws(() => rel(p), /path must stay inside the repo/, JSON.stringify(p));
@@ -210,7 +223,7 @@ function stubbornRunner(t) {
 }
 const waitFor = async path => { for (let i = 0; i < 200 && !existsSync(path); i++) await sleep(50); assert.ok(existsSync(path), 'the runner started'); };
 
-test('should kill a hung runner process exactly timeout + 10 s after it started (Proc edge)', async t => {
+test('should kill the runner process exactly timeout + 10 s after it started when it hangs (Proc edge)', async t => {
   const { dir, runner, ready } = stubbornRunner(t);
   mock.timers.enable({ apis: ['setTimeout'] });
   t.after(() => { mock.timers.tick(1_000_000); mock.timers.reset(); }); // a failed check still ends the runner
@@ -224,7 +237,7 @@ test('should kill a hung runner process exactly timeout + 10 s after it started 
   assert.equal(r.exit, 124);
 });
 
-test('should kill a runner process that ignores SIGTERM exactly 10 s after the stop signal (Proc edge)', async t => {
+test('should kill the runner process exactly 10 s after the stop signal when it ignores SIGTERM (Proc edge)', async t => {
   const { dir, runner, ready } = stubbornRunner(t);
   mock.timers.enable({ apis: ['setTimeout'] });
   t.after(() => { mock.timers.tick(1_000_000); mock.timers.reset(); });

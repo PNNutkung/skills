@@ -31,7 +31,7 @@ test('should export EQUIV_SKIP as an empty list when no pattern has a test provi
   assert.equal(M.EQUIV_SKIP.length, 0);
 });
 
-test('should mutate a digit inside a regex character class because the edit matches other inputs (EquivSkip fail)', () => {
+test('should mutate a digit inside a regex character class when the edit matches other inputs (EquivSkip fail)', () => {
   for (const [line, after, input] of [
     ['const re = /^[a-z0-9]+$/;', 'const re = /^[a-z0-10]+$/;', '5'],
     ['const ENV_NAME_RE = /\\[([a-z0-9][a-z0-9_-]*)\\]/gi;', 'const ENV_NAME_RE = /\\[([a-z0-10][a-z0-9_-]*)\\]/gi;', '[5]'],
@@ -105,7 +105,7 @@ test('should not split a longer symbolic operator that holds <= or >= when the l
   assert.deepEqual(ops('a.scala', 'val r = a <= b\nval s = a >= b\n').filter(([op]) => op === 'le-lt' || op === 'ge-gt'), [['le-lt', 'val r = a < b'], ['ge-gt', 'val s = a > b']]);
 });
 
-test('should mutate code on a line holding a whole one-line triple-quoted string and on the lines after it (Generator edge)', () => {
+test('should mutate the code on and after a line when that line holds a whole one-line triple-quoted string (Generator edge)', () => {
   const py = 'x = """s""" if a < b else c\ny = a < b\nz = """s""" + """t""" if a < b else c\nw = a < b\n';
   assert.deepEqual(gen('a.py', py).filter(m => m.op === 'lt-le').map(m => m.line), [1, 2, 3, 4]);
   assert.deepEqual(gen('a.py', 'def f():\n    """doc\n    a < b\n    """\n    return a < b\n').filter(m => m.op === 'lt-le').map(m => m.line), [5], 'a multi-line docstring is still skipped');
