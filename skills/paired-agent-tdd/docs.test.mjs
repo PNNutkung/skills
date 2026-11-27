@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const skill = readFileSync(join(HERE, 'SKILL.md'), 'utf8');
-const MUTANTS = join(HERE, '..', 'zero-trust-review', 'mutants.mjs');
+const MUTANTS = join(HERE, '..', 'mutation', 'mutants.mjs');
 
 /** The extensions in mutants.mjs's LANG table (the file types that get mutants), sorted. */
 export function mutatedExtensions(src) {
