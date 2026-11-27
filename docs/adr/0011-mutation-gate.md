@@ -322,6 +322,20 @@ Recommended: A
 Answer: A (a new skill folder skills/mutation/ with a short SKILL.md (an agent can also call it alone: "mutation-test my change"); it holds the engine, the mutators, the score and the equivalent file; the runner is passed in (--runner), so the sandbox stays in zero-trust-review; zero-trust-review/mutate.mjs stays as a thin wrapper with the same CLI and output; the engine reads no env flags, each caller reads its own flags and passes options; MUTATION_DIR overrides the path like ZT_DIR)
 Trade-off accepted: the shared helpers in probelib.mjs move or are split: a larger diff
 
+### A19: Approve the ADR 0011 Interface section and diagram (A13) before TDD starts?
+
+Context: docs/adr/0011-mutation-gate.md, adr-check ok; main is now 04c59a8 (plugin 2.9.0, last ADR 0010, no open PRs), so this work takes ADR 0011 and plugin 2.10.0; no linked ticket to rewrite
+Options considered (the agent's analysis when the question was asked):
+- (A) approve: commit the ADR, close the DoD session, start TDD (tests written by a subagent that sees only the ADR, then code)
+  - pro: work starts now; the API is fixed for the test writer
+  - con: a later API change needs an ADR edit and a new approval
+- (B) change parts first (name the section)
+  - pro: the API matches what you want before tests exist
+  - con: one more round
+Recommended: A
+Answer: A (approve: commit the ADR, close the DoD session, start TDD (tests written by a subagent that sees only the ADR, then code))
+Trade-off accepted: a later API change needs an ADR edit and a new approval
+
 ## Interface
 
 Approved by Nut before TDD (A13). Diagram:
@@ -400,6 +414,7 @@ Trade-offs we accepted:
 - A15: a later DoD change needs a new check and approval
 - A16: mutator change in zero-trust-review; the pattern list needs care
 - A18: the shared helpers in probelib.mjs move or are split: a larger diff
+- A19: a later API change needs an ADR edit and a new approval
 
 ## Definition of done
 
