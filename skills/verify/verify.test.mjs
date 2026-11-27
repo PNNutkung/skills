@@ -472,3 +472,53 @@ test('should leave the run folder out of the change list when VERIFY_CACHE_DIR p
   writeFiles(s.repo, { '.verify-cache.txt': 'x\n' });
   assert.match((await main(['status'], { env, cwd: s.repo })).out.errors.join(), /changed since open: \.verify-cache\.txt$/, 'a sibling that only starts with the folder name counts');
 });
+
+const OUTCOME_ADR = `---
+dod: ${SLUG}
+---
+# 1. Demo
+
+## Context
+
+### Expected outcome
+
+| Metric | Today | Target | Proven by |
+|---|---|---|---|
+| x printed | no | yes | AC1 |
+| flag works | no | yes | AC1, Flag1 |
+
+## Definition of done
+
+- [ ] AC1 (happy): the tool prints x (A1)
+- [ ] Flag1 (happy, fail): ${DEMO_FLAG} turns x on and off (A2)
+
+- feature flag: ${DEMO_FLAG}=true|false, default true (A2)
+- verify env: [cloud] this container
+`;
+
+test('should write an Outcomes section at the end with each outcome met or not run when the ADR has an outcomes table (VerifyOut)', async () => {
+  const s = setup({ files: { 'docs/adr/0001-demo.md': OUTCOME_ADR } });
+  const o = await s.cli(['open', '--slug', SLUG]);
+  assert.equal(o.code, 0, JSON.stringify(o.out));
+  putPlan(o.out.run, goodPlan());
+  const r1 = await s.cli(['run', '--only', 'AC1']);
+  assert.equal(r1.code, 0, JSON.stringify(r1.out));
+  let md = readFileSync(verifyFile(s.repo), 'utf8');
+  assert.match(md, /\| x printed \| no \| yes \| AC1 \| met \|\n\| flag works \| no \| yes \| AC1, Flag1 \| not run \|\n$/);
+  const r2 = await s.cli(['run', '--only', 'Flag1']);
+  assert.equal(r2.code, 0, JSON.stringify(r2.out));
+  md = readFileSync(verifyFile(s.repo), 'utf8');
+  assert.equal(md.split('## Outcomes:').length, 2, 'one outcomes section');
+  assert.ok(md.indexOf('## Flag1') < md.indexOf('## Outcomes:'), 'outcomes stay last');
+  assert.match(md, /\| flag works \| no \| yes \| AC1, Flag1 \| met \|\n$/);
+  for (const [, v] of markedSections(md)) assert.equal(v.intact, true);
+  const st = await s.cli(['status']);
+  assert.equal(st.code, 0, JSON.stringify(st.out));
+});
+
+test('should write no Outcomes section when the ADR has no outcomes table (VerifyOut edge)', async () => {
+  const s = await opened();
+  putPlan(s.run, goodPlan());
+  await s.cli(['run', '--only', 'AC1']);
+  assert.doesNotMatch(readFileSync(verifyFile(s.repo), 'utf8'), /Outcomes:/);
+});

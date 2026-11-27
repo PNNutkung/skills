@@ -1,0 +1,26 @@
+// Flags mean what they say, or the run stops: a value that is not valid, or an old flag name still set, throws a FlagError naming the fix.
+//   NAME_ENABLED=true|false (any case). Unset or empty keeps the default.
+// This skill reads only its own flags; it shares no flag with another skill.
+export class FlagError extends Error {}
+
+const raw = (env, name) => String(env?.[name] ?? '').trim();
+function oldName(env, renamedFrom, name, use) {
+  if (renamedFrom && raw(env, renamedFrom)) throw new FlagError(`${renamedFrom} was renamed: use ${use}, and unset ${renamedFrom}`);
+}
+
+/** NAME_ENABLED: true or false; dflt when unset. */
+export function enabled(env, name, dflt, { renamedFrom } = {}) {
+  oldName(env, renamedFrom, name, `${name}=true or ${name}=false`);
+  const v = raw(env, name).toLowerCase();
+  if (!v) return dflt;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  throw new FlagError(`${name}=${env[name]} is not valid: use true or false`);
+}
+
+export const FLAG = { guard: 'TICKET_WHY_GUARD_ENABLED' };
+
+/** Every ticket-writer flag at once (throws FlagError on a bad value). */
+export function readFlags(env = process.env) {
+  return { guard: enabled(env, FLAG.guard, true) };
+}

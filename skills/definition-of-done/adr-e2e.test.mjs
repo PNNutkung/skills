@@ -78,6 +78,9 @@ const DOD = {
     verifyEnv: { value: 'staging', source: u('A2', 'B', 'Q2') },
     testTiers: { value: ['unit', 'e2e'], source: u('A1', 'A', 'Q1') },
   },
+  why: { text: 'users cannot download the sales report', source: { kind: 'ticket', ref: '#42', quote: 'Users need to download the sales report as CSV.' } },
+  outcomes: [{ id: 'O1', metric: 'reports that download as CSV', baseline: '0', target: 'sales', provenBy: ['AC2'], source: { kind: 'ticket', ref: '#42', quote: 'Users need to download the sales report as CSV.' } }],
+  costOfInaction: { text: 'reports are copied by hand', source: u('A1', 'A', 'Q1') },
   unconfirmed: [],
 };
 const ADR = 'docs/adr/0001-report-export.md';

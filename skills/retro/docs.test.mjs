@@ -54,7 +54,8 @@ test('should list the skill, its hook and guardrails when the repo docs describe
   assert.match(rules, /untrusted-input\.md[^\n]*retro/);
   const plugin = JSON.parse(root('.claude-plugin/plugin.json'));
   assert.match(plugin.description, /retro/);
-  assert.match(plugin.version, /^2\.1\.\d+$|^2\.[2-9]\.\d+$|^[3-9]\./);
+  const [major, minor] = plugin.version.split('.').map(Number);
+  assert.ok(major > 2 || (major === 2 && minor >= 1), `retro shipped in 2.1.0; plugin is ${plugin.version}`);
   assert.match(root('hooks/hooks.json'), /retro-collect\.mjs/);
 });
 

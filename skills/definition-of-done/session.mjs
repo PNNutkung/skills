@@ -42,7 +42,8 @@ export function readActive({ session, env = process.env, now = Date.now() } = {}
     const m = JSON.parse(readFileSync(f, 'utf8'));
     if (typeof m.run !== 'string' || !privateDir(m.run) || !m.run.startsWith(realpathSync(runBase(env)))) return null;
     const adrFiles = Array.isArray(m.adrFiles) ? m.adrFiles.filter(f => typeof f === 'string') : [];
-    return { run: m.run, repo: m.repo, slug: m.slug, session: m.session, started: m.started, adrFiles };
+    // whyFields: opened by a version that requires why / outcomes / costOfInaction (ADR 0012 NewOnly); an older session's marker has none
+    return { run: m.run, repo: m.repo, slug: m.slug, session: m.session, started: m.started, adrFiles, whyFields: m.whyFields === true };
   } catch { return null; }
 }
 
@@ -62,7 +63,7 @@ export function open({ repo, slug, session, env = process.env, now = Date.now() 
   mkdirSync(md, { recursive: true, mode: 0o700 });
   if (!privateDir(md)) throw new Error(`unsafe marker dir ${md}`);
   rmSync(f, { force: true }); // a stale or planted marker (a symlink goes, never its target)
-  writeFileSync(f, JSON.stringify({ run, repo: top, slug, session, started: new Date(now).toISOString() }) + '\n', { mode: 0o600, flag: 'wx' });
+  writeFileSync(f, JSON.stringify({ run, repo: top, slug, session, started: new Date(now).toISOString(), whyFields: true }) + '\n', { mode: 0o600, flag: 'wx' });
   if (!readActive({ session, env })) { rmSync(f, { force: true }); throw new Error('the new marker did not verify: the session would not be guarded'); }
   return { run, marker: f };
 }

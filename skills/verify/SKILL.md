@@ -81,6 +81,8 @@ expect: exit 0; node --test preset: 0 failed, at least 1 passed, a passing test 
 
 A failing item is written as `result: fail` with a `why:` line and its output; the others still run; the JSON lists every failure. **Never edit product code to make an item pass**: a failure goes back to TDD (dev-workflow step 4, or the user). `open` records HEAD and a hash of each changed or untracked file outside `docs/verify/`; when anything there changed since (an image the plan names aside), `run` fails every item it ran (`why: changed product files: ...`), and `status` and `close` list the changes as errors and exit 1 (`close` still closes). A rerun replaces only the sections of the items it ran; every other byte of the file (a `Booked:` line, a hand-written `## Dogfood` section) stays. Output over 8000 characters keeps its head and tail and says so. `remote` entries are listed as `waiting`.
 
+When the ADR has an `### Expected outcome` table with a `Proven by` column (ADR 0012), every write also puts `## Outcomes: met or not` at the end of the file, under a marker: each outcome is `met` when all its items passed or were accepted, `not met` when one failed, else `not run`. An ADR with no such table gets no section.
+
 ## 5. Record a remote run
 
 Run the command where the user allowed it (Remote Control, a device shell), then pass its output in: `node "$SK/verify.mjs" record --id AC4 --from "Remote Control on nut-wsl" --exit 0 --file out.txt` (or on stdin). Code judges it by the same rules and writes `env: nut-wsl (relayed: Remote Control on nut-wsl)`. `record` takes only a `remote` entry, and `--from` is one line with no parentheses.
