@@ -12,13 +12,13 @@ npx skills add PNNutkung/skills --list
 npx skills add PNNutkung/skills --skill '*' -a claude-code -g
 
 # or pick one
-npx skills add PNNutkung/skills --skill zero-trust-review
-npx skills add PNNutkung/skills --skill dev-workflow --skill definition-of-done --skill paired-agent-tdd --skill zero-trust-review --skill retro   # the whole workflow, step by step with a gate between steps
+npx skills add PNNutkung/skills --skill zero-trust-review --skill mutation
+npx skills add PNNutkung/skills --skill dev-workflow --skill definition-of-done --skill paired-agent-tdd --skill zero-trust-review --skill mutation --skill retro   # the whole workflow, step by step with a gate between steps
 npx skills add PNNutkung/skills --skill definition-of-done   # its ADR (or export) feeds paired-agent-tdd and qa-sweep
 npx skills add PNNutkung/skills --skill retro   # step 6: looks back at finished work, turns mistakes into ratchet rules
-npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review   # paired-agent-tdd borrows the probes (and optionally the sandbox runner) of zero-trust-review
+npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review --skill mutation   # paired-agent-tdd borrows the probes (and optionally the sandbox runner) of zero-trust-review
 npx skills add PNNutkung/skills --skill verify   # runs the DoD items and writes docs/verify/<slug>.md from the real runs; works alone or as dev-workflow step 5
-npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --skill paired-agent-tdd   # qa-sweep borrows the mutation probe of one and the direct runner of the other
+npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --skill mutation --skill paired-agent-tdd   # qa-sweep borrows the mutation probe of one and the direct runner of the other
 mkdir -p ~/.claude/hooks && curl -fsSL -o ~/.claude/hooks/pr-test-tiers.py https://raw.githubusercontent.com/PNNutkung/skills/main/hooks/pr-test-tiers/pr-test-tiers.py   # qa-sweep reads test tiers through it ($TIERS_PY); registering it as a hook is optional
 ```
 
