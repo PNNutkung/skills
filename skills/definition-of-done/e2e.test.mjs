@@ -35,6 +35,12 @@ function hook(tool, input) {
 const TICKET = 'title: Export reports\nผู้ใช้อยาก export รายงานเป็น CSV\nเพื่อเอาไปเปิดใน Excel\n';
 const u = (ref, quote, question) => ({ kind: 'user', ref, quote, question });
 const dodFile = join(repo, 'docs', 'dod', 'report-csv.json');
+// why / outcomes / costOfInaction: required in a session this version opens (ADR 0012)
+const WHY = {
+  why: { text: 'users cannot get reports out as CSV', source: { kind: 'ticket', ref: 'acme/web#42', quote: 'ผู้ใช้อยาก export รายงานเป็น CSV' } },
+  outcomes: [{ id: 'O1', metric: 'reports users can open in Excel', baseline: '0', target: 'sales and stock', provenBy: ['AC2'], source: { kind: 'ticket', ref: 'acme/web#42', quote: 'เพื่อเอาไปเปิดใน Excel' } }],
+  costOfInaction: { text: 'users keep copying reports by hand', source: u('A1', 'A', 'Q1 Which pages? (A) both (B) sales') },
+};
 function writeDod(extra = {}) {
   mkdirSync(dirname(dodFile), { recursive: true });
   writeFileSync(dodFile, JSON.stringify({
@@ -52,6 +58,7 @@ function writeDod(extra = {}) {
       verifyEnv: { value: 'staging', source: u('A5', 'staging', 'Q5 where to verify?') },
       testTiers: { value: ['unit', 'e2e'], source: u('A6', 'unit, e2e', 'Q6 tiers?') },
     },
+    ...WHY,
     unconfirmed: extra.unconfirmed ?? [],
   }, null, 2));
 }

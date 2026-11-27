@@ -53,6 +53,7 @@ Map the request as a design tree. The **frontier** is every question whose prere
 - Each question says what you saw and where, so the user can say yes or correct it.
 - Brainstorm requirements only (should there be an undo? a limit?). Architecture and UI variants are a later step.
 - Every DoD covers five **required sections**: feature flag and its default, backward compatibility, non-goals, the environment to verify in, and the test tiers. One that does not apply still needs the user's "not relevant".
+- Every DoD also says **why** (the problem today, with evidence), the **expected outcome** (per outcome: metric, today, target, and the DoD items that prove it; or `notMeasurable` with the user's accepted answer) and the **cost of inaction** ("no clear cost" only with an accepted answer). Ask for the target and the cost; never guess them ([ticket-writer](../ticket-writer/SKILL.md), ADR 0012).
 - `kinds` default to happy, fail, edge; narrow them only with the user's reason (`kindsReason`).
 - An item with a wall-time target (`<= 80 s`, `under 2 min`, `ไม่เกิน 60 วิ`) needs `timeFloor: {cpuSeconds, cores}` from one measured run (the shell's `time`: user+sys), and its largest target must be at least cpuSeconds / cores; `timeFloor: {none: "<why>"}` for a limit that is not a speed target, such as a timeout. `check` refuses it otherwise (`DOD_TIME_FLOOR_CHECK_ENABLED=false` turns this off; [rules/performance.md](../../rules/performance.md)).
 - Save each question when you ask it, whole, to `<run>/questions.md`: your analysis at that moment, read back into the ADR later and never rewritten (`dod.mjs questions` and `check` name an answer whose question is missing). Every option needs at least one pro and one con:
@@ -85,6 +86,9 @@ Write the DoD JSON with the Write tool: `<run>/dod.json` when it will become an 
    {"id": "AC2", "text": "the CSV opens in Excel", "source": {"kind": "ticket", "ref": "acme/web#42", "quote": "to open it in Excel"}},
    {"id": "AC3", "text": "capped at 10,000 rows", "kinds": ["happy", "edge"], "kindsReason": "A5", "source": {"kind": "spec", "ref": "docs/reports.md:12", "quote": "capped at 10,000 rows"}},
    {"id": "AC4", "text": "UTF-8 with BOM", "source": {"kind": "assumed"}, "accepted": "A9"}],
+ "why": {"text": "sales staff retype reports into Excel", "source": {"kind": "ticket", "ref": "acme/web#42", "quote": "to open it in Excel"}},
+ "outcomes": [{"id": "O1", "metric": "reports retyped per week", "baseline": "about 20", "target": "0", "provenBy": ["AC1", "AC2"], "source": {...}}],
+ "costOfInaction": {"text": "about 2 hours of retyping a week", "source": {...}},
  "required": {"featureFlag": {"value": "REPORT_CSV, default off", "source": {"kind": "user", "ref": "A6", "quote": "...", "question": "..."}},
    "backwardCompat": {...}, "nonGoals": {"value": ["xlsx"], ...}, "verifyEnv": {...}, "testTiers": {"value": ["unit", "e2e"], ...}},
  "unconfirmed": []}
@@ -93,6 +97,7 @@ Write the DoD JSON with the Write tool: `<run>/dod.json` when it will become an 
 - `id` is a letter then up to 11 letters or digits (it goes into test names).
 - A `user` source keeps its `question`: a bare "A" means nothing alone. A `spec` quote must sit within 2 lines of `file:line` at HEAD. A `ticket` quote must be in `<run>/ticket.md`.
 - An assumption passes only when the user accepted it by id in an answer (`A9: accept AC4`) and `accepted` names that answer.
+- `why`, `outcomes` and `costOfInaction` are required in a session this version opened; an older session's DoD checks as before. `DOD_TICKET_WHY_ENABLED=false` turns the fields, their sections and `render --pr` off.
 
 Run `node "$SK/dod.mjs" check --dod <dod>` until it prints `ok: true`; it then writes the readable `<slug>.md` (next to `<run>/dod.json`, or in `docs/dod/`). Show the user that file and ask them to confirm or correct it.
 
@@ -108,8 +113,8 @@ Update only the ticket the work is linked to; never create one. `node "$SK/dod.m
 | `ask-trust` | a third-party CLI: ask the user; to trust it on this machine they run the printed `trust` command themselves |
 | `mcp-or-file` | use the system's MCP connector if this session has one, else `render --fallback` and give the user `docs/dod/<slug>.ticket.md` to paste |
 
-1. `node "$SK/dod.mjs" render --dod <dod> --lang th|en` writes `<run>/ticket-new.md`: the DoD as a checklist, the required sections, and every original sentence under "previous notes". Reorganize it with the Edit tool (move sentences into a goal section, merge duplicates), never drop one.
-2. `ticket-check --dod <dod>` must pass: every original sentence kept, every item on the checklist.
+1. `node "$SK/dod.mjs" render --dod <dod> --lang th|en` writes `<run>/ticket-new.md`: Why, Expected outcome, If we do nothing and How we know first, then the DoD as a checklist, the required sections, and every original sentence under "previous notes". Reorganize it with the Edit tool (move sentences into a goal section, merge duplicates), never drop one.
+2. `ticket-check --dod <dod>` must pass: every original sentence kept, every item on the checklist, the 4 sections filled in.
 3. Show the user the whole new description. Only the user approves: `node "$SK/dod.mjs" approve` in their own terminal or with the `!` prefix. The approval covers that exact text; any change needs a new one.
 4. Post it, read it back to a file in `<run>`, and run `ticket-check --posted <file>`. A difference means someone edited the ticket: report it, never pull it back. The repo file is the source; ticking the checklist belongs to the verify step.
 
@@ -124,6 +129,8 @@ Update only the ticket the work is linked to; never create one. `node "$SK/dod.m
 Finding decisions later: `node "$SK/dod.mjs" adrs --touches <file>...` lists the ADRs that cover those files; read the index, then only those ADRs.
 
 **Export** (no ADR, as before): `export --dod ... --to ptdd --out <run>/ptdd` (`dod.json` for `plan.json` `dod`, `dod-source.md` for `plan.json` `ticket`), or `--to qa --out <qa run>` (`answers.md`, `ticket.md`, `requirements.json`). Commit `docs/dod/<slug>.json` and `.md`.
+
+**PR body:** `render --pr --dod <dod> [--ticket-url URL]` writes `<run>/pr-top.md`, the 4 sections for the top of the PR body; after verify it adds a result column from `docs/verify/<slug>.md`.
 
 `node "$SK/dod.mjs" close`, then report: the ADR or DoD file, the ticket state, accepted assumptions by id.
 

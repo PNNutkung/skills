@@ -1,6 +1,10 @@
 // Pure checks for the definition-of-done skill: no I/O, no model. checkDod is the gate, exportPtdd/exportQa feed the next skills, and
 // renderTicket/ticketCheck keep a rewritten ticket description honest (every original sentence kept, every DoD item on its checklist).
 // ctx = { answers: answers.md text, ticket: ticket.md text, show(path) -> file text at HEAD or null }.
+// checkWhy gates the why / outcomes / costOfInaction fields (ADR 0012); the 4 ticket sections come from skills/ticket-writer/why.mjs.
+import { checkBody, outcomeResults, renderSections } from '../ticket-writer/why.mjs';
+
+export { outcomeResults };
 
 export const REQUIRED = ['featureFlag', 'backwardCompat', 'nonGoals', 'verifyEnv', 'testTiers'];
 export const KINDS = ['happy', 'fail', 'edge'];
@@ -100,6 +104,82 @@ export function checkDod(dod, ctx = {}) {
   }
 }
 
+const NO_CLEAR_COST = /^\s*(?:no clear cost|ไม่มีผลเสียชัด)/i;
+const OUTCOME_FIELDS = ['metric', 'baseline', 'target'];
+
+/** An accepted user answer A<n> that names `name`, else the reason it does not. */
+function acceptProblem(accepted, name, ctx) {
+  if (accepted === undefined) return `needs the user's accepted answer: record it as an answer that names ${name} and set accepted: "A<n>"`;
+  const text = answerText(ctx.answers, accepted);
+  if (text === null) return `accepted answer ${accepted} not found in answers.md`;
+  if (!new RegExp(`(^|[^A-Za-z0-9])${escapeRe(name)}([^A-Za-z0-9]|$)`).test(text)) return `answer ${accepted} does not accept ${name} (it must name it)`;
+  return null;
+}
+
+/**
+ * -> list of error strings for why {text, source}, outcomes[] {id, metric, baseline, target | notMeasurable + accepted, provenBy[], source}
+ * and costOfInaction {text, source, accepted when it says there is no clear cost}. required: every field must be there (a DoD session opened
+ * by this version); otherwise only the fields present are checked. Never throws.
+ */
+export function checkWhy(dod, ctx = {}, { required = true } = {}) {
+  try {
+    if (!isObj(dod)) return required ? ['the DoD must be a JSON object'] : [];
+    const errors = [];
+    const ids = new Set((Array.isArray(dod.items) ? dod.items : []).filter(isObj).map(i => i.id));
+    const textField = (key, what) => {
+      const f = dod[key];
+      if (f === undefined) { if (required) errors.push(`${key}: missing (${what}, with a quoted source)`); return null; }
+      if (!isObj(f) || norm(f.text) === '') { errors.push(`${key}: text is required (${what})`); return null; }
+      return f;
+    };
+    const why = textField('why', 'the problem today, with evidence');
+    if (why) { const p = sourceProblem(why.source, ctx); if (p) errors.push(`why: ${p}`); }
+    if (dod.outcomes === undefined) { if (required) errors.push('outcomes: missing (each: id, metric, baseline, target, provenBy, source; or notMeasurable with an accepted answer)'); }
+    else if (!Array.isArray(dod.outcomes) || !dod.outcomes.length) errors.push('outcomes: must be a non-empty list');
+    else {
+      const seen = new Set();
+      for (const o of dod.outcomes) {
+        if (!isObj(o) || typeof o.id !== 'string' || !DOD_ID.test(o.id)) { errors.push(`outcome id ${JSON.stringify(isObj(o) ? o.id : o)} must match ${DOD_ID}`); continue; }
+        if (seen.has(o.id)) errors.push(`${o.id} is repeated`);
+        seen.add(o.id);
+        if (norm(o.metric) === '') errors.push(`${o.id}: metric is required`);
+        if (o.notMeasurable !== undefined) {
+          if (norm(o.notMeasurable) === '') errors.push(`${o.id}: notMeasurable needs a reason`);
+          const p = acceptProblem(o.accepted, o.id, ctx);
+          if (p) errors.push(`${o.id}: not measurable ${p}`);
+        } else {
+          for (const k of OUTCOME_FIELDS.slice(1)) if (norm(o[k]) === '') errors.push(`${o.id}: ${k} is required (metric + baseline + target, or notMeasurable with the user's accepted answer)`);
+          const p = sourceProblem(o.source, ctx);
+          if (p) errors.push(`${o.id}: ${p}`);
+        }
+        const proof = Array.isArray(o.provenBy) ? o.provenBy : [];
+        if (!proof.length) errors.push(`${o.id}: provenBy must name at least one DoD item that proves it`);
+        for (const id of proof) if (!ids.has(id)) errors.push(`${o.id}: provenBy names DoD id ${JSON.stringify(id)} that does not exist`);
+      }
+    }
+    const cost = textField('costOfInaction', 'what it costs to leave it');
+    if (cost) {
+      const p = sourceProblem(cost.source, ctx);
+      if (p) errors.push(`costOfInaction: ${p}`);
+      if (NO_CLEAR_COST.test(cost.text)) { const a = acceptProblem(cost.accepted, 'costOfInaction', ctx); if (a) errors.push(`costOfInaction: "no clear cost" ${a}`); }
+    }
+    return errors;
+  } catch (e) {
+    return [`checkWhy crashed: ${String(e?.message ?? e)}`];
+  }
+}
+
+/** The 4 section fields of a DoD for renderSections; null when it has no why. */
+export function sectionFields(dod, { verifyFile } = {}) {
+  if (!isObj(dod) || !isObj(dod.why)) return null;
+  const outcomes = (Array.isArray(dod.outcomes) ? dod.outcomes : []).filter(isObj);
+  const file = verifyFile ?? `docs/verify/${dod.slug}.md`;
+  return {
+    why: norm(dod.why.text), outcomes, cost: norm(dod.costOfInaction?.text),
+    how: outcomes.map(o => `${o.id} (${norm(o.metric)}): ${(o.provenBy ?? []).join(', ')} in ${file}`),
+  };
+}
+
 // A wall-time target in an item's text: "<= 80 s", "under 2 min", "ไม่เกิน 60 วิ". Its floor is the CPU the work needs spread over every core
 // (user+sys CPU-seconds / cores, from one measured run): a target below it cannot be met by running more in parallel (rules/performance.md).
 const TIME_TARGET = /(?:<=|≤|<|\bunder|\bwithin|\bat most|ไม่เกิน|ภายใน)\s*(\d+(?:\.\d+)?)\s*(s|secs?|seconds?|min|mins|minutes?|วิ|วินาที|นาที)(?![A-Za-z\u0E00-\u0E7F])/gi;
@@ -196,11 +276,12 @@ const checklistLine = i => `${i.id} ${norm(i.text)}`;
  * A full ticket description: the DoD as a checklist, the required sections, and every original sentence under "previous notes".
  * The agent may then move original sentences into the goal section; ticketCheck says whether the result still holds everything.
  */
-export function renderTicket(dod, original, { lang = 'en', file } = {}) {
+export function renderTicket(dod, original, { lang = 'en', file, sections = false } = {}) {
   const h = HEADINGS[lang] ?? HEADINGS.en;
   const ticked = new Set(String(original ?? '').split('\n').map(l => /^\s*[-*+]\s+\[[xX]\]\s+([A-Za-z][A-Za-z0-9]*)\b/.exec(l)?.[1]).filter(Boolean));
   const r = dod.required ?? {};
-  const out = [`## ${h.dod}`, '', ...dod.items.map(i => `- [${ticked.has(i.id) ? 'x' : ' '}] ${checklistLine(i)}`), ''];
+  const fields = sections ? sectionFields(dod) : null;
+  const out = [...(fields ? [renderSections(fields, { lang })] : []), `## ${h.dod}`, '', ...dod.items.map(i => `- [${ticked.has(i.id) ? 'x' : ' '}] ${checklistLine(i)}`), ''];
   const section = (title, req) => { if (req) out.push(`## ${title}`, '', ...valueLines(req.value), ''); };
   section(h.flag, r.featureFlag); section(h.compat, r.backwardCompat); section(h.nonGoals, r.nonGoals); section(h.env, r.verifyEnv); section(h.tiers, r.testTiers);
   const notes = sentences(original);
@@ -209,15 +290,16 @@ export function renderTicket(dod, original, { lang = 'en', file } = {}) {
   return out.join('\n');
 }
 
-/** -> { ok, missing: original sentences not found in the rewrite, missingItems: DoD ids with no checklist line } */
-export function ticketCheck(original, rewritten, dod) {
+/** -> { ok, missing: original sentences not found in the rewrite, missingItems: DoD ids with no checklist line, sections: 4-section errors } */
+export function ticketCheck(original, rewritten, dod, { sections = false } = {}) {
   const flat = norm(rewritten);
+  const sectionErrors = sections && isObj(dod?.why) ? checkBody(String(rewritten ?? '')) : [];
   const missing = [...new Set(sentences(original))].filter(s => !flat.includes(norm(s)));
   const lines = String(rewritten ?? '').split('\n').map(l => norm(l));
   const missingItems = (Array.isArray(dod?.items) ? dod.items : [])
     .filter(i => !lines.some(l => /^[-*+] \[[ xX]\] /.test(l) && l.replace(/^[-*+] \[[ xX]\] /, '') === checklistLine(i)))
     .map(i => i.id);
-  return { ok: missing.length === 0 && missingItems.length === 0, missing, missingItems };
+  return { ok: missing.length === 0 && missingItems.length === 0 && sectionErrors.length === 0, missing, missingItems, sections: sectionErrors };
 }
 
 /** docs/dod/<slug>.md: the human-readable DoD. */
@@ -239,4 +321,31 @@ export function renderMarkdown(dod) {
     if (r[k]) lines.push(`## ${title}`, '', ...valueLines(r[k].value), '', `Source: ${src({ source: r[k].source })}`, '');
   }
   return lines.join('\n');
+}
+
+// ---------- the PR body (ADR 0012 PrBody) ----------
+const RESULT_RE = /^result:\s*(pass|fail|accepted|open)\b/i;
+
+/** {itemId: 'pass'|'fail'|'accepted'|'open'} from docs/verify/<slug>.md: each "## <id>" section's first result line, outside code fences. */
+export function verifyResults(md) {
+  const out = {};
+  let cur = null, fence = false;
+  for (const line of String(md ?? '').split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) { fence = !fence; continue; }
+    if (fence) continue;
+    const h = /^##\s+([A-Za-z][A-Za-z0-9]{0,11})\s*$/.exec(line);
+    if (h) { cur = h[1]; continue; }
+    const r = RESULT_RE.exec(line);
+    if (cur && r && out[cur] === undefined) out[cur] = r[1].toLowerCase();
+  }
+  return out;
+}
+
+/** The top of a PR body: the 4 sections from the DoD and the ticket link; results ({itemId: result}) add a result column. */
+export function renderPrTop(dod, { lang = 'en', ticketUrl, results } = {}) {
+  const fields = sectionFields(dod);
+  if (!fields) return '';
+  const res = results ? outcomeResults(fields.outcomes, results) : undefined;
+  const link = ticketUrl ? [`${lang === 'th' ? 'Ticket' : 'Ticket'}: ${ticketUrl}`, ''] : [];
+  return [renderSections(fields, { lang, results: res }), ...link].join('\n');
 }

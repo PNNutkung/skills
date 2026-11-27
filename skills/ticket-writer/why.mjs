@@ -117,3 +117,19 @@ export function renderSections(fields, { lang = 'en', results } = {}) {
     `## ${h.how}`, '', ...how, '',
   ].join('\n');
 }
+
+/**
+ * Each outcome's result from its provenBy items: 'met' when every item passed (or was accepted), 'not met' when one failed, else 'not run'.
+ * itemResults = {itemId: 'pass'|'fail'|'accepted'|...}.
+ */
+export function outcomeResults(outcomes, itemResults) {
+  const r = itemResults && typeof itemResults === 'object' ? itemResults : {};
+  const out = {};
+  for (const o of Array.isArray(outcomes) ? outcomes : []) {
+    if (!o || typeof o !== 'object') continue;
+    const ids = Array.isArray(o.provenBy) ? o.provenBy : [];
+    const res = ids.map(id => r[id]);
+    out[o.id] = res.some(x => x === 'fail') ? 'not met' : ids.length && res.every(x => x === 'pass' || x === 'accepted') ? 'met' : 'not run';
+  }
+  return out;
+}
