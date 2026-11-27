@@ -122,7 +122,7 @@ Update only the ticket the work is linked to; never create one. `node "$SK/dod.m
 
 **ADR** (the default): the DoD becomes a decision record that stays in git; the run folder does not.
 1. `node "$SK/dod.mjs" adr --dod <dod>` writes the draft in English, quotes word for word, in the repo's ADR folder (`.adr-dir`, `docs/adr`, `docs/decisions`...) as the next `NNNN-<slug>.md`, or over this slug's own file when the DoD changed. It refreshes the index in that folder's `README.md` and installs a git pre-commit hook that follows file moves in `touches` (`DOD_ADR_PRECOMMIT_HOOK_ENABLED=false`: no hook; default `true`; it never replaces a hook it did not write, and with husky or lefthook it prints the line to add).
-2. Reorganize the Context, Decision and Consequences prose with the Edit tool. Do not edit the `## Definition of done` section: code writes it and a hash catches a hand edit. Keep every quote, option, pro, con and answer.
+2. Reorganize the Context, Decision and Consequences prose with the Edit tool. Do not edit the `## Definition of done` section: code writes it and a hash catches a hand edit. Keep every quote, option, pro, con and answer. The draft has an empty `## Interface` heading (between Decision and Consequences, outside the hashed section): the design step (dev-workflow step 3) fills it with names, inputs, outputs, errors and a diagram.
 3. `node "$SK/dod.mjs" adr-check --dod <dod>` must pass. Show the user the ADR; commit only the ADR and the index.
 4. Hand-off: `plan.json` and `findings.json` take `"dodFile": "docs/adr/NNNN-<slug>.md"`, or leave both `dod[]` and `dodFile` out and the ADR whose `touches` match the files is found.
 

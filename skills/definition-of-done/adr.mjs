@@ -155,6 +155,8 @@ export function renderAdr({ dod, answers, questions, ticket, number, date, statu
     frontmatter(touches, dod.slug), `# ${number}. ${titleOf(dod)}`, '', `Date: ${date}`, `Status: ${status}`, '',
     '## Context', '', ...whySections(dod, sections), 'Quoted verbatim from the ticket and the specs this decision rests on:', '', ...(context.length ? context : ['(no ticket or spec quotes)']), '',
     '## Decision', '', ...decisions,
+    // ADR 0011 A13: the design step fills this with names, inputs, outputs, errors and a diagram for the user to approve; outside the hashed DoD section
+    '## Interface', '',
     '## Consequences', '', 'Trade-offs we accepted:', '', ...(tradeOffs.length ? tradeOffs : ['- none']), '',
     dodSection(dod),
   ].join('\n');
