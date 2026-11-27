@@ -93,8 +93,13 @@ function docstringLines(lines) {
   return inside;
 }
 
+/** Known-equivalent patterns (EquivSkip, ADR 0011 A20): `{op, line: RegExp, reason}` drops the `op` mutant on an original line that `line` matches.
+ *  It starts empty: a pattern joins only in the same commit as a test that proves its edit matches the same inputs as the original. */
+export const EQUIV_SKIP = Object.freeze([]);
+const skipped = (skip, op, original) => skip.some(s => s.op === op && s.line.test(original));
+
 /** -> [{ id, file, line, op, before, after, newLine }] in file/line order; `lines` = the 1-based line numbers the change touched */
-export function generateMutants(path, text, lines, { perLine = PER_LINE } = {}) {
+export function generateMutants(path, text, lines, { perLine = PER_LINE, skip = EQUIV_SKIP } = {}) {
   const lang = LANG[path.split('.').pop().toLowerCase()];
   if (!lang) return [];
   const src = text.split('\n');
@@ -109,7 +114,7 @@ export function generateMutants(path, text, lines, { perLine = PER_LINE } = {}) 
     let count = 0;
     for (const [op, langs, apply] of OPS) {
       if (count >= perLine) break;
-      if (!langs.includes(lang)) continue;
+      if (!langs.includes(lang) || skipped(skip, op, original)) continue;
       const newLine = apply(masked, original);
       if (newLine === null || newLine === original || seen.has(`${op}:${newLine}`)) continue;
       seen.add(`${op}:${newLine}`);
