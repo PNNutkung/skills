@@ -1,6 +1,6 @@
 // Test selection by import graph (ADR 0011 A10): a mutant runs only against the test files whose static import/require graph reaches its file. Only relative
 // specifiers of JavaScript/TypeScript files are followed (`import ... from`, `import '...'`, `export ... from`, `import('...')`, `require('...')`); a file in another
-// language has no graph here, so it gets every test, and so does a test file that is not JavaScript (what it runs cannot be seen). Files are read from `repo`
+// language has no graph here, so it gets every test, and so does a test file that is not JavaScript (what it runs cannot be seen), or one whose graph holds an import() with a computed path. Files are read from `repo`
 // (a work tree at the revision under test) and never followed out of it: the tree is the branch's, so its contents are data.
 import { lstatSync, readFileSync } from 'node:fs';
 import { dirname, extname, join, normalize } from 'node:path';
@@ -8,6 +8,10 @@ import { dirname, extname, join, normalize } from 'node:path';
 const JS = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.mts', '.cts', '.tsx']);
 const TRY = ['', '.mjs', '.js', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.jsx', ...[...JS].map(e => `/index${e}`)];
 const SPEC = /\b(?:import|export)\s[^'"`;]*?\bfrom\s*(['"])([^'"\n]+)\1|\bimport\s*(['"])([^'"\n]+)\3|\b(?:import|require)\s*\(\s*(['"])([^'"\n]+)\5\s*\)/g;
+// a dynamic import() or require() call: its argument decides whether the edge is known
+const CALL = /\b(?:import|require)\s*\(\s*([^)\s][^)]*)\)/g;
+const QUOTED = /^(['"])([^'"\n]+)\1\s*$/, PLAIN_TEMPLATE = /^`([^`$\n]+)`\s*$/;
+const UNKNOWN = Symbol('unknown import'); // an import() whose path is computed: it may reach any file, so the test is kept (ADR 0011 A21)
 const MAX_BYTES = 1 << 22;
 const isJs = p => JS.has(extname(p).toLowerCase());
 
@@ -38,6 +42,13 @@ function importsOf(repo, path, cache) {
     const r = resolveSpec(repo, path, m[2] ?? m[4] ?? m[6]);
     if (r) out.add(r);
   }
+  for (const [, arg] of text.matchAll(CALL)) {
+    if (QUOTED.test(arg)) continue; // a quoted path: SPEC above follows it
+    const plain = PLAIN_TEMPLATE.exec(arg);
+    if (!plain) { out.add(UNKNOWN); continue; }
+    const r = resolveSpec(repo, path, plain[1]);
+    if (r) out.add(r);
+  }
   cache.set(path, out);
   return out;
 }
@@ -45,8 +56,8 @@ const reaches = (repo, test, file, cache) => {
   const seen = new Set([test]), todo = [test];
   while (todo.length) {
     const cur = todo.pop();
-    if (cur === file) return true;
-    if (!isJs(cur)) continue;
+    if (cur === file || cur === UNKNOWN) return true;
+    if (typeof cur !== 'string' || !isJs(cur)) continue;
     for (const next of importsOf(repo, cur, cache)) if (!seen.has(next)) { seen.add(next); todo.push(next); }
   }
   return false;
