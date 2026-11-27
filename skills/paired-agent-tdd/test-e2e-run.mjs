@@ -18,16 +18,17 @@ const parallel = ts => Promise.all(ts.map(async t => { try { return await t(); }
  * One whole run in its own fixture repo: plan, the Workflow with scripted agents, then verify. -> what happened and what it cost
  * spawn(file, args, fixtureEnv): starts a process with the caller's env plus fixtureEnv (TMPDIR and ZT_MARKER_DIR inside the fixture) -> spawnSync result
  * plan: plan.json without `repo`; groups: { id: { tests, src, testText, versions, rows } }; strays: files outside the plan written into the repo after `plan`;
+ * base: files committed in the base commit (an ADR the plan names as dodFile);
  * scripts(tools): scripted agents that replace the default ones.
  */
-export async function runE2E({ spawn, runner, plan: planRest, groups: GROUPS, prefix, strays = {}, scripts = () => ({}) }) {
+export async function runE2E({ spawn, runner, plan: planRest, groups: GROUPS, prefix, strays = {}, base = {}, scripts = () => ({}) }) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix))), repo = join(dir, 'repo'), tmp = join(dir, 'tmp');
   for (const d of [repo, tmp]) mkdirSync(d);
   const fixtureEnv = { TMPDIR: tmp, ZT_MARKER_DIR: join(dir, 'marker') };
   try {
     const git = (...a) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
     const put = (p, text) => { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), text); };
-    git('init', '-q'); put('package.json', '{"type":"module"}\n'); put('README.md', 'text utils\n'); git('add', '-A'); git('commit', '-qm', 'base');
+    git('init', '-q'); put('package.json', '{"type":"module"}\n'); put('README.md', 'text utils\n'); for (const [p, text] of Object.entries(base)) put(p, text); git('add', '-A'); git('commit', '-qm', 'base');
     const plan = { repo, ...planRest };
     writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan));
     const gateMs = {}, outputs = [];
@@ -68,15 +69,27 @@ export async function runE2E({ spawn, runner, plan: planRest, groups: GROUPS, pr
       'red-navigator': (gid, p) => navigator(p),
       'green-navigator': (gid, p) => navigator(p),
       reviewer: (gid, p) => {
-        exec(cmdOf(p, FINAL), 'final');
+        const fin = exec(cmdOf(p, FINAL), 'final'), survivors = [...new Set(fin.match(/X-[0-9a-f]{8}/g) ?? [])].map(id => ({ id })); // ADR 0011: the final gate's survivors, for the judge
+        const finalOf = { final: { ok: /^FINAL ok=true/m.test(fin), survivors }, survivors };
         const src = GROUPS.a.src, lines = readFileSync(join(repo, src), 'utf8').split('\n'), line = lines.findIndex(l => l.includes('TODO')) + 1, quote = lines[line - 1].trim(); // '// TODO: ...' or '# TODO: ...'
-        return { findings: [{ title: 'Leftover TODO in shipped code', severity: 'medium', file: src, startLine: line, endLine: line, hazard: 'a stale TODO', failureScenario: 'readers think the class is wrong', quote, suggestedFix: 'delete it', anchorable: true, proof: { mode: 'read', ref: `${src}:${line}-${line}`, quote } }] };
+        return { ...finalOf, findings: [{ title: 'Leftover TODO in shipped code', severity: 'medium', file: src, startLine: line, endLine: line, hazard: 'a stale TODO', failureScenario: 'readers think the class is wrong', quote, suggestedFix: 'delete it', anchorable: true, proof: { mode: 'read', ref: `${src}:${line}-${line}`, quote } }] };
       },
       fixer: (gid, p) => {
         put(GROUPS.a.src, readFileSync(join(repo, GROUPS.a.src), 'utf8').split('\n').filter(l => !l.includes('TODO')).join('\n'));
         return { fixed: [/^(R-\S+) \[/m.exec(p)[1]], notFixed: [], gateOk: ok(exec(cmdOf(p, GREEN_ANY), 'green')), gateRuns: 1 };
       },
       'final-verifier': (gid, p) => ({ ok: ok(exec(cmdOf(p, FINAL), 'final')), problems: [] }),
+      // ADR 0011, fast mode with the test writer on: the test writer writes the tests and proves RED; the code driver writes the code and proves GREEN;
+      // the judge marks each survivor its prompt names through `tdd.mjs equivalent`, then runs the final gate again when its prompt says so
+      'test-writer': (gid, p) => ({ done: true, rejected: [], matrix: GROUPS[gid].rows, files: [GROUPS[gid].tests], reuse: 'none', gateOk: writeRed(gid, p), gateRuns: 1 }),
+      'code-driver': (gid, p) => ({ done: true, testWrong: [], files: [GROUPS[gid].src], srcFiles: [GROUPS[gid].src], reuse: 'none', cleanup: 'none', ...greenLoop(gid, p) }),
+      judge: (gid, p) => {
+        const ids = [...new Set(p.match(/X-[0-9a-f]{8}/g) ?? [])];
+        for (const id of ids) exec(`${process.execPath} ${TDD} equivalent --run ${ARGS.runDir} --add ${id} --reason 'a limit no caller reads yet: no input can tell the mutant apart'`, 'equivalent');
+        const again = cmdOf(p, FINAL);
+        if (again) exec(again, 'final');
+        return { done: true, marked: ids, unmarked: [] };
+      },
       ...scripts({ put, repo, exec, ok, cmdOf, GREEN_ANY }),
     };
     const agent = async (prompt, o) => {
@@ -90,6 +103,8 @@ export async function runE2E({ spawn, runner, plan: planRest, groups: GROUPS, pr
     writeFileSync(retFile, JSON.stringify(out));
     const verify = JSON.parse(exec(`${process.execPath} ${TDD} verify --run ${ARGS.runDir} --ret ${retFile}`, 'verify').trim().split('\n').pop());
     const labels = calls.map(c => c.label);
-    return { plan, ARGS, out, verify, labels, calls, events, outputs, gateMs, agents: labels.length, gateTotal: Object.values(gateMs).reduce((a, b) => a + b, 0) };
+    let equivalent = null;
+    try { equivalent = JSON.parse(readFileSync(join(ARGS.runDir, 'mutation-equivalent.json'), 'utf8')); } catch { /* no mark written */ }
+    return { plan, ARGS, out, verify, labels, equivalent, calls, events, outputs, gateMs, agents: labels.length, gateTotal: Object.values(gateMs).reduce((a, b) => a + b, 0) };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
