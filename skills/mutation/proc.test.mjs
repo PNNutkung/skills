@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { git, put, tempDir } from './fixtures/repo.mjs';
+import * as P from './proc.mjs';
 import { HEAD_RUN_REFUSED, TEST, baselineFrom, changes, clear, editableRoots, ensureDir, extract, gitOut, headRunDoc, isSource, rel, restore, runIn } from './proc.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -257,4 +258,17 @@ test('should accept exit 255 and refuse exit 256 when a head run file is checked
   const identity = { tree: 't' }, doc = exit => JSON.stringify(headRunDoc(identity, [{ file: 'a.test.mjs', exit, sec: 1 }]));
   assert.deepEqual(baselineFrom(doc(255), identity, ['a.test.mjs']), { exits: [255] });
   assert.deepEqual(baselineFrom(doc(256), identity, ['a.test.mjs']), { reason: HEAD_RUN_REFUSED.tests });
+});
+
+// ---------------------------------------------------------------- backendOf: the runner's --check, bounded by a timeout
+test('should export a 15 s check timeout when the runner backend is asked for (Proc happy)', () => {
+  assert.equal(P.CHECK_TIMEOUT_MS, 15000);
+});
+
+test('should say none when the runner --check outlasts the timeout and give its first stdout line when it does not (Proc edge)', t => {
+  const { dir } = tempDir(t, 'mutation-proc-');
+  const runner = join(dir, 'slow-check.mjs');
+  writeFileSync(runner, "if (process.argv.includes('--check')) setTimeout(() => console.log('stubbox\\nsecond line'), 2000);\n");
+  assert.equal(P.backendOf(runner, undefined, { timeout: 300 }), 'none');
+  assert.equal(P.backendOf(runner, undefined, { timeout: 5000 }), 'stubbox');
 });

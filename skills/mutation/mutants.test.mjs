@@ -130,3 +130,57 @@ test('should order sampled mutants by file and then by line as a number when lin
   assert.deepEqual(order([m('a.js', 1000000), m('a.js', 999999), m('a.js', 2)]), ['a.js:2:eq-ne', 'a.js:999999:eq-ne', 'a.js:1000000:eq-ne']);
   assert.deepEqual(order([m('a.c01/x.js', 1), m('a.c', 12345), m('a.c', 3, 'lt-le'), m('a.c', 3, 'eq-ne')]), ['a.c:3:eq-ne', 'a.c:3:lt-le', 'a.c:12345:eq-ne', 'a.c01/x.js:1:eq-ne']);
 });
+
+// ---------------------------------------------------------------- mask(line, lang): same length as the line; string contents become \u0001, comments become spaces
+const F = '\u0001';
+const mask = (line, lang) => { assert.equal(typeof M.mask, 'function', 'mutants.mjs exports mask'); return M.mask(line, lang); };
+
+test('should blank a trailing comment with spaces and keep the line length when the line has a // or # comment (Mask happy)', () => {
+  for (const [line, lang, want] of [
+    ['x = a // c < d', 'j', `x = a ${' '.repeat(8)}`],
+    ['// whole line', 'c', ' '.repeat(13)],
+    ['x = 1  # note < y', 'p', `x = 1  ${' '.repeat(10)}`],
+    ['s = "a # b"', 'p', `s = "${F.repeat(5)}"`],
+  ]) {
+    const got = mask(line, lang);
+    assert.equal(got, want, JSON.stringify(line));
+    assert.equal(got.length, line.length, JSON.stringify(line));
+  }
+});
+
+test('should fill string contents and keep the line length when a string is closed or holds an escape (Mask happy)', () => {
+  for (const [line, lang, want] of [
+    ['f("a < b", \'c\')', 'j', `f("${F.repeat(5)}", '${F}')`],
+    ['s = "q\\" <"', 'j', `s = "${F.repeat(5)}"`],
+    ['s = `t ${x}`', 'j', `s = \`${F.repeat(6)}\``],
+  ]) {
+    const got = mask(line, lang);
+    assert.equal(got, want, JSON.stringify(line));
+    assert.equal(got.length, line.length, JSON.stringify(line));
+  }
+});
+
+test('should keep the line length when a string is left open at the end of the line (Mask edge)', () => {
+  for (const [line, lang, want] of [
+    ['foo("abc', 'j', `foo("${F.repeat(3)}`],
+    ["x = 'a", 'p', `x = '${F}`],
+    ['x = `ab', 'j', `x = \`${F.repeat(2)}`],
+    ['x = "', 'c', 'x = "'],
+  ]) {
+    const got = mask(line, lang);
+    assert.equal(got, want, JSON.stringify(line));
+    assert.equal(got.length, line.length, JSON.stringify(line));
+  }
+});
+
+test('should keep the line length when the line ends in a backslash inside or outside a string (Mask edge)', () => {
+  for (const [line, lang, want] of [
+    ['x = a + \\', 'j', 'x = a + \\'],
+    ['s = "ab\\', 'j', `s = "${F.repeat(3)}`],
+    ["s = 'ab\\", 'p', `s = '${F.repeat(3)}`],
+  ]) {
+    const got = mask(line, lang);
+    assert.equal(got.length, line.length, `${JSON.stringify(line)} -> ${JSON.stringify(got)}`);
+    assert.equal(got, want, JSON.stringify(line));
+  }
+});
