@@ -14,7 +14,7 @@ export const isSource = p => !TEST.test(p) && !DOC.test(p) && !basename(p).toLow
 export const shq = s => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`); // file names come from the branch under review
 
 // A repo-relative path, normalized; throws on anything that could leave the repo.
-export const rel = p => { const n = normalize(p).replace(/\/+$/, ''); if (n === '.' || isAbsolute(n) || n.split('/').includes('..')) throw new Error(`path must stay inside the repo: ${p}`); return n; };
+export const rel = p => { const n = normalize(p).replace(/\/+$/, ''); if (n === '.' || n === '' || isAbsolute(n) || n.split('/').includes('..')) throw new Error(`path must stay inside the repo: ${p}`); return n; };
 
 // An editable install (pip -e) imports from absolute directories listed in site-packages/*.pth. The sandbox reads only what it is granted, so grant
 // those directories read-only, but only when they sit inside the repo under review: a .pth line that points anywhere else is ignored.

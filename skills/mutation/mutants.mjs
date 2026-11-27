@@ -125,10 +125,12 @@ export function generateMutants(path, text, lines, { perLine = PER_LINE, skip = 
   return out;
 }
 
-const key = m => m.file + String(m.line).padStart(6, '0') + m.op;
+// file, then line as a number, then op: plain code-unit compares, so the order is the same on every machine
+const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+const order = (a, b) => cmp(a.file, b.file) || a.line - b.line || cmp(a.op, b.op);
 /** at most `max` mutants spread evenly over the sorted list (every file and region represented); deterministic */
 export function sample(mutants, max) {
-  const sorted = [...mutants].sort((a, b) => key(a).localeCompare(key(b)));
+  const sorted = [...mutants].sort(order);
   if (sorted.length <= max) return sorted;
   return Array.from({ length: max }, (_, i) => sorted[Math.floor((i * sorted.length) / max)]);
 }
