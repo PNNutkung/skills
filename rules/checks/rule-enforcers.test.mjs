@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkEnforcer, checkRepo } from './rule-enforcers.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -75,6 +75,13 @@ test('should give a reason when the ratchet id is not in .ratchet.json rules', (
   assert.equal(typeof why, 'string');
   assert.ok(why.length > 0);
   assert.equal(typeof checkEnforcer(fixture(), 'ratchet:constructor', {}), 'string');
+});
+
+test('should give a reason when the enforcer is not a string, is absolute or leaves the repo', () => {
+  const root = fixture();
+  for (const ref of [42, null, '', join(root, 'rules', 'checks', 'a.mjs'), '../outside.mjs', 'rules/../../outside.mjs']) {
+    assert.equal(typeof checkEnforcer(root, ref, { r1: {} }), 'string', String(ref));
+  }
 });
 
 // checkRepo
@@ -196,6 +203,18 @@ test('should still run the CLI when the script is started through a symlinked fo
   const r = spawnSync(process.execPath, [join(linkedRepo, 'rules', 'checks', 'rule-enforcers.mjs'), '--root', fixture()], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), { ok: true, violations: [] });
+});
+
+test('should check the current folder when the CLI runs with no arguments', () => {
+  const r = spawnSync(process.execPath, [CHECK], { cwd: withEntries({ 'alpha/one': { status: 'enforced', enforcers: [], reason: '' } }), encoding: 'utf8' });
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout).violations, ['rules/enforcers.json: alpha/one: enforced needs at least one enforcer']);
+});
+
+test('should print nothing when the module is imported instead of started', () => {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(CHECK).href)});`], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '');
 });
 
 test('should exit 0 with no violations when the check runs on this repo', () => {
