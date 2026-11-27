@@ -118,6 +118,7 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `RETRO_RATCHET_PRECOMMIT_HOOK_ENABLED` | `true` \| `false` | `true` | `ratchet.mjs install` adds the git pre-commit hook, and the hook refuses a count in `.ratchet.json` that went up |
 | `RETRO_TRANSCRIPTS_ENABLED` | `true` \| `false` | `true` | retro reads Claude Code session transcripts (redacted) |
 | `RETRO_AUTO_COLLECT_ENABLED` | `true` \| `false` | `true` | `hooks/retro-collect.mjs` saves a session's numbers after a PR merge and at session end, and reminds about `/retro` |
+| `RETRO_UNENFORCED_RULE_CHECK_ENABLED` | `true` \| `false` | `true` | `retro.mjs check` marks a finding whose `rule` was hit on an earlier branch (`docs/retro/rule-hits.json`) or cites 2+ evidence items as a repeat, and fails when a repeat of a `partial` or `judgment` rule has no proposal with `level` or `noLevel` (ADR 0013) |
 | `RETRO_STEERING_BYTES_MAX` | a whole number above 0 \| `unlimited` | `8000` | a CLAUDE.md or AGENTS.md larger than this is a retro finding |
 | `BRANCH_SUMMARY_FORMAT_CHECK_ENABLED` | `true` \| `false` | `true` | `build-report.mjs` refuses a branch-summary report without its `#` title, `## Summary` and `## Test Coverage` (the small-change fast path needs only the title and its `**Branch**:` line), names `report-format.md` and writes no HTML |
 | `ZT_POST_GUARD_ENABLED` | `true` \| `false` | `false` | zero-trust-review posts nothing to the review host until the user approves |

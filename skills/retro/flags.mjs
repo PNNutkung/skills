@@ -41,6 +41,7 @@ export const FLAG = {
   transcripts: 'RETRO_TRANSCRIPTS_ENABLED',
   autoCollect: 'RETRO_AUTO_COLLECT_ENABLED',
   steeringMax: 'RETRO_STEERING_BYTES_MAX',
+  unenforcedRule: 'RETRO_UNENFORCED_RULE_CHECK_ENABLED',
 };
 export const STEERING_BYTES_DEFAULT = 8000;
 
@@ -52,6 +53,7 @@ export function readFlags(env = process.env) {
     ratchetHook: enabled(env, FLAG.ratchetHook, true),
     transcripts: enabled(env, FLAG.transcripts, true),
     autoCollect: enabled(env, FLAG.autoCollect, true),
+    unenforcedRule: enabled(env, FLAG.unenforcedRule, true),
     steeringMax: steeringSet ? steering : STEERING_BYTES_DEFAULT,
   };
 }

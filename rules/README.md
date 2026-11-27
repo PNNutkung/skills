@@ -9,6 +9,8 @@ When a guideline turns out to need enforcing, give it a hook or a gate and list 
 
 Skills installed with `npx skills add` get their own folder only, without `rules/`. Each SKILL.md therefore keeps a one-line summary of any rule it relies on and links here for the full text.
 
+Each rule is a top-level bullet in a `rules/*.md` file and ends with `<!-- rule: <file stem>/<slug> -->`. [`enforcers.json`](./enforcers.json) says what enforces each id: `enforced` (a path, `path#symbol` or `ratchet:<id>`), `partial` or `judgment` (each with a reason). To add a rule, add the bullet with a new id and its entry; `rules/checks/rule-enforcers.mjs` fails CI when the two disagree (ADR 0013). The retro skill records which rule a finding broke in `docs/retro/rule-hits.json`, and a repeat of a `partial` or `judgment` rule needs a proposal that names a higher level.
+
 ## Guidelines
 
 | File | What it covers | Used by |
@@ -50,6 +52,8 @@ Every flag, its values and its default: [README, Flags](../README.md#flags).
 | retro: no rule in `.ratchet.json` gets worse in any file; a lower count is written and staged; moving old violations into another file needs `accept` with a reason | the git pre-commit hook that `ratchet.mjs install` installs (never over a hook it did not write), and `ratchet.mjs check --ci` in CI | on; `RETRO_RATCHET_PRECOMMIT_HOOK_ENABLED=false` skips installing and running the hook |
 | retro: a finding is `passed` only when code re-checks its evidence; a proposal for a `not-passed` or `no-evidence` finding fails | `retro.mjs check` (`evidence.mjs`) | always |
 | retro: every file changed after collect belongs to a proposal the user approved by id | `retro.mjs applied-check` (`approvals.mjs`) | always |
+| Every top-level bullet in `rules/*.md` ends with a unique `<!-- rule: <stem>/<slug> -->` id, and `rules/enforcers.json` has one valid entry per id (status, reason, enforcers that exist) | `rules/checks/rule-enforcers.mjs`, run by `rules/checks/rule-enforcers.test.mjs` in CI (parser: `skills/retro/rules.mjs`) | always (CI) |
+| retro: a repeat of a `partial` or `judgment` rule (hit on an earlier branch in `docs/retro/rule-hits.json`, or 2+ evidence items) has a proposal with `level` or `noLevel` | `retro.mjs check` (`levelErrors` in `rules.mjs`) | on; `RETRO_UNENFORCED_RULE_CHECK_ENABLED=false` turns it off |
 | retro: transcript quotes are redacted and no transcript text is written into the repo | `redact.mjs` in `collect` and `check` | always |
 | No more than N agents in a review or TDD run | `workflow.js` `agentCap` | `ZT_AGENT_MAX`, `PTDD_AGENT_MAX` (a number, or `unlimited`, the default) |
 | A medium+ finding with no proof is never confirmed | `workflow.js`, `proofcheck.mjs` | always |

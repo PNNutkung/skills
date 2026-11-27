@@ -28,7 +28,8 @@
     },
     "plugin-version-pin": {},
     "spawn-async-timeout": {},
-    "test-serial": {}
+    "test-serial": {},
+    "version-regex": {}
   },
   "patterns": {
     "cross-skill-import": {
@@ -54,6 +55,10 @@
     "test-serial": {
       "regex": "test-concurrency[= ]1\\b|concurrency:\\s*(1|false)\\b",
       "glob": "**/*.{mjs,yml}"
+    },
+    "version-regex": {
+      "regex": "version,\\s*/[^/\\n]*\\[\\d-\\d\\]",
+      "glob": "**/*.test.mjs"
     }
   },
   "accepted": []
