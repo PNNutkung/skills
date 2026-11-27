@@ -1,0 +1,31 @@
+[
+  {
+    "skills": ["ticket-writer"],
+    "query": "The retro found that the docs check is slow. Open a follow-up issue for it.",
+    "files": [],
+    "expected_behavior": [
+      "Measures today's value (for example the check's run time) before writing, and writes where the number came from",
+      "Writes the body from ticket.mjs template with Why, Expected outcome (metric, today, target), If we do nothing and How we know first",
+      "Asks the user for the target or proposes one and asks, instead of posting a guessed target as agreed",
+      "Runs ticket.mjs issue-check --body <file> until ok, then gh issue create --body-file <file>, then reads the issue back and checks it again"
+    ]
+  },
+  {
+    "skills": ["ticket-writer"],
+    "query": "Write the PR description for this branch and open the PR.",
+    "files": [],
+    "expected_behavior": [
+      "Starts the PR body with the 4 sections; when a DoD exists, uses dod.mjs render --pr for them",
+      "Opens the PR with --body-file, not --fill or the editor, so the ticket-why-guard hook can read the body"
+    ]
+  },
+  {
+    "skills": ["ticket-writer"],
+    "query": "Rewrite issue #12 so people understand why we do it.",
+    "files": [],
+    "expected_behavior": [
+      "Saves the original body first and keeps every original sentence below the 4 sections",
+      "Shows the new text to the user and posts only after the user says yes"
+    ]
+  }
+]
