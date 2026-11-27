@@ -12,7 +12,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { availableParallelism, homedir } from 'node:os';
 import { basename, dirname, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { adrItems, adrNumber, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
+import { adrItems, adrNumber, adrOutcomes, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
 import { ciCheck } from './ci.mjs';
 import { candidatesFromDiff, claimItems } from './claims.mjs';
 import { describeExpect, flagErrorShown, judge } from './expect.mjs';
@@ -21,7 +21,7 @@ import { FILES, SLUG_RE, findAdr, git, readJson, readOr, removeFile, repoRoot, v
 import { duplicateMarked, markedSections, splitSections } from './marker.mjs';
 import { runDir, sessionMarker } from './paths.mjs';
 import { KIND, checkPlan, flipped } from './plan.mjs';
-import { CAP, capOutput, fileHeader, mergeSections, renderSection } from './section.mjs';
+import { CAP, capOutput, fileHeader, mergeSections, outcomesSection, placeOutcomes, renderSection } from './section.mjs';
 import { runCommand } from './runner.mjs';
 import { changedSince, snapshot } from './snapshot.mjs';
 
@@ -131,7 +131,7 @@ function context({ run, state }) {
   const answers = parseAnswers(readOr(join(run, FILES.answers)));
   if (state.adr) {
     const text = readOr(state.adr);
-    return { items: adrItems(text), booked: bookedEnvs(text), newFlags: newFlags(text), answers, errors: [], adrNo: adrNumber(state.adr) };
+    return { items: adrItems(text), booked: bookedEnvs(text), newFlags: newFlags(text), outcomes: adrOutcomes(text), answers, errors: [], adrNo: adrNumber(state.adr) };
   }
   const raw = readOr(join(run, FILES.claims), null);
   if (raw === null) return { items: [], booked: [], newFlags: [], answers, errors: [], adrNo: null };
@@ -236,7 +236,11 @@ function section(e, { env, run, pass, why, output, result }) {
 
 function writeSections(ctx, c, sections) {
   const f = verifyPath(ctx.state.repo, ctx.state.slug);
-  writeText(f, mergeSections(readOr(f, null), sections, fileHeader(ctx.state.slug, c.adrNo)));
+  const md = mergeSections(readOr(f, null), sections, fileHeader(ctx.state.slug, c.adrNo));
+  // ADR 0012 VerifyOut: each expected outcome met or not from its items' results; an ADR with no outcomes table gets no section
+  const outs = c.outcomes ?? [];
+  const results = Object.fromEntries(splitSections(md).filter(p => p.id).map(p => [p.id, /^result:\s*(.*)$/m.exec(p.text)?.[1].trim()]));
+  writeText(f, placeOutcomes(md, outs.length ? outcomesSection(outs, results) : null));
   return f;
 }
 

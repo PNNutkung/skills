@@ -68,3 +68,37 @@ export function parseAnswers(text) {
 }
 
 export const adrNumber = path => /^(\d{4})-/.exec(basename(String(path ?? '')))?.[1] ?? null;
+
+const OUTCOME_HEADING_RE = /^#{2,4}\s+Expected outcome\s*$/;
+const ANY_HEADING_RE = /^#{1,6}\s/;
+const FENCE_LINE_RE = /^\s*(```|~~~)/;
+const cells = line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'));
+
+/**
+ * [{ metric, today, target, provenBy }] from the table under `### Expected outcome` (ADR 0012); [] when the ADR has none.
+ * Copied rule, not an import of ticket-writer: verify works alone (ADR 0009 A9). Only a table with a Proven by column counts.
+ */
+export function adrOutcomes(adr) {
+  const lines = String(adr ?? '').split('\n');
+  let fence = false, at = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (FENCE_LINE_RE.test(lines[i])) { fence = !fence; continue; }
+    if (!fence && OUTCOME_HEADING_RE.test(lines[i])) { at = i; break; }
+  }
+  if (at < 0) return [];
+  const table = [];
+  for (const line of lines.slice(at + 1)) {
+    if (ANY_HEADING_RE.test(line) || FENCE_LINE_RE.test(line)) break;
+    if (line.trim().startsWith('|')) table.push(cells(line));
+    else if (table.length) break;
+  }
+  if (table.length < 2) return [];
+  const head = table[0].map(h => h.toLowerCase());
+  const col = names => head.findIndex(h => names.includes(h));
+  const ix = { metric: col(['metric']), today: col(['today', 'baseline']), target: col(['target']), proof: col(['proven by']) };
+  if (Object.values(ix).some(i => i < 0)) return [];
+  return table.slice(2).map(r => ({
+    metric: r[ix.metric] ?? '', today: r[ix.today] ?? '', target: r[ix.target] ?? '',
+    provenBy: String(r[ix.proof] ?? '').split(',').map(s => s.trim()).filter(Boolean),
+  }));
+}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { adrItems, adrNumber, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
+import { adrItems, adrNumber, adrOutcomes, bookedEnvs, flagNames, newFlags, parseAnswers } from './adr.mjs';
 
 const ADR = `---
 dod: demo
@@ -67,4 +67,43 @@ test('should read items right below the heading and a flag removed at the start 
 
 test('should keep the text whole when an item has no test-kind prefix (Source edge)', () => {
   assert.deepEqual(adrItems('## Definition of done\n- [ ] Plan (A1 note) x'), [{ id: 'Plan', text: '(A1 note) x' }]);
+});
+
+const WHY_ADR = `# 12. Ticket why
+
+## Context
+
+### Why
+
+Tickets do not say why.
+
+### Expected outcome
+
+| Metric | Today | Target | Proven by |
+|---|---|---|---|
+| Tickets with the 4 sections | 0 | every new ticket | Render, TicketCheck |
+| Time to read a ticket | - | not measurable: no clock on reading | Read |
+
+### If we do nothing
+
+People guess.
+
+## Definition of done
+
+- [ ] Render (happy): the 4 sections come first (A1)
+`;
+
+test('should read each outcome row with its proving items when the ADR has an Expected outcome table (VerifyOut)', () => {
+  assert.deepEqual(adrOutcomes(WHY_ADR), [
+    { metric: 'Tickets with the 4 sections', today: '0', target: 'every new ticket', provenBy: ['Render', 'TicketCheck'] },
+    { metric: 'Time to read a ticket', today: '-', target: 'not measurable: no clock on reading', provenBy: ['Read'] },
+  ]);
+});
+
+test('should return no outcomes when the ADR has no Expected outcome section or the table has no Proven by column (VerifyOut edge)', () => {
+  assert.deepEqual(adrOutcomes(ADR), []);
+  assert.deepEqual(adrOutcomes(''), []);
+  assert.deepEqual(adrOutcomes('### Expected outcome\n\n| Metric | Today | Target |\n|---|---|---|\n| a | 0 | 1 |\n'), []);
+  // a `### Expected outcome` inside a code block is not the section
+  assert.deepEqual(adrOutcomes('```\n### Expected outcome\n\n| Metric | Today | Target | Proven by |\n|---|---|---|---|\n| a | 0 | 1 | X |\n```\n'), []);
 });
