@@ -95,7 +95,7 @@ test('should refuse the mark and write nothing when the id is not a survivor or 
     [['--add', G_SURVIVOR, '--reason', 'same output'], /at least 20 characters/],
   ]) {
     const r = await fx.go('equivalent', args);
-    assert.notEqual(r.status, 0, `${args.join(' ')} must be refused`);
+    assert.equal(r.status, 1, `${args.join(' ')} must be refused with exit 1`);
     assert.match(r.err, re);
     assert.equal(existsSync(join(fx.run, 'mutation-equivalent.json')), false, 'a refused mark writes nothing');
   }
@@ -108,4 +108,17 @@ test('should stop applying a mark when the marked line changes, since the mutant
   put(fx.repo, { [CALC]: 'export const f = () => 2;\nexport const g = () => 5;\n' }); // a new edit on line 2: a new mutant id, still untested
   const again = await fx.go('final', ['--again']);
   assert.match(again.out, /^FINAL ok=false/m, again.out);
+});
+
+test('should check the mark against the green result when no final has run yet (EquivJudge edge)', async t => {
+  const fx = mfx(t, { env: TW_OFF });
+  await fx.planOk();
+  put(fx.repo, { [CALC_TEST]: jsTest([['f', 2]]) });
+  assert.match((await fx.go('red', ['--group', 'a'])).out, /^RED a ok=true/);
+  put(fx.repo, { [CALC]: FG });
+  assert.match((await fx.go('green', ['--group', 'a'])).out, /^GREEN a ok=false/);
+  const add = await fx.go('equivalent', ['--add', G_SURVIVOR, '--reason', REASON]);
+  assert.equal(add.status, 0, add.err);
+  assert.deepEqual(marksOf(fx).marks.map(m => m.id), [G_SURVIVOR]);
+  assert.match((await fx.go('final')).out, /^FINAL ok=true/m, 'final runs with the mark');
 });

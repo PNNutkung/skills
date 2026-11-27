@@ -107,3 +107,26 @@ test('should plan without an Interface section when the test writer is off (Inte
   const r = await fx.planRaw();
   assert.equal(r.status, 0, r.err);
 });
+
+test('should stop a fast plan with an inline dod[] and name both fixes when the test writer is on (Interface fail)', async t => {
+  const fx = mfx(t, { plan: FAST, env: { PTDD_TEST_WRITER_ENABLED: 'true' } });
+  const r = await fx.planRaw();
+  assert.equal(r.status, 2, r.err);
+  assert.match(r.err, /dodFile/);
+  assert.match(r.err, /PTDD_TEST_WRITER_ENABLED=false/);
+});
+
+test('should stop plan when the ADR has an Interface heading with no text under it (Interface edge)', async t => {
+  const fx = mfx(t, { adr: 'empty', plan: FAST, env: { PTDD_TEST_WRITER_ENABLED: 'true' } });
+  const r = await fx.planRaw();
+  assert.equal(r.status, 2, r.err);
+  assert.match(r.err, /## Interface|Interface section/);
+});
+
+test('should never stop a paired plan for the Interface when the test writer is on (Interface edge)', async t => {
+  for (const opts of [{ adr: 'bare', plan: { mode: 'paired' } }, { plan: { mode: 'paired' } }]) {
+    const fx = mfx(t, { ...opts, env: { PTDD_TEST_WRITER_ENABLED: 'true', PTDD_PIPELINE_MODE: 'paired' } });
+    const r = await fx.planRaw();
+    assert.equal(r.status, 0, `${JSON.stringify(opts)}: ${r.err}`);
+  }
+});

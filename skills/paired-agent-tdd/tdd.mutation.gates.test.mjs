@@ -19,11 +19,31 @@ async function greenOf(fx, { test, src, testFile = CALC_TEST, srcFile = CALC }) 
 const mutationReason = gate => (gate.reasons ?? []).some(x => /mutant|mutation|score/i.test(x));
 
 // ---------------------------------------------------------------- Score: (killed + timeout) / all sampled; skipped and inconclusive are not killed
-test('should pass green when the score reaches PTDD_MUTATION_SCORE_MIN although a mutant survived (Score happy)', async t => {
-  const fx = mfx(t, { env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: '50' } });
-  const { r, gate } = await greenOf(fx, { test: jsTest([['f', 2]]), src: FG }); // f's mutant is killed, g's survives: 1 of 2 = 50
+// f wrong exits 1 (killed with killExits [1]), g wrong exits 2 (inconclusive): the score is 50 with no survivor
+const SPLIT_TEST = "// test_ac1_happy\nimport { f, g } from '../src/calc.mjs';\nif (f() !== 2) process.exit(1);\nif (g() !== 3) process.exit(2);\n";
+const SPLIT = { plan: { killExits: [1] } };
+
+test('should pass green when the score reaches PTDD_MUTATION_SCORE_MIN and the mutants not killed are inconclusive (Score happy)', async t => {
+  const fx = mfx(t, { ...SPLIT, env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: '50' } });
+  const { r, gate } = await greenOf(fx, { test: SPLIT_TEST, src: FG }); // f's mutant is killed, g's is inconclusive: 1 of 2 = 50
   assert.match(r.out, /^GREEN a ok=true/, r.out);
   assert.equal(gate.ok, true);
+});
+
+test('should fail green at the default min 100 when half the mutants are inconclusive (Score fail)', async t => {
+  const fx = mfx(t, { ...SPLIT, env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: undefined } });
+  const { r, gate } = await greenOf(fx, { test: SPLIT_TEST, src: FG });
+  assert.match(r.out, /^GREEN a ok=false/, r.out);
+  assert.ok(mutationReason(gate), JSON.stringify(gate.reasons));
+});
+
+test('should fail green on a surviving mutant whatever the min when PTDD_MUTATION_SCORE_MIN is 0 or 50 (Score fail)', async t => {
+  for (const min of ['0', '50']) {
+    const fx = mfx(t, { env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: min } });
+    const { r, gate } = await greenOf(fx, { test: jsTest([['f', 2]]), src: FG }); // g's mutant survives
+    assert.match(r.out, /^GREEN a ok=false/, `min ${min}: ${r.out}`);
+    assert.ok(mutationReason(gate), JSON.stringify(gate.reasons));
+  }
 });
 
 test('should fail green when a mutant survives and PTDD_MUTATION_SCORE_MIN is unset, the default 100 (Score fail)', async t => {
@@ -51,8 +71,8 @@ test('should fail green when the mutation budget skips every mutant, since skipp
 test('should pass green at score 0 when PTDD_MUTATION_SCORE_MIN is 0 and fail it at 51 when the score is 50 (Score edge)', async t => {
   const zero = mfx(t, { plan: { killExits: [3] }, env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: '0' } });
   assert.match((await greenOf(zero, { test: jsTest([['f', 2], ['g', 3]]), src: FG })).r.out, /^GREEN a ok=true/, 'every mutant inconclusive: 0 >= 0');
-  const above = mfx(t, { env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: '51' } });
-  assert.match((await greenOf(above, { test: jsTest([['f', 2]]), src: FG })).r.out, /^GREEN a ok=false/, '50 < 51');
+  const above = mfx(t, { ...SPLIT, env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: '51' } });
+  assert.match((await greenOf(above, { test: SPLIT_TEST, src: FG })).r.out, /^GREEN a ok=false/, '50 < 51, no survivor');
   const all = mfx(t, { env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: '100' } });
   assert.match((await greenOf(all, { test: jsTest([['f', 2], ['g', 3]]), src: FG })).r.out, /^GREEN a ok=true/, 'every mutant killed: 100 >= 100');
 });
@@ -72,6 +92,15 @@ test('should fail green and name the file when a changed shell file gets 0 mutan
   const { r, gate } = await greenOf(fx, { test: SH_TEST, src: 'echo hello\n', testFile: 'tests/test_run.sh', srcFile: 'src/run.sh' });
   assert.match(r.out, /^GREEN a ok=false/, r.out);
   assert.ok((gate.reasons ?? []).some(x => x.includes('src/run.sh')), JSON.stringify(gate.reasons));
+});
+
+test('should keep data and config files exempt and skip the check at min 0 when a changed file gets 0 mutants (NoMutants edge)', async t => {
+  const txt = mfx(t, { plan: { cmd: 'sh {file}', groups: [{ id: 'a', tests: ['tests/test_note.sh'], src: ['src/note.txt'], dod: ['AC1'], after: [] }] }, env: TW_OFF });
+  const note = await greenOf(txt, { test: '# test_ac1_happy\ngrep -q hello src/note.txt\n', src: 'hello\n', testFile: 'tests/test_note.sh', srcFile: 'src/note.txt' });
+  assert.match(note.r.out, /^GREEN a ok=true/, `.txt is data: ${note.r.out}`);
+  const zero = mfx(t, { plan: SH, env: { ...TW_OFF, PTDD_MUTATION_SCORE_MIN: '0' } });
+  const sh = await greenOf(zero, { test: SH_TEST, src: 'echo hello\n', testFile: 'tests/test_run.sh', srcFile: 'src/run.sh' });
+  assert.match(sh.r.out, /^GREEN a ok=true/, `the 0-mutant check applies only while the min is above 0: ${sh.r.out}`);
 });
 
 test('should keep a config file exempt when it gets 0 mutants, and still fail when the accept names another file (NoMutants edge)', async t => {

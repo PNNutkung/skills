@@ -123,7 +123,7 @@ async function runIn(lang, env, tweak) {
     groups: [{ id: 'a', goal: 'slugify', tests: [G.a.tests], src: [G.a.src], dod: ['AC1', 'AC2'], after: [] }, { id: 'b', goal: 'title, built on slugify', tests: [G.b.tests], src: [G.b.src], dod: ['AC3'], after: ['a'] }],
   };
   const r = await runE2E({
-    spawn: (file, args, fixtureEnv) => spawnSync(file, args, { encoding: 'utf8', env: { ...process.env, ...fixtureEnv, ...env } }),
+    spawn: (file, args, fixtureEnv) => spawnSync(file, args, { encoding: 'utf8', env: { ...process.env, PTDD_TEST_WRITER_ENABLED: 'false', ...fixtureEnv, ...env } }), // ADR 0011: the one tdd-driver these runs measure; an inline dod[] fast plan with the test writer on stops
     runner: RUNNER, plan, groups: G, prefix: 'pat-e2e-speed-',
     scripts: tools => ({
       'integration-tester': () => { tools.put(L.integ, L.integText); return { file: L.integ, exit: 0, findings: [] }; },

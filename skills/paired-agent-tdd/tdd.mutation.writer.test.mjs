@@ -124,6 +124,15 @@ test('should refuse green --retest when the test writer is on (TestsOwned fail)'
   assert.match(r.err, /red --rewrite|test writer/);
 });
 
+test('should re-baseline RED with red --rewrite when the test writer is off too (TestsOwned edge)', async t => {
+  const fx = await builtFast(t, TW_OFF);
+  put(fx.repo, { [CALC_TEST]: REWRITTEN });
+  const red = await fx.go('red', ['--group', 'a', '--rewrite']);
+  assert.equal(red.status, 0, red.err);
+  assert.match(red.out, /^RED a ok=true/, red.out);
+  assert.match((await fx.go('green', ['--group', 'a'])).out, /^GREEN a ok=true/);
+});
+
 test('should fail red --rewrite when the rewritten test already passes, and allow green --retest when the test writer is off (TestsOwned edge)', async t => {
   const fx = await builtFast(t);
   put(fx.repo, { [CALC_TEST]: '// test_ac1_happy\nprocess.exit(0);\n' });
@@ -160,4 +169,50 @@ test('should still give the test writer the DoD and the ADR Interface when it fi
   const writers = r.of('test-writer'), again = writers[writers.length - 1];
   assert.ok(writers.length >= 2);
   assert.ok(again.prompt.includes(DOD_TEXT) && sees(again.prompt, fx.args), again.prompt.slice(0, 400));
+});
+
+// ---------------------------------------------------------------- the test writer rejects a note: the code driver gets the reason
+test('should give the next code driver the reason when the test writer rejects a testWrong note (TestsOwned happy)', async t => {
+  const fx = await fastPlan(t);
+  const REJECT = { test: WRONG.test, reason: 'REJECT-4M: the DoD says g gives 3, so the edge test is right' };
+  const r = await play(fx.args, { 'code-driver': wrongOnce, 'test-writer': (label, n, dflt) => (n === 2 ? { ...dflt, rejected: [REJECT] } : dflt) });
+  const drivers = r.of('code-driver');
+  assert.ok(drivers.length >= 2, r.calls.map(c => c.o.label).join(', '));
+  assert.ok(drivers[1].prompt.includes(REJECT.reason), 'the rejection reason reaches the code driver');
+  assert.ok(!drivers[0].prompt.includes(REJECT.reason));
+});
+
+// ---------------------------------------------------------------- the judge: after a not-ok final with survivors; marks, final again, unmarked survivors to the test writer
+// Names chosen here (the ADR leaves them open): the reviewer, which runs `tdd.mjs final` first, reports the final gate as final: {ok, survivors} (and survivors at the top);
+// the judge returns {done, marked: [ids], unmarked: [ids]}.
+const S = { id: 'X-1a2b3c4d', file: CALC, line: 2, op: 'const-inc', before: 'export const g = () => 3;', after: 'export const g = () => 4;', run: 'r1' };
+const finalNotOk = (label, n, dflt) => (n === 1 ? { ...dflt, findings: [], survivors: [S], final: { ok: false, survivors: [S] } } : dflt);
+const after = (r, label) => { const i = r.events.indexOf(`end ${label}`); return r.calls.filter(c => r.events.indexOf(`start ${c.o.label}`) > i); };
+
+test('should run the judge on the survivors and run final again when the final gate is not ok (EquivJudge happy)', async t => {
+  const fx = await fastPlan(t);
+  const r = await play(fx.args, { reviewer: finalNotOk, judge: (label, n, dflt) => ({ ...dflt, marked: [S.id], unmarked: [] }) });
+  noBrokenPrompt(r);
+  const [judge] = r.of('judge');
+  assert.ok(judge, `a judge ran: ${r.calls.map(c => c.o.label).join(', ')}`);
+  assert.ok(judge.prompt.includes(S.id), 'the judge sees the survivor');
+  assert.ok(judge.prompt.includes(`equivalent --run ${fx.args.runDir} --add`) && judge.prompt.includes('--reason'), 'the judge marks through tdd.mjs equivalent');
+  const later = [judge, ...after(r, judge.o.label)].map(c => c.prompt).join('\n');
+  assert.ok(later.includes(`final --run ${fx.args.runDir} --again`), 'final runs again with the marks');
+  assert.equal(after(r, judge.o.label).filter(c => c.node === 'test-writer').length, 0, 'every survivor was marked: nothing goes back to the test writer');
+});
+
+test('should send an unmarked survivor back to the test writer when the judge does not mark it (EquivJudge fail)', async t => {
+  const fx = await fastPlan(t);
+  const r = await play(fx.args, { reviewer: finalNotOk, judge: (label, n, dflt) => ({ ...dflt, marked: [], unmarked: [S.id] }) });
+  const [judge] = r.of('judge');
+  assert.ok(judge, 'a judge ran');
+  const writers = after(r, judge.o.label).filter(c => c.node === 'test-writer');
+  assert.ok(writers.length >= 1 && writers[0].prompt.includes(S.id), 'the test writer gets the survivor to kill');
+});
+
+test('should spawn no judge when the final gate has no survivor (EquivJudge edge)', async t => {
+  const fx = await fastPlan(t);
+  const r = await play(fx.args);
+  assert.equal(r.of('judge').length, 0);
 });

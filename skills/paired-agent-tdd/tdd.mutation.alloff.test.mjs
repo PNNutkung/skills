@@ -47,3 +47,10 @@ test('should plan a fast run with no Interface section, keep the one tdd-driver 
   assert.equal(r.status, 0, r.err);
   assert.match(r.out, /^GREEN a ok=true/, r.out);
 });
+
+test('should fail green on a surviving mutant as on main when every flag is off (AllOff fail)', async t => {
+  const fx = mfx(t, { env: OFF });
+  const r = await greenOf(fx, { test: jsTest([['f', 2]]), src: FG }); // g's mutant survives
+  assert.match(r.out, /^GREEN a ok=false/, r.out);
+  assert.match(r.out, /survived/);
+});

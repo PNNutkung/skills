@@ -25,9 +25,10 @@ const DOD = {
   slug: 'calc', touches: ['src/**'], items: [{ id: 'AC1', text: DOD_TEXT, source: u('A1') }],
   required: Object.fromEntries(['featureFlag', 'backwardCompat', 'nonGoals', 'verifyEnv', 'testTiers'].map(k => [k, { value: k, source: u('A1') }])),
 };
-/** the ADR text; iface: write a `## Interface` section (with INTERFACE_MARK) before the Consequences, else leave every Interface heading out */
-export function adrText({ iface = true } = {}) {
+/** the ADR text; iface: write a `## Interface` section (with INTERFACE_MARK) before the Consequences; empty: the heading with no text under it; else no Interface heading */
+export function adrText({ iface = true, empty = false } = {}) {
   const text = renderAdr({ dod: DOD, answers: ANSWERS, questions: QUESTIONS, ticket: '', number: 1, date: '2026-11-27' }).text.replace(/^## Interface\n[\s\S]*?(?=^## )/m, '');
+  if (empty) return text.replace(/^## Consequences$/m, '## Interface\n\n## Consequences');
   return iface ? text.replace(/^## Consequences$/m, `## Interface\n\n\`\`\`mermaid\nflowchart LR\n  t[test] --> c[calc.mjs]\n\`\`\`\n\n- ${INTERFACE_MARK}\n\n## Consequences`) : text;
 }
 
@@ -50,10 +51,10 @@ const JS_PLAN = { cmd: 'node {file}', mutation: undefined, dod: [{ id: 'AC1', te
 
 /**
  * A fixture repo plus fx.go(cmd, args, env) (fx.tdd with fx.env first) and fx.planOk(). plan: keys over the JavaScript plan above (a function gets the repo);
- * adr: 'iface' | 'bare' puts the fixture ADR at ADR_FILE in the base commit and sets plan.dodFile (no dod[]); env: the flags every command of this fixture gets.
+ * adr: 'iface' | 'empty' | 'bare' puts the fixture ADR at ADR_FILE in the base commit and sets plan.dodFile (no dod[]); env: the flags every command of this fixture gets.
  */
 export function mfx(t, { files = {}, plan = {}, env = {}, adr } = {}) {
-  const adrFiles = adr ? { [ADR_FILE]: adrText({ iface: adr === 'iface' }) } : {};
+  const adrFiles = adr ? { [ADR_FILE]: adrText({ iface: adr === 'iface', empty: adr === 'empty' }) } : {};
   const fx = fixture(t, { files: { ...adrFiles, ...files }, plan: repo => ({ ...JS_PLAN, ...(adr ? { dod: undefined, dodFile: ADR_FILE } : {}), ...(typeof plan === 'function' ? plan(repo) : plan) }) });
   fx.env = env;
   fx.go = (cmd, args = [], more = {}) => fx.tdd(cmd, args, { ...fx.env, ...more });
@@ -88,9 +89,10 @@ export function respond(args, over = {}) {
     const [node, gid] = label.split(':'), g = (args.groups || []).find(x => x.id === gid) || (args.groups || [])[0], n = (seen[node] = (seen[node] || 0) + 1);
     const rows = rowsOf(g, args.dod || []);
     const dflt = {
-      'test-writer': { matrix: rows, files: g.tests, reuse: 'codebase', gateOk: true, gateRuns: 1, remaining: [], notes: '' },
-      'code-driver': { files: g.src, srcFiles: g.src, reuse: 'docs', cleanup: 'none', gateOk: true, gateRuns: 1, testWrong: [], testGaps: [], remaining: [], notes: '' },
-      judge: { marks: [], notes: '' },
+      // ADR 0011 returns: the test writer {done, rejected}, the code driver {done, testWrong}; the other keys are what the existing drivers return
+      'test-writer': { done: true, rejected: [], matrix: rows, files: g.tests, reuse: 'codebase', gateOk: true, gateRuns: 1, remaining: [], notes: '' },
+      'code-driver': { done: true, testWrong: [], files: g.src, srcFiles: g.src, reuse: 'docs', cleanup: 'none', gateOk: true, gateRuns: 1, testGaps: [], remaining: [], notes: '' },
+      judge: { done: true, marked: [], unmarked: [], notes: '' },
       'tdd-driver': { matrix: rows, files: g.tests, srcFiles: g.src, reuse: 'codebase', cleanup: 'none', gateOk: true, gateRuns: 1 },
       'red-driver': { matrix: rows, files: g.tests, reuse: 'codebase', gateOk: true, gateRuns: 1 },
       'green-driver': { files: g.src, reuse: 'docs', cleanup: 'none', gateOk: true, gateRuns: 1 },
