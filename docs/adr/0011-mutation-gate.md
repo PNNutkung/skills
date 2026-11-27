@@ -336,6 +336,34 @@ Recommended: A
 Answer: A (approve: commit the ADR, close the DoD session, start TDD (tests written by a subagent that sees only the ADR, then code))
 Trade-off accepted: a later API change needs an ADR edit and a new approval
 
+### A20: The Q16 example ([a-z0-9] -> [a-z0-10]) is not equivalent (digits 2-9 stop matching). What happens to EquivSkip?
+
+Context: checked with node; the EquivSkip DoD item and the ADR use this example; measure.md corrected
+Options considered (the agent's analysis when the question was asked):
+- (A) drop EquivSkip; the judge agent (EquivJudge) handles every equivalent mutant
+  - pro: no rule can skip a mutant that is a real test gap
+  - con: the judge decides every one
+- (B) keep the skip mechanism with an empty list; a pattern joins only with a test that proves it equivalent
+  - pro: matches Q16 C; patterns can be added later safely
+  - con: today no pattern lowers the judge's work
+Recommended: B
+Answer: B (keep the skip mechanism with an empty list; a pattern joins only with a test that proves it equivalent)
+Trade-off accepted: today no pattern lowers the judge's work
+
+### A21: Which tests does the gate run for each mutant?
+
+Context: dogfood on this branch: score 46.65% (216 killed / 463); 91 survivors in proc.mjs, code moved from zero-trust-review whose old tests were not changed, so the gate (changed tests only) did not run them
+Options considered (the agent's analysis when the question was asked):
+- (A) the changed tests and every existing test file that imports a changed source (select.mjs import graph)
+  - pro: moved or lightly edited code is killed by its existing tests; no duplicate tests
+  - con: each mutant runs more tests, so slower
+- (B) only the changed tests, as the ADR says now
+  - pro: fast
+  - con: code that only moved needs new tests although old tests cover it
+Recommended: A
+Answer: A (the changed tests and every existing test file that imports a changed source (select.mjs import graph))
+Trade-off accepted: each mutant runs more tests, so slower
+
 ## Interface
 
 Approved by Nut before TDD (A13). Diagram:
@@ -368,7 +396,8 @@ flowchart LR
 - `score.mjs`: `scoreOf(mutants, {min}) -> {value, pass, counted, equivalent}`. `value = 100 * (killed + timeout) / (total - equivalent)`; skipped, inconclusive and unverifiable count as not killed (A1). `counted = 0` gives `value: null, pass: false`.
 - `equivalent.mjs`: file `mutation-equivalent.json` = `{"schema": 1, "marks": [{"id", "file", "line", "reason", "judge"}]}`. `addMarks(path, marks, result)` refuses an id that is not a survivor of `result` and a reason under 20 characters. A mark applies only while the mutant id (a hash of file, line and edit) is the same.
 - `select.mjs`: `testsFor(file, tests, repo) -> string[]`: the test files whose static `import`/`require` graph reaches `file`; a language without a graph gets every test. A killed mutant still stops at the first failing test file.
-- `mutants.mjs`: moved from zero-trust-review. EquivSkip: no `const-inc`/`const-dec` on a digit inside a regex character class; every skipped pattern has a test that shows the edit matches the same strings.
+- Test set (A21): every gate passes `tests` = the changed test files plus every existing test file in the repo whose import graph reaches a changed source; `select` then narrows it per mutant.
+- `mutants.mjs`: moved from zero-trust-review. EquivSkip (A20): `EQUIV_SKIP` is a list of known-equivalent patterns that `generate` does not emit; it starts empty. A pattern joins the list only in the same commit as a test that proves its edit matches the same inputs as the original.
 - `proc.mjs`: the git, tree and process helpers that `probelib.mjs` held (`gitOut`, `changes`, `extract`, `runIn`, `pool`, `shq`, `isSource`, `TEST`, `DOC`); `probelib.mjs` re-exports them, so zero-trust-review's other tools do not change.
 - `cli.mjs`: `node cli.mjs --repo . --base REV --head REV --cmd '...' --runner PATH [--tests ...] [--max N|unlimited] [--score-min N] [--equivalent FILE] [--reuse FILE]...` prints the Result as JSON.
 - `SKILL.md`: when to call it alone ("mutation-test my change"), the options, and the equivalent-file rule. `MUTATION_DIR` overrides the folder, like `ZT_DIR`.
@@ -389,7 +418,7 @@ flowchart LR
 ### dev-workflow
 
 - Flags: `WORKFLOW_MUTATION_CHECK_ENABLED` (`true|false`, default `true`), `WORKFLOW_MUTATION_SCORE_MIN` (0-100, default 100).
-- `next` from `tdd`: runs `runMutation` on the branch's changed source and test files against the merge base, with the test command given once by `next --test-cmd '...'` and kept in the run; writes `RUN/mutation.json`; refuses with the survivor list when `pass` is false. It reads ptdd's equivalent file when present, else `RUN/mutation-equivalent.json`.
+- `next` from `tdd`: runs `runMutation` on the branch's changed source files against the merge base, with the A21 test set, with the test command given once by `next --test-cmd '...'` and kept in the run; writes `RUN/mutation.json`; refuses with the survivor list when `pass` is false. It reads ptdd's equivalent file when present, else `RUN/mutation-equivalent.json`.
 - Step 3 (lock) tells the agent to write `## Interface` with a diagram into the ADR; `dod.mjs adr` writes an empty `## Interface` heading for it.
 
 ### All flags off
@@ -415,14 +444,17 @@ Trade-offs we accepted:
 - A16: mutator change in zero-trust-review; the pattern list needs care
 - A18: the shared helpers in probelib.mjs move or are split: a larger diff
 - A19: a later API change needs an ADR edit and a new approval
+- A20: today no pattern lowers the judge's work
+- A21: each mutant runs more tests, so slower
 
 ## Definition of done
 
-<!-- dod: written by dod.mjs adr; do not edit; sha256:c19b6c753397aa73 -->
+<!-- dod: written by dod.mjs adr; do not edit; sha256:9521024610ac919b -->
 
 - [ ] Score (happy, fail, edge): ptdd green gate: score = (killed + timeout) / all sampled mutants, skipped and inconclusive count as not killed; green is ok only when score >= PTDD_MUTATION_SCORE_MIN (default 100) (A1)
 - [ ] WorkflowGate (happy, fail, edge): dev-workflow: next from the tdd step needs a mutation result with score >= WORKFLOW_MUTATION_SCORE_MIN, however TDD ran (A2)
-- [ ] WorkflowRuns (happy, fail, edge): workflow.mjs next runs mutate.mjs itself on the branch's changed sources and changed tests and stores the result in the run folder; the agent never supplies the score (A11)
+- [ ] WorkflowRuns (happy, fail, edge): workflow.mjs next runs runMutation itself on the branch's changed sources and stores the result in the run folder; the agent never supplies the score (A11)
+- [ ] TestSelect (happy, fail, edge): every gate (ptdd green and final, dev-workflow next) runs, for each mutant, the changed tests plus every existing test file whose import graph reaches the mutated source (select.mjs) (A21)
 - [ ] OffByAnswer (happy, fail, edge): plan.mutation.off is accepted only with a user answer id (mutation: {off: "A9"}); plain off makes plan stop with an error naming the new form (A3)
 - [ ] NoMutants (happy, fail, edge): a changed code file that gets 0 mutants makes green not ok unless the plan names a user answer id for it; config and data files in src stay exempt (A4)
 - [ ] ToolsIssue (happy, fail, edge): a GitHub issue is opened for Stryker (JS/TS) and mutmut (Python) as optional mutators; this work keeps the built-in mutator (A5)
@@ -436,7 +468,7 @@ Trade-offs we accepted:
 - [ ] Flags (happy, fail, edge): five flags: PTDD_MUTATION_SCORE_MIN=100 (0-100), PTDD_MUTATION_MAX=unlimited, PTDD_TEST_WRITER_ENABLED=true, WORKFLOW_MUTATION_CHECK_ENABLED=true, WORKFLOW_MUTATION_SCORE_MIN=100; an invalid value is a hard error; README Flags rows (A12)
 - [ ] RealRun (happy, fail, edge): one real ptdd run with agents on the vreal kit on Nut's machine with the test writer on: the run finishes and its gates pass (A14)
 - [ ] EquivJudge (happy, fail, edge): a judge agent that is neither the code driver nor the test writer may mark a surviving mutant equivalent with a written reason; marked mutants leave the score; the list is in the PR body and the final gate report (A16)
-- [ ] EquivSkip (happy, fail, edge): the zero-trust-review mutator does not generate known-equivalent patterns (e.g. a digit range inside a regex character class); each skipped pattern has a test showing it is equivalent (A16)
+- [ ] EquivSkip (happy, fail, edge): the mutator keeps a skip mechanism for known-equivalent patterns, and the pattern list starts empty; a pattern joins the list only together with a test that proves its edit matches the same inputs (A20)
 - [ ] Module (happy, fail, edge): the mutation engine, mutators, score and equivalent-file reader live in a new skill folder skills/mutation/ with a short SKILL.md; the runner is passed in; the engine reads no env flags (each caller passes options); zero-trust-review/mutate.mjs stays a thin wrapper with the same CLI, output and ZT_MUTATION_* flags; MUTATION_DIR overrides the path (A18)
 
 - feature flag: PTDD_MUTATION_SCORE_MIN=0-100 default 100; PTDD_MUTATION_MAX=<n>|unlimited default unlimited; PTDD_TEST_WRITER_ENABLED=true|false default true; WORKFLOW_MUTATION_CHECK_ENABLED=true|false default true; WORKFLOW_MUTATION_SCORE_MIN=0-100 default 100; invalid value = hard error (A12)
