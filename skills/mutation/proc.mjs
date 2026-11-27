@@ -228,8 +228,9 @@ const NODE_FILE = /\.(mjs|js|cjs)$/i;
 const runnerCommand = argv => (NODE_FILE.test(argv[0]) ? [process.execPath, argv] : [argv[0], argv.slice(1)]);
 
 // env: the runner's own environment (undefined: this process's); inprocess: the caller runs the built-in direct runner in this process (its --check prints `direct`)
-export function backendOf(runner, env, { inprocess = false } = {}) {
+export const CHECK_TIMEOUT_MS = 15000; // a runner's --check that takes longer is no backend
+export function backendOf(runner, env, { inprocess = false, timeout = CHECK_TIMEOUT_MS } = {}) {
   if (inprocess) return 'direct';
-  const r = spawnSync(...runnerCommand([runner, '--check']), { ...(env ? { env } : {}), encoding: 'utf8', timeout: 15000 });
+  const r = spawnSync(...runnerCommand([runner, '--check']), { ...(env ? { env } : {}), encoding: 'utf8', timeout });
   return r.status === 0 ? r.stdout.trim().split('\n')[0].slice(0, 40) || 'sandbox' : 'none';
 }

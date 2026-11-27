@@ -12,7 +12,7 @@ const IMPORT = { p: /^\s*(import|from)\s/, j: /^\s*import\s|require\(/, c: /^\s*
 const COND = /\b(if|elif|while|assert|and|or|return)\b/;
 
 // same length as the line; string contents and comments become filler, so regexes only see code
-function mask(line, lang) {
+export function mask(line, lang) {
   let out = '';
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
@@ -20,7 +20,7 @@ function mask(line, lang) {
     if (c === '"' || c === "'" || (lang === 'j' && c === '`')) {
       out += c;
       for (i++; i < line.length && line[i] !== c; i++) {
-        if (line[i] === '\\') { out += STRING_FILL; i++; }
+        if (line[i] === '\\' && i + 1 < line.length) { out += STRING_FILL; i++; } // a backslash at the end of the line escapes nothing on it
         out += STRING_FILL;
       }
       if (i < line.length) out += c;
