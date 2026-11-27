@@ -215,6 +215,22 @@ test('should print nothing when the module is imported instead of started', () =
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(CHECK).href)});`], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, '');
+  const dir = mkdtempSync(join(tmpdir(), 'rule-enforcers-import-'));
+  const script = join(dir, 'importer.mjs');
+  writeFileSync(script, `await import(${JSON.stringify(pathToFileURL(CHECK).href)});\n`);
+  const s = spawnSync(process.execPath, [script], { cwd: dir, encoding: 'utf8' });
+  assert.equal(s.status, 0, s.stderr);
+  assert.equal(s.stdout, '');
+});
+
+test('should give a reason when a ../ path leaves the repo even though the file exists there', () => {
+  const root = fixture();
+  const name = `outside-${process.pid}-${Date.now()}.mjs`;
+  writeFileSync(join(root, '..', name), 'export const x = 1;\n');
+  try {
+    assert.equal(typeof checkEnforcer(root, `../${name}`, {}), 'string');
+    assert.equal(typeof checkEnforcer(root, `../${name}#x`, {}), 'string');
+  } finally { rmSync(join(root, '..', name), { force: true }); }
 });
 
 test('should exit 0 with no violations when the check runs on this repo', () => {

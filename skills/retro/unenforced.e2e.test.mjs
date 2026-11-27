@@ -128,6 +128,7 @@ test('should append the F1 hit to rule-hits.json and keep the log columns when l
   const r = s.node(['log', '--run', s.run]);
   assert.equal(r.code, 0, JSON.stringify(r.out));
   assert.equal(r.out.hits, 1);
+  assert.equal(r.out.ok, true);
   const hits = JSON.parse(readFileSync(join(s.repo, 'docs', 'retro', 'rule-hits.json'), 'utf8'));
   assert.equal(hits.length, 2);
   assert.deepEqual(hits[0], OLD_HIT);

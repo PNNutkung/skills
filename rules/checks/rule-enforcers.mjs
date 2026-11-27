@@ -90,9 +90,10 @@ export function main(argv) {
   return { code: violations.length ? 1 : 0, out: { ok: !violations.length, violations } };
 }
 
-let isMain = false;
-try { isMain = !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { /* not started as a script */ }
-if (isMain) {
+function startedAsScript() {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+}
+if (startedAsScript()) {
   const { code, out } = main(process.argv.slice(2));
   process.stdout.write(`${JSON.stringify(out)}\n`);
   process.exitCode = code;
