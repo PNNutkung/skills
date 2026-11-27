@@ -7,5 +7,6 @@
  {"rule": "performance/measure-method", "date": "2026-11-26", "branch": "seed: retro of issue #33", "finding": "seed (rules/performance.md: launch count without a method)"},
  {"rule": "flaky-tests/pipe-order", "date": "2026-11-26", "branch": "seed: retro of issue #33", "finding": "seed (rules/flaky-tests.md: runner parity test)"},
  {"rule": "flaky-tests/poll-start", "date": "2026-11-26", "branch": "seed: retro of issue #33", "finding": "seed (rules/flaky-tests.md: probelib slot test fixed wait)"},
- {"rule": "paths/realpath-compare", "date": "2026-11-26", "branch": "seed: retro of the reply-style rule", "finding": "seed (rules/paths.md: reply-style.mjs main guard)"}
+ {"rule": "paths/realpath-compare", "date": "2026-11-26", "branch": "seed: retro of the reply-style rule", "finding": "seed (rules/paths.md: reply-style.mjs main guard)"},
+ {"rule": "flaky-tests/version-compare", "date": "2026-11-27", "branch": "seed: retro of PR #49", "finding": "seed (rules/flaky-tests.md: retro docs test failed at plugin 2.10.0)"}
 ]

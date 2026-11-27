@@ -4,7 +4,10 @@
 // qa-sweep. checkAdr needs only the committed file (what ptdd and qa run); checkAdrSources also needs the run folder (what `dod.mjs adr-check` runs).
 // The frontmatter `touches` globs say which code the ADR governs; syncTouches follows renames, the index lists every ADR.
 import { createHash } from 'node:crypto';
-import { KINDS, REQUIRED, answerText } from './dodcheck.mjs';
+import { KINDS, REQUIRED, answerText, sectionFields } from './dodcheck.mjs';
+// ticket-writer is a sibling skill (ADR 0012). Installed alone (npx skills add), this skill still runs, without the 4 ticket sections.
+let tw = null;
+try { tw = await import('../ticket-writer/why.mjs'); } catch { tw = null; }
 
 export const DOD_HEADING = '## Definition of done';
 const DOD_MARKER = '<!-- dod: written by dod.mjs adr; do not edit; sha256:';
@@ -122,7 +125,7 @@ const frontmatter = (touches, slug) => ['---', 'touches:', ...touches.map(g => `
  * The ADR draft for a DoD that passed `dod.mjs check`. -> { text, errors }; text is null when errors is not empty.
  * answers/questions/ticket are the run folder's answers.md, questions.md and ticket.md; number and date name the file and its header.
  */
-export function renderAdr({ dod, answers, questions, ticket, number, date, status = 'Accepted' }) {
+export function renderAdr({ dod, answers, questions, ticket, number, date, status = 'Accepted', sections = false }) {
   const errors = [];
   const touches = Array.isArray(dod?.touches) ? dod.touches.filter(g => typeof g === 'string' && norm(g)) : [];
   if (!touches.length || touches.length !== (dod?.touches?.length ?? 0)) errors.push('touches is required: a non-empty list of globs of the code this decision governs (ask the user to confirm them)');
@@ -150,12 +153,18 @@ export function renderAdr({ dod, answers, questions, ticket, number, date, statu
   });
   const text = [
     frontmatter(touches, dod.slug), `# ${number}. ${titleOf(dod)}`, '', `Date: ${date}`, `Status: ${status}`, '',
-    '## Context', '', 'Quoted verbatim from the ticket and the specs this decision rests on:', '', ...(context.length ? context : ['(no ticket or spec quotes)']), '',
+    '## Context', '', ...whySections(dod, sections), 'Quoted verbatim from the ticket and the specs this decision rests on:', '', ...(context.length ? context : ['(no ticket or spec quotes)']), '',
     '## Decision', '', ...decisions,
     '## Consequences', '', 'Trade-offs we accepted:', '', ...(tradeOffs.length ? tradeOffs : ['- none']), '',
     dodSection(dod),
   ].join('\n');
   return { text, errors: [] };
+}
+
+/** Why, Expected outcome, If we do nothing and How we know as ### headings under Context (ADR 0012 Adr); none without the fields. */
+function whySections(dod, on) {
+  const fields = on && tw ? sectionFields(dod) : null;
+  return fields ? [tw.renderSections(fields, { lang: 'en' }).replace(/^## /gm, '### ').trimEnd(), ''] : [];
 }
 
 // ---------------------------------------------------------------- parse

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { markedSections } from './marker.mjs';
-import { CAP, capOutput, fileHeader, mergeSections, renderSection } from './section.mjs';
+import { CAP, OUTCOMES_ID, capOutput, fileHeader, mergeSections, outcomesSection, placeOutcomes, renderSection } from './section.mjs';
 
 const base = { id: 'AC1', env: 'cloud (local shell)', run: 'node --test a.test.mjs', result: 'pass', expect: 'exit 0', output: '✔ ok (AC1)\nℹ fail 0' };
 
@@ -88,4 +88,35 @@ test('should keep the marker hash valid when a failed section carries a why line
   const lines = s.split('\n');
   assert.deepEqual(lines.slice(2, 7), ['env: cloud (local shell)', 'run: node --test a.test.mjs', 'result: fail', 'expect: exit 0', 'why: exit 1, expected 0; no "fail 0" summary line']);
   assert.equal(markedSections(s).get('AC1').intact, true);
+});
+
+const OUTS = [
+  { metric: 'Tickets with the 4 sections', today: '0', target: 'all', provenBy: ['Render', 'TicketCheck'] },
+  { metric: 'Issues in the new format', today: '0 of 9', target: '9 of 9', provenBy: ['Issues'] },
+  { metric: 'Guarded creates', today: 'none', target: 'all', provenBy: ['Guard'] },
+];
+
+test('should mark an outcome met when every proving item passed or was accepted, not met when one failed, else not run (VerifyOut)', () => {
+  const s = outcomesSection(OUTS, { Render: 'pass', TicketCheck: 'accepted A3', Issues: 'fail' });
+  assert.ok(s.startsWith(`## ${OUTCOMES_ID} met or not\n<!-- verify: written by verify.mjs; sha256:`));
+  assert.match(s, /\| Metric \| Today \| Target \| Proven by \| Result \|/);
+  assert.match(s, /\| Tickets with the 4 sections \| 0 \| all \| Render, TicketCheck \| met \|/);
+  assert.match(s, /\| Issues in the new format \| 0 of 9 \| 9 of 9 \| Issues \| not met \|/);
+  assert.match(s, /\| Guarded creates \| none \| all \| Guard \| not run \|/);
+  assert.equal(markedSections(s).get(`${OUTCOMES_ID} met or not`).intact, true);
+});
+
+test('should keep one outcomes section at the end and leave the rest alone when the file is written again (VerifyOut edge)', () => {
+  const head = fileHeader('demo', '0012');
+  const item = renderSection({ ...base });
+  const first = placeOutcomes(`${head}\n\n${item}`, outcomesSection(OUTS, {}));
+  assert.ok(first.endsWith('| not run |\n'));
+  const item2 = renderSection({ ...base, id: 'Render' });
+  const again = placeOutcomes(`${first}${item2}`, outcomesSection(OUTS, { Render: 'pass', TicketCheck: 'pass' }));
+  assert.equal(again.split(`## ${OUTCOMES_ID}`).length, 2, 'one outcomes section');
+  assert.ok(again.indexOf('## Render') < again.indexOf(`## ${OUTCOMES_ID}`));
+  assert.ok(again.startsWith(`${head}\n\n${item}`));
+  assert.match(again, /Render, TicketCheck \| met \|/);
+  // no outcomes: an old DoD gets no section, and an old one is not added
+  assert.equal(placeOutcomes(`${head}\n\n${item}`, null), `${head}\n\n${item}`);
 });

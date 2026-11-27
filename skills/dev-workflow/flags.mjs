@@ -18,9 +18,9 @@ export function enabled(env, name, dflt, { renamedFrom } = {}) {
   throw new FlagError(`${name}=${env[name]} is not valid: use true or false`);
 }
 
-export const FLAG = { guard: 'WORKFLOW_GUARD_ENABLED', verifyEnv: 'WORKFLOW_VERIFY_ENV_CHECK_ENABLED' };
+export const FLAG = { guard: 'WORKFLOW_GUARD_ENABLED', verifyEnv: 'WORKFLOW_VERIFY_ENV_CHECK_ENABLED', prWhy: 'WORKFLOW_PR_WHY_CHECK_ENABLED' };
 
 /** Every dev-workflow flag at once (throws FlagError on a bad value). */
 export function readFlags(env = process.env) {
-  return { guard: enabled(env, FLAG.guard, true), verifyEnv: enabled(env, FLAG.verifyEnv, true) };
+  return { guard: enabled(env, FLAG.guard, true), verifyEnv: enabled(env, FLAG.verifyEnv, true), prWhy: enabled(env, FLAG.prWhy, true) };
 }

@@ -2,7 +2,8 @@
 // dev-workflow CLI: one run per piece of work, its step and the gate out of it. Prints one JSON line.
 //   open --slug S [--measure]       start at step intake (run folder under ~/.cache/dev-workflow)
 //   status [--slug S]               the step and what its gate still needs; with no run folder, resume from repo evidence
-//   next [--slug S] [--dod F] [--pr URL]   record evidence, then move on only if the gate is open
+//   next [--slug S] [--dod F] [--pr URL] [--pr-body F]   record evidence, then move on only if the gate is open; the PR body must start with
+//                                   Why, Expected outcome, If we do nothing, How we know (read through gh, or from F; WORKFLOW_PR_WHY_CHECK_ENABLED)
 //   skip [--slug S] --answer A<n>   skip the current step on the user's saved answer (never dod, verify, retro)
 //   tick [--slug S]                 DoD items whose real run passed in verify.md: tick these on the ticket without asking
 //   close [--slug S]                end the run
@@ -16,7 +17,7 @@ import { STEPS, advance, gate, inferStep, skip } from './steps.mjs';
 
 class Usage extends Error {}
 const COMMANDS = ['open', 'status', 'next', 'skip', 'tick', 'close'];
-const VALUE_OPTS = new Set(['--slug', '--dod', '--pr', '--answer']);
+const VALUE_OPTS = new Set(['--slug', '--dod', '--pr', '--pr-body', '--answer']);
 const BOOL_OPTS = new Set(['--measure']);
 
 function parse(argv) {
@@ -27,7 +28,7 @@ function parse(argv) {
     const a = rest[i];
     if (BOOL_OPTS.has(a)) { v[a.slice(2)] = true; continue; }
     if (!VALUE_OPTS.has(a) || rest[i + 1] === undefined) throw new Usage(`unknown or incomplete option ${a}`);
-    v[a.slice(2)] = rest[++i];
+    v[a.slice(2).replace(/-(\w)/g, (m, c) => c.toUpperCase())] = rest[++i];
   }
   return { cmd, v };
 }
@@ -87,6 +88,7 @@ export function main(argv, { env = process.env, cwd = process.cwd(), gh, dodMjs 
     if (cmd === 'next') {
       if (v.dod) state = { ...state, dod: resolve(cwd, v.dod) };
       if (v.pr) state = { ...state, pr: v.pr };
+      if (v.prBody) state = { ...state, prBodyFile: resolve(cwd, v.prBody) };
       writeState(run, state);
     }
     const ev = evidence(state, run, root, deps);

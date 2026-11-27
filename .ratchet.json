@@ -1,6 +1,18 @@
 {
   "version": 1,
   "rules": {
+    "cross-skill-import": {
+      "skills/definition-of-done/adr-e2e.test.mjs": 2,
+      "skills/definition-of-done/dodwhy.test.mjs": 1,
+      "skills/definition-of-done/e2e.test.mjs": 1,
+      "skills/definition-of-done/integration.test.mjs": 2,
+      "skills/definition-of-done/why.e2e.test.mjs": 1,
+      "skills/paired-agent-tdd/dodfile.test.mjs": 1,
+      "skills/paired-agent-tdd/e2e.fast.test.mjs": 2,
+      "skills/paired-agent-tdd/e2e.test.mjs": 2,
+      "skills/paired-agent-tdd/test-e2e-speed.mjs": 2,
+      "skills/qa-sweep/dodfile.test.mjs": 1
+    },
     "hook-readflags": {
       "hooks/retro-collect.mjs": 1
     },
@@ -19,6 +31,10 @@
     "test-serial": {}
   },
   "patterns": {
+    "cross-skill-import": {
+      "regex": "^\\s*import\\s[^;]*?from\\s+['\"]\\.\\./(?!\\.\\.)[a-z][a-z0-9-]*/",
+      "glob": "skills/*/*.mjs"
+    },
     "hook-readflags": {
       "regex": "readFlags\\(",
       "glob": "hooks/*.mjs"

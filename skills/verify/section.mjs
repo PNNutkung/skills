@@ -49,3 +49,29 @@ export function mergeSections(md, sections, header) {
   if (extra.length) out = `${out}${out.endsWith('\n\n') ? '' : out.endsWith('\n') ? '\n' : '\n\n'}${extra.join('')}`;
   return out;
 }
+
+// The outcomes section (ADR 0012 VerifyOut): the id "Outcomes:" holds a colon, so it can never be a DoD item id.
+export const OUTCOMES_ID = 'Outcomes:';
+const tableCell = s => String(s ?? '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+const okResult = r => r === 'pass' || /^accepted\b/.test(r ?? '');
+
+/** The outcome's result from its items' results: met (every item pass or accepted), not met (one failed), else not run. */
+const outcomeResult = (ids, results) => {
+  const rs = ids.map(id => results[id]);
+  if (rs.some(r => r === 'fail')) return 'not met';
+  return ids.length && rs.every(okResult) ? 'met' : 'not run';
+};
+
+/** `## Outcomes: met or not` under a marker: one table row per outcome with its result. results = { itemId: result line }. */
+export function outcomesSection(outcomes, results = {}) {
+  const rows = outcomes.map(o => `| ${[o.metric, o.today, o.target, o.provenBy.join(', '), outcomeResult(o.provenBy, results)].map(tableCell).join(' | ')} |`);
+  const body = ['| Metric | Today | Target | Proven by | Result |', '|---|---|---|---|---|', ...rows, ''].join('\n');
+  return `## ${OUTCOMES_ID} met or not\n${markerLine(body)}\n${body}`;
+}
+
+/** md with any old outcomes section taken out and the new one (if any) put at the end. */
+export function placeOutcomes(md, section) {
+  const kept = splitSections(md).filter(p => p.id === null || p.id.split(/\s/)[0] !== OUTCOMES_ID).map(p => p.text).join('');
+  if (!section) return kept;
+  return `${kept}${kept.endsWith('\n\n') ? '' : kept.endsWith('\n') ? '\n' : '\n\n'}${section}`;
+}

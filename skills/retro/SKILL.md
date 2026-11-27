@@ -78,6 +78,7 @@ Show the report in the user's language, most severe first, `not-passed` and `no-
 
 - A mechanical rule: `node "$SK/ratchet.mjs" add --rule <id>` starts it at today's counts in `.ratchet.json` (`eslint:<rule>`, `ruff:<code>`, a `retro:` rule, or a custom one with `--regex <re> --glob <glob>`). `node "$SK/ratchet.mjs" install` adds the pre-commit hook (never over a hook it did not write; with husky or lefthook it prints the line to add). In CI run `node "$SK/ratchet.mjs" check --ci`.
 - Prose goes to the standards file; a navigation pointer to CLAUDE.md only if it is short.
+- A proposal approved as a separate issue ("open an issue", "later"): write it with [ticket-writer](../ticket-writer/SKILL.md). The finding's evidence is the Why and today's value; ask the user for the target.
 
 Then `node "$SK/retro.mjs" applied-check --run <run>`: every file changed since collect must be named by an approved proposal. Undo anything it lists.
 

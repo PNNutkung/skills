@@ -8,6 +8,9 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { adrItems, boardChoice, bookedEnvs, checkBoard, checkVerify, parseAnswers } from './check.mjs';
 import { readFlags } from './flags.mjs';
+// ticket-writer is a sibling skill (ADR 0012). Installed alone (npx skills add), this skill still runs, without the 4 ticket sections.
+let tw = null;
+try { tw = await import('../ticket-writer/why.mjs'); } catch { tw = null; }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SIBLING_DOD = join(HERE, '..', 'definition-of-done', 'dod.mjs');
@@ -115,6 +118,22 @@ export function prFromGh(root, branch, { run = defaultGh } = {}) {
     return String(out).trim() || null;
   } catch { return null; }
 }
+const PR_URL_RE = /github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/;
+/** The body of a GitHub pull request through gh's REST API, or null when it cannot be read. */
+export function prBodyFromGh(root, prUrl, { run = defaultGh } = {}) {
+  const m = PR_URL_RE.exec(String(prUrl ?? ''));
+  if (!m) return null;
+  try { return String(run(['api', `repos/${m[1]}/${m[2]}/pulls/${m[3]}`, '--jq', '.body // ""'], root)); } catch { return null; }
+}
+
+/** The PR body check of ADR 0012 (WorkflowPr): { checked, errors }. body: the text, or null when it could not be read. */
+export function prWhyEvidence(on, pr, body) {
+  if (!on || !pr) return { checked: false, errors: [] };
+  if (body === null || body === undefined) return { checked: true, errors: [`cannot read the body of ${pr}: pass next --pr-body <file> with the body, or check that gh works (WORKFLOW_PR_WHY_CHECK_ENABLED=false turns this check off)`] };
+  if (!tw) return { checked: true, errors: ['PR body: cannot check it: the ticket-writer skill is not installed next to dev-workflow (install it, or WORKFLOW_PR_WHY_CHECK_ENABLED=false turns this check off)'] };
+  const errors = tw.checkBody(String(body));
+  return { checked: true, errors: errors.map(e => `PR body: ${e} (dod.mjs render --pr writes the 4 sections; WORKFLOW_PR_WHY_CHECK_ENABLED=false turns this check off)`) };
+}
 const defaultGh = (args, cwd) => execFileSync('gh', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 });
 
 /** Everything the gates read, for one run. */
@@ -132,6 +151,9 @@ export function evidence(state, run, root, { env = process.env, dodMjs, gh } = {
     : !adr ? { ok: false, errors: ['no ADR to verify against'], tickable: [] }
       : checkVerify(verifyText, adrItems(adr.text), answers, { booked: readFlags(env).verifyEnv ? bookedEnvs(adr.text) : null });
   const branch = state.branch;
+  const pr = state.pr ?? (gh === false ? null : prFromGh(root, branch, gh ? { run: gh } : {}));
+  const prOn = readFlags(env).prWhy;
+  const prBody = !prOn || !pr ? null : state.prBodyFile ? readOr(state.prBodyFile, null) : gh === false ? null : prBodyFromGh(root, pr, gh ? { run: gh } : {});
   const retro = Boolean(branch) && readOr(retroLog(root)).split('\n').some(l => l.split('|').map(c => c.trim())[2] === branch);
   return {
     facts: FILE_LINE_RE.test(readOr(join(run, 'facts.md'))),
@@ -139,7 +161,8 @@ export function evidence(state, run, root, { env = process.env, dodMjs, gh } = {
     dod: dodEvidence(state.dod, { env, dodMjs, cwd: root }),
     board,
     adr: Boolean(adr),
-    pr: state.pr ?? (gh === false ? null : prFromGh(root, branch, gh ? { run: gh } : {})),
+    pr,
+    prWhy: prWhyEvidence(prOn, pr, prBody),
     verify,
     retro,
     answers,

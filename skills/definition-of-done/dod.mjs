@@ -7,9 +7,15 @@
 //                                        and every answer's question ($DOD_QUESTIONS_CHECK_ENABLED=false: neither); on pass writes docs/dod/<slug>.md
 //                                        an item with a time target needs its measured floor ($DOD_TIME_FLOOR_CHECK_ENABLED=false: no)
 //                                        (<slug>.md next to FILE when FILE is in the run folder: the ADR path, nothing of the DoD in the repo)
+//                                        why / outcomes / costOfInaction quoted and complete, required in a session this version opened (ADR 0012;
+//                                        $DOD_TICKET_WHY_ENABLED=false: not checked, not rendered, as before)
 //   render --dod FILE [--lang en|th] [--fallback]
-//                                        write <run>/ticket-new.md (the whole new ticket description); --fallback also writes docs/dod/<slug>.ticket.md
-//   ticket-check --dod FILE [--posted F] every original sentence kept and every item on the checklist; --posted: the ticket as read back equals the approved text
+//                                        write <run>/ticket-new.md (the whole new ticket description: Why, Expected outcome, If we do nothing and
+//                                        How we know first when the DoD has them); --fallback also writes docs/dod/<slug>.ticket.md
+//   render --pr --dod FILE [--lang en|th] [--ticket-url URL]
+//                                        write <run>/pr-top.md: the 4 sections for the top of the PR body, with a result column from docs/verify/<slug>.md
+//   ticket-check --dod FILE [--posted F] every original sentence kept, every item on the checklist and the 4 sections filled in; --posted: the ticket as
+//                                        read back equals the approved text
 //   tools --system S                     which tool writes the ticket: official CLI, trusted third-party CLI, ask the user to trust, or MCP / the file
 //   export --dod FILE --to ptdd|qa --out DIR
 //                                        ptdd: DIR/dod.json (plan.json dod[]) + DIR/dod-source.md (plan.json ticket); qa: DIR/requirements.json, answers.md, ticket.md
@@ -32,7 +38,7 @@ import { parseArgs } from 'node:util';
 import { checkAdrSources, checkAnswersHaveQuestions, checkQuestions, renderAdr } from './adr.mjs';
 import { FlagError, enabled } from './flags.mjs';
 import { HOOK_ENV, adrTarget, findAdrsFor, installHook, repoFiles, stagedRenames, syncRepo, topLevel, writeIndex } from './adrio.mjs';
-import { checkDod, checkTimeFloors, exportPtdd, exportQa, renderMarkdown, renderTicket, ticketCheck } from './dodcheck.mjs';
+import { checkDod, checkTimeFloors, checkWhy, exportPtdd, exportQa, renderMarkdown, renderPrTop, renderTicket, sectionsAvailable, ticketCheck, verifyResults } from './dodcheck.mjs';
 import { RENDERED_FILE, approve, close, open, readActive, recordAdr, toolFor, touch, trust } from './session.mjs';
 
 const COMMANDS = ['open', 'questions', 'check', 'render', 'ticket-check', 'tools', 'export', 'adr', 'adr-check', 'adrs', 'approve', 'trust', 'close'];
@@ -40,6 +46,8 @@ const NEEDS_RUN = new Set(['questions', 'check', 'render', 'ticket-check', 'expo
 const DOD_MJS = fileURLToPath(import.meta.url);
 const QUESTIONS_ENV = 'DOD_QUESTIONS_CHECK_ENABLED';
 const TIME_FLOOR_ENV = 'DOD_TIME_FLOOR_CHECK_ENABLED';
+export const TICKET_WHY_ENV = 'DOD_TICKET_WHY_ENABLED';
+const PR_TOP_FILE = 'pr-top.md';
 const USAGE = `usage: dod.mjs ${COMMANDS.join(' | ')} [--session ID]; see the header of dod.mjs`;
 const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -84,7 +92,9 @@ export function run(cmd, v, env = process.env) {
   if (cmd === 'approve') return approve({ session, env });
 
   const dod = loadDod(v.dod), ctx = context(active);
+  const why = enabled(env, TICKET_WHY_ENV, true); // false: every command as before ADR 0012
   const errors = checkDod(dod, ctx);
+  if (why) errors.push(...checkWhy(dod, ctx, { required: active.whyFields }));
   if (cmd === 'check' && enabled(env, QUESTIONS_ENV, true)) errors.push(...checkQuestions(ctx.questions), ...checkAnswersHaveQuestions(ctx.answers, ctx.questions));
   if (cmd === 'check' && enabled(env, TIME_FLOOR_ENV, true)) errors.push(...checkTimeFloors(dod));
   if (cmd === 'check') {
@@ -99,8 +109,18 @@ export function run(cmd, v, env = process.env) {
   if (errors.length) return { ok: false, errors: ['the DoD does not pass check; fix it first', ...errors] };
 
   const rendered = join(active.run, RENDERED_FILE);
+  if (cmd === 'render' && v.pr) {
+    if (!why) return { ok: false, errors: [`render --pr needs ${TICKET_WHY_ENV} on (it is false)`] };
+    if (!dod.why) return { ok: false, errors: ['render --pr needs why, outcomes and costOfInaction in the DoD'] };
+    if (!sectionsAvailable()) return { ok: false, errors: ['render --pr needs the ticket-writer skill next to definition-of-done: install it'] };
+    const vf = join(active.repo, 'docs', 'verify', `${dod.slug}.md`);
+    const text = renderPrTop(dod, { lang: v.lang, ticketUrl: v['ticket-url'], results: existsSync(vf) ? verifyResults(readFileSync(vf, 'utf8')) : undefined });
+    const file = join(active.run, PR_TOP_FILE);
+    writeFileSync(file, text, { mode: 0o600 });
+    return { ok: true, prTop: file, verify: existsSync(vf) ? vf : null };
+  }
   if (cmd === 'render') {
-    const text = renderTicket(dod, ctx.ticket, { lang: v.lang });
+    const text = renderTicket(dod, ctx.ticket, { lang: v.lang, sections: why });
     writeFileSync(rendered, text, { mode: 0o600 });
     const out = { ok: true, rendered };
     if (v.fallback) { out.fallback = join(active.repo, 'docs', 'dod', `${dod.slug}.ticket.md`); mkdirSync(dirname(out.fallback), { recursive: true }); writeFileSync(out.fallback, text); }
@@ -109,12 +129,12 @@ export function run(cmd, v, env = process.env) {
   if (cmd === 'ticket-check') {
     if (!existsSync(rendered)) return { ok: false, errors: ['nothing rendered: run render first'] };
     const text = readFileSync(rendered, 'utf8');
-    const r = ticketCheck(ctx.ticket, text, dod);
-    const errs = [...r.missing.map(s => `original sentence dropped: ${s}`), ...r.missingItems.map(id => `${id} has no checklist line`)];
+    const r = ticketCheck(ctx.ticket, text, dod, { sections: why });
+    const errs = [...r.missing.map(s => `original sentence dropped: ${s}`), ...r.missingItems.map(id => `${id} has no checklist line`), ...r.sections];
     if (v.posted && norm(readFileSync(v.posted, 'utf8')) !== norm(text)) errs.push('the posted ticket differs from the approved text (someone edited it, or the post changed it); show the user the difference');
     return errs.length ? { ok: false, errors: errs } : { ok: true };
   }
-  if (cmd === 'adr') return writeAdr(dod, ctx, active, session, env);
+  if (cmd === 'adr') return writeAdr(dod, ctx, active, session, env, why);
   if (cmd === 'adr-check') {
     const target = adrTarget(active.repo, dod.slug);
     if (!target.existing) return { ok: false, errors: ['no ADR for this DoD yet: run adr first'] };
@@ -137,9 +157,9 @@ export function run(cmd, v, env = process.env) {
   return { ok: true, requirements: join(out, 'requirements.json'), answers: join(out, 'answers.md'), ticket: join(out, 'ticket.md') };
 }
 
-function writeAdr(dod, ctx, active, session, env) {
+function writeAdr(dod, ctx, active, session, env, why = true) {
   const target = adrTarget(active.repo, dod.slug);
-  const r = renderAdr({ dod, answers: ctx.answers, questions: ctx.questions, ticket: ctx.ticket, number: target.n, date: new Date().toISOString().slice(0, 10) });
+  const r = renderAdr({ dod, answers: ctx.answers, questions: ctx.questions, ticket: ctx.ticket, number: target.n, date: new Date().toISOString().slice(0, 10), sections: why });
   if (r.errors.length) return { ok: false, errors: r.errors };
   const file = join(active.repo, target.file);
   mkdirSync(dirname(file), { recursive: true });
@@ -172,7 +192,7 @@ function adrs(v, env) {
 function main(argv) {
   let parsed;
   try {
-    parsed = parseArgs({ args: argv, allowPositionals: true, options: Object.fromEntries(['session', 'repo', 'slug', 'dod', 'to', 'out', 'lang', 'posted', 'system', 'cli'].map(k => [k, { type: 'string' }]).concat(['fallback', 'touches', 'sync', 'staged', 'install-hook'].map(k => [k, { type: 'boolean' }]))) });
+    parsed = parseArgs({ args: argv, allowPositionals: true, options: Object.fromEntries(['session', 'repo', 'slug', 'dod', 'to', 'out', 'lang', 'posted', 'system', 'cli', 'ticket-url'].map(k => [k, { type: 'string' }]).concat(['fallback', 'pr', 'touches', 'sync', 'staged', 'install-hook'].map(k => [k, { type: 'boolean' }]))) });
   } catch (e) { process.stderr.write(`dod: ${e.message}\n${USAGE}\n`); process.exit(2); }
   try {
     const result = run(parsed.positionals[0], { ...parsed.values, files: parsed.positionals.slice(1) });

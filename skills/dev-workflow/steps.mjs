@@ -19,7 +19,7 @@ const GATES = {
     return ev.board.choice ? [] : ["the user's choice is not in answers.md: save their answer to the board question word for word"];
   },
   lock: ev => (ev.adr ? [] : ['no ADR for this slug: run dod.mjs adr, adr-check and commit the ADR (and update the ticket) once']),
-  tdd: ev => (ev.pr ? [] : ['no pull request yet: open a draft pull request for the branch (next --pr <url>)']),
+  tdd: ev => (ev.pr ? (ev.prWhy?.errors ?? []) : ['no pull request yet: open a draft pull request for the branch (next --pr <url>)']),
   verify: ev => (ev.verify?.ok ? [] : ev.verify?.errors?.length ? ev.verify.errors : ['verify.md is missing']),
   retro: ev => (ev.retro ? [] : ['no retro log line for this branch: run the retro skill (retro.mjs log) before merging']),
 };

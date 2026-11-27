@@ -14,6 +14,7 @@
  "flag-defaults-e2e/limit-ci-env": {"status": "judgment", "enforcers": [], "reason": "a limit of rules/checks/flag-defaults-e2e.mjs: it cannot see a CI job's or shell's env"},
  "flaky-tests/pipe-order": {"status": "judgment", "enforcers": [], "reason": "no check yet tells an ordered compare of two-pipe output from a safe one"},
  "flaky-tests/poll-start": {"status": "judgment", "enforcers": [], "reason": "no check yet; a fixed wait looks like any other setTimeout to a text scan"},
+ "flaky-tests/version-compare": {"status": "judgment", "enforcers": [], "reason": "no check yet reads how tests compare the plugin version"},
  "paths/macos-links": {"status": "judgment", "enforcers": [], "reason": "a fact about macOS that explains the other paths rules; nothing to check"},
  "paths/realpath-compare": {"status": "partial", "enforcers": ["ratchet:path-relative", "rules/checks/main-realpath.mjs"], "reason": "the ratchet counts relative( calls and the check covers hook main guards; other compares (===, startsWith) are not seen"},
  "paths/linked-test": {"status": "partial", "enforcers": ["rules/checks/inproc-cwd.mjs"], "reason": "only in-process mains need a linked-folder test; other path compares are not checked"},
