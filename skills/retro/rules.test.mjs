@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ENFORCERS_FILE, HITS_FILE, RULE_LEVELS, RULE_STATUSES,
-  addHits, isUnenforced, levelErrors, markRepeats, parseRuleIds, readEnforcers, readHits, ruleFiles,
+  RulesFileError, addHits, isUnenforced, levelErrors, markRepeats, parseRuleIds, readEnforcers, readHits, ruleFiles,
 } from './rules.mjs';
 
 const P = 'rules/paths.md';
@@ -89,6 +89,20 @@ test('should ignore bullets inside a fenced code block when the fence is plain o
   assert.deepEqual(parseRuleIds(P, text), { ids: [{ id: 'paths/real', line: 1 }, { id: 'paths/after', line: 10 }], errors: [] });
 });
 
+test('should keep a fence open when a marker of another kind or a shorter one comes before the close (BulletIds)', () => {
+  const text = [
+    '````md',
+    '```',
+    '- inside the outer fence',
+    '```',
+    '~~~',
+    '- still inside',
+    '````',
+    '- after <!-- rule: paths/after -->',
+  ].join('\n');
+  assert.deepEqual(parseRuleIds(P, text), { ids: [{ id: 'paths/after', line: 8 }], errors: [] });
+});
+
 test('should treat nested bullets and indented lines as part of the bullet above when they have no id (BulletIds)', () => {
   const text = '- parent <!-- rule: paths/p -->\n  - child with no id\n    - grandchild\n  more text of the parent\n\n  indented paragraph\n';
   assert.deepEqual(parseRuleIds(P, text), { ids: [{ id: 'paths/p', line: 1 }], errors: [] });
@@ -136,7 +150,7 @@ test('should throw naming rules/enforcers.json when the file is not JSON or not 
   for (const bad of ['{ not json', '42', '"text"', 'null']) {
     const root = tmpRepo();
     put(root, 'rules/enforcers.json', bad);
-    assert.throws(() => readEnforcers(root), /rules\/enforcers\.json/, bad);
+    assert.throws(() => readEnforcers(root), e => e instanceof RulesFileError && /rules\/enforcers\.json/.test(e.message), bad);
   }
 });
 
@@ -157,7 +171,7 @@ test('should throw naming rule-hits.json when the file is not JSON or not an arr
   for (const bad of ['[ broken', '{}', '"x"']) {
     const root = tmpRepo();
     put(root, 'docs/retro/rule-hits.json', bad);
-    assert.throws(() => readHits(root), /rule-hits\.json/, bad);
+    assert.throws(() => readHits(root), e => e instanceof RulesFileError && /rule-hits\.json/.test(e.message), bad);
   }
 });
 
@@ -185,11 +199,11 @@ test('should not treat inherited object keys as entries when the rule is named l
 test('should append one hit per finding with a rule in findings order when addHits runs (RuleHits)', () => {
   const hits = deepFreeze([{ rule: 'old/r', date: '2026-01-01', branch: 'old', finding: 'F9' }]);
   const findings = deepFreeze([
-    { id: 'F1', rule: 'paths/b' },
-    { id: 'F2' },
-    { id: 'F3', rule: '' },
-    { id: 'F4', rule: 42 },
-    { id: 'F5', rule: 'paths/a' },
+    { id: 'F1', rule: 'paths/b', verify: 'passed' },
+    { id: 'F2', verify: 'passed' },
+    { id: 'F3', rule: '', verify: 'passed' },
+    { id: 'F4', rule: 42, verify: 'passed' },
+    { id: 'F5', rule: 'paths/a', verify: 'passed' },
   ]);
   const out = addHits(hits, findings, { date: '2026-11-27', branch: 'feat' });
   assert.deepEqual(out, [
@@ -199,6 +213,22 @@ test('should append one hit per finding with a rule in findings order when addHi
   ]);
   assert.notEqual(out, hits);
   assert.equal(hits.length, 1);
+});
+
+test('should skip findings that did not pass and hits already in the file when addHits runs again (RuleHits)', () => {
+  const hits = deepFreeze([{ rule: 'paths/a', date: '2026-11-26', branch: 'feat', finding: 'F1' }]);
+  const findings = deepFreeze([
+    { id: 'F1', rule: 'paths/a', verify: 'passed' },
+    { id: 'F2', rule: 'paths/b', verify: 'not-passed' },
+    { id: 'F3', rule: 'paths/c', verify: 'no-evidence' },
+    { id: 'F4', rule: 'paths/d' },
+    { id: 'F5', rule: 'paths/e', verify: 'passed' },
+  ]);
+  assert.deepEqual(addHits(hits, findings, { date: '2026-11-27', branch: 'feat' }), [
+    { rule: 'paths/a', date: '2026-11-26', branch: 'feat', finding: 'F1' },
+    { rule: 'paths/e', date: '2026-11-27', branch: 'feat', finding: 'F5' },
+  ]);
+  assert.equal(addHits(hits, findings, { date: '2026-11-27', branch: 'other' }).length, 3);
 });
 
 test('should return a copy equal to the old hits when no finding names a rule', () => {

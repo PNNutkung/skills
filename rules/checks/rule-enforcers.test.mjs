@@ -233,6 +233,21 @@ test('should give a reason when a ../ path leaves the repo even though the file 
   } finally { rmSync(join(root, '..', name), { force: true }); }
 });
 
+test('should give a reason when a path inside the repo is a symlink to a file outside it (EnfRef)', () => {
+  const root = fixture();
+  const outside = mkdtempSync(join(tmpdir(), 'rule-enforcers-out-'));
+  writeFileSync(join(outside, 'x.mjs'), 'export const x = 1;\n');
+  symlinkSync(join(outside, 'x.mjs'), join(root, 'escape.mjs'));
+  symlinkSync(outside, join(root, 'escape-dir'), 'dir');
+  assert.equal(typeof checkEnforcer(root, 'escape.mjs', {}), 'string');
+  assert.equal(typeof checkEnforcer(root, 'escape.mjs#x', {}), 'string');
+  assert.equal(typeof checkEnforcer(root, 'escape-dir/x.mjs', {}), 'string');
+  mkdirSync(join(root, 'lib'));
+  writeFileSync(join(root, 'lib', 'y.mjs'), 'export const y = 1;\n');
+  symlinkSync(join(root, 'lib', 'y.mjs'), join(root, 'inside.mjs'));
+  assert.equal(checkEnforcer(root, 'inside.mjs#y', {}), null);
+});
+
 test('should exit 0 with no violations when the check runs on this repo (CheckCI, Rows, BulletIds, EnfFile)', () => {
   const r = cli(['--root', ROOT]);
   assert.deepEqual(r.out.violations, []);

@@ -10,7 +10,8 @@ export const HITS_FILE = 'docs/retro/rule-hits.json';
 
 const STATUS = Object.freeze({ enforced: 'enforced' });
 const MARK_AT_END = /<!--\s*rule:\s*(\S*?)\s*-->\s*$/;
-const FENCE = /^\s*(```|~~~)/;
+const FENCE_OPEN = /^\s*(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^\s*(`{3,}|~{3,})\s*$/;
 const SLUG = '[a-z0-9]+(?:-[a-z0-9]+)*';
 const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -19,11 +20,17 @@ export function parseRuleIds(path, text) {
   const stem = basename(path).replace(/\.md$/, '');
   const shape = new RegExp(`^${escape(stem)}/${SLUG}$`);
   const ids = [], errors = [], seen = new Set();
-  let fenced = false;
+  let fence = null; // the open fence's marker; only the same character, at least as long, closes it
   String(text ?? '').split(/\r?\n/).forEach((raw, i) => {
     const line = i + 1;
-    if (FENCE.test(raw)) { fenced = !fenced; return; }
-    if (fenced || !raw.startsWith('- ')) return;
+    if (fence) {
+      const close = FENCE_CLOSE.exec(raw)?.[1];
+      if (close && close[0] === fence[0] && close.length >= fence.length) fence = null;
+      return;
+    }
+    const open = FENCE_OPEN.exec(raw)?.[1];
+    if (open) { fence = open; return; }
+    if (!raw.startsWith('- ')) return;
     const m = MARK_AT_END.exec(raw);
     if (!m) { errors.push(`${path}:${line}: the bullet does not end with <!-- rule: ${stem}/<slug> -->`); return; }
     const id = m[1];
@@ -44,12 +51,15 @@ export function ruleFiles(root) {
     .map(d => `rules/${d.name}`).sort();
 }
 
+/** A rules or hits file that is not JSON or has the wrong shape; retro reports it as a usage error (exit 2). */
+export class RulesFileError extends Error {}
+
 function readJsonFile(root, rel, isShape, what) {
   const file = join(root, rel);
   if (!existsSync(file)) return undefined;
   let v;
-  try { v = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`${rel} is not JSON: ${e.message}`); }
-  if (!isShape(v)) throw new Error(`${rel} must hold ${what}`);
+  try { v = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new RulesFileError(`${rel} is not JSON: ${e.message}`); }
+  if (!isShape(v)) throw new RulesFileError(`${rel} must hold ${what}`);
   return v;
 }
 
@@ -72,9 +82,13 @@ export function isUnenforced(entries, rule) {
   return entryOf(entries, rule)?.status !== STATUS.enforced;
 }
 
-/** Old hits plus one { rule, date, branch, finding } per finding that names a rule, in findings order; a new array. */
+/** Old hits plus one { rule, date, branch, finding } per passed finding that names a rule, in findings order; a new array. A finding
+ *  whose evidence did not pass is no hit, and a hit already there (same rule, branch and finding) is not added again. */
 export function addHits(hits, findings, { date, branch }) {
-  return [...hits, ...findings.filter(namesRule).map(f => ({ rule: f.rule, date, branch, finding: f.id }))];
+  const key = h => JSON.stringify([h.rule, h.branch, h.finding]);
+  const known = new Set(hits.map(key));
+  const added = findings.filter(f => namesRule(f) && f.verify === 'passed').map(f => ({ rule: f.rule, date, branch, finding: f.id }));
+  return [...hits, ...added.filter(h => !known.has(key(h)))];
 }
 
 /** Findings with repeat (and earlierHits) set on each that names a rule: hit on another branch, or 2+ evidence items in this retro. */

@@ -19,7 +19,7 @@
  "paths/linked-test": {"status": "partial", "enforcers": ["rules/checks/inproc-cwd.mjs"], "reason": "only in-process mains need a linked-folder test; other path compares are not checked"},
  "paths/inproc-cwd": {"status": "enforced", "enforcers": ["rules/checks/inproc-cwd.mjs"], "reason": ""},
  "performance/parallel-tests": {"status": "enforced", "enforcers": ["ratchet:test-serial"], "reason": ""},
- "performance/run-tests": {"status": "enforced", "enforcers": ["rules/checks/run-tests.test.mjs"], "reason": ""},
+ "performance/run-tests": {"status": "partial", "enforcers": ["rules/checks/run-tests.test.mjs"], "reason": "the test pins CI to run-tests.mjs; nothing stops a plain node --test run locally"},
  "performance/test-times": {"status": "partial", "enforcers": ["rules/checks/run-tests.test.mjs"], "reason": "the test warns when many files are missing from test-times.json; refreshing it stays a manual step"},
  "performance/time-floor": {"status": "enforced", "enforcers": ["skills/definition-of-done/dodcheck.mjs#checkTimeFloors"], "reason": ""},
  "performance/measure-method": {"status": "judgment", "enforcers": [], "reason": "whether a number has its method next to it is prose; no code reads it"},

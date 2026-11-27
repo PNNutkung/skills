@@ -15,7 +15,7 @@ import { verifyAll } from './evidence.mjs';
 import { FlagError, readFlags } from './flags.mjs';
 import { readBaseline, topLevel } from './ratchet-io.mjs';
 import { LOG_FILE, appendLog, renderReport } from './report.mjs';
-import { HITS_FILE, addHits, isUnenforced, levelErrors, markRepeats, readEnforcers, readHits } from './rules.mjs';
+import { HITS_FILE, RulesFileError, addHits, isUnenforced, levelErrors, markRepeats, readEnforcers, readHits } from './rules.mjs';
 
 const COMMANDS = ['collect', 'check', 'applied-check', 'log'];
 const SELF = realpathSync(fileURLToPath(import.meta.url));
@@ -106,11 +106,11 @@ function logCmd(opts) {
   const now = Object.keys(readBaseline(collected.repo).baseline?.rules ?? {});
   const row = { date: new Date().toISOString().slice(0, 10), work: collected.work?.label ?? '', sessions: collected.totals?.sessions ?? 0, tokens: collected.totals?.tokens ?? 0,
     findings: verified.length, passed: verified.filter(f => f.verify === 'passed').length, approved: [...approvals.values()].filter(Boolean).length, ratchetRules: now.filter(r => !before.has(r)).length };
+  const oldHits = readHits(collected.repo); // before any write: a bad hits file stops log with nothing written
+  const hits = addHits(oldHits, verified, { date: row.date, branch: row.work });
   const file = join(collected.repo, LOG_FILE);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, appendLog(readText(file), row));
-  const oldHits = readHits(collected.repo);
-  const hits = addHits(oldHits, verified, { date: row.date, branch: row.work });
   if (hits.length !== oldHits.length) writeFileSync(join(collected.repo, HITS_FILE), `${JSON.stringify(hits, null, 1)}\n`);
   return { code: 0, out: { ok: true, log: LOG_FILE, row, hits: hits.length - oldHits.length } };
 }
@@ -134,7 +134,7 @@ export function run(argv, env = process.env, cwd = process.cwd()) {
     if (cmd === 'applied-check') return appliedCheckCmd(opts);
     return logCmd(opts);
   } catch (e) {
-    if (e instanceof FlagError || e instanceof UsageError) return { code: 2, out: { ok: false, errors: [e.message] } };
+    if (e instanceof FlagError || e instanceof UsageError || e instanceof RulesFileError) return { code: 2, out: { ok: false, errors: [e.message] } };
     throw e;
   }
 }

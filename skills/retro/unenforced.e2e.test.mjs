@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -140,4 +140,36 @@ test('should append the F1 hit to rule-hits.json and keep the log columns when l
   assert.ok(log.split('\n').includes(LOG_HEADER), log);
   assert.match(log, /\| feat \| 0 \| 0 \| 2 \| 1 \| 0 \| 0 \|/);
   assert.ok(readFileSync(join(s.repo, 'docs', 'retro', 'rule-hits.json'), 'utf8').endsWith('}\n]\n'));
+});
+
+test('should add no hit when log runs a second time on the same run (RuleHits)', () => {
+  const s = setup();
+  s.write('findings.json', [F1]);
+  s.write('proposals.json', [P1]);
+  assert.equal(s.node(['check', '--run', s.run]).code, 0);
+  assert.equal(s.node(['log', '--run', s.run]).out.hits, 1);
+  const again = s.node(['log', '--run', s.run]);
+  assert.equal(again.code, 0, JSON.stringify(again.out));
+  assert.equal(again.out.hits, 0);
+  assert.equal(JSON.parse(readFileSync(join(s.repo, 'docs', 'retro', 'rule-hits.json'), 'utf8')).length, 2);
+});
+
+test('should stop with exit 2 naming the file and write no log line when rule-hits.json or enforcers.json is not JSON (RuleHits)', () => {
+  const s = setup();
+  s.write('findings.json', [F1]);
+  s.write('proposals.json', [P1]);
+  assert.equal(s.node(['check', '--run', s.run]).code, 0);
+  writeFileSync(join(s.repo, 'docs', 'retro', 'rule-hits.json'), '[ broken');
+  for (const cmd of ['check', 'log']) {
+    const r = s.node([cmd, '--run', s.run]);
+    assert.equal(r.code, 2, `${cmd}: ${r.err}`);
+    assert.equal(r.out.ok, false);
+    assert.match(r.out.errors.join('\n'), /docs\/retro\/rule-hits\.json is not JSON/);
+  }
+  assert.ok(!existsSync(join(s.repo, 'docs', 'retro', 'log.md')));
+  writeFileSync(join(s.repo, 'docs', 'retro', 'rule-hits.json'), '[]\n');
+  writeFileSync(join(s.repo, 'rules', 'enforcers.json'), '{ broken');
+  const r = s.node(['check', '--run', s.run]);
+  assert.equal(r.code, 2, r.err);
+  assert.match(r.out.errors.join('\n'), /rules\/enforcers\.json is not JSON/);
 });

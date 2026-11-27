@@ -4,7 +4,7 @@
 // Usage: node rules/checks/rule-enforcers.mjs [--root <repo>]
 // Prints one JSON line { ok, violations }. Exit 0 clean, 1 violations, 2 usage error. Node 22+, no dependencies.
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, join, normalize, resolve } from 'node:path';
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENFORCERS_FILE, RULE_STATUSES, parseRuleIds, readEnforcers, ruleFiles } from '../../skills/retro/rules.mjs';
 
@@ -26,6 +26,8 @@ export function checkEnforcer(root, ref, ratchetRules) {
   if (!insideRepo(path)) return `${path} is not a path inside the repo`;
   const file = join(root, path);
   if (!existsSync(file)) return `${path} does not exist`;
+  const real = realpathSync(file), realRoot = realpathSync(root);
+  if (real !== realRoot && !real.startsWith(realRoot + sep)) return `${path} is a link to a path outside the repo`;
   if (symbol === null) return null;
   if (symbol === '') return 'the symbol after # is empty';
   let text;
