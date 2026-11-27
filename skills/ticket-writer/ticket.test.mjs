@@ -1,6 +1,7 @@
+// cwd: linked
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main } from './ticket.mjs';
@@ -42,4 +43,14 @@ test('should print a template whose headings the check knows when template runs 
     assert.ok(checkBody(out.text).every(e => /empty|row 1/.test(e)), `${lang}: ${checkBody(out.text).join('; ')}`);
   }
   assert.match(main(['template', '--lang', 'th']).out.text, /## ทำไม \(Why\)/);
+});
+
+test('should read a relative --body from the real folder when the cwd is a symlinked folder (IssueCheck edge)', () => {
+  const d = tmp();
+  try {
+    mkdirSync(join(d, 'real'));
+    writeFileSync(join(d, 'real', 'b.md'), '## Why\nx\n## Expected outcome\nnot measurable: wording\n## If we do nothing\ny\n## How we know\nz\n');
+    symlinkSync(join(d, 'real'), join(d, 'link'));
+    assert.equal(main(['issue-check', '--body', 'b.md'], { cwd: join(d, 'link') }).code, 0);
+  } finally { rmSync(d, { recursive: true, force: true }); }
 });
