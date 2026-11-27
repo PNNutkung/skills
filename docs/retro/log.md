@@ -14,3 +14,4 @@ One line per retro (the retro skill appends it).
 | 2026-11-25 | claude/project-thread-g654an | 1 | 35141382 | 3 | 3 | 3 | 0 |
 | 2026-11-26 | claude/project-thread-f7ewip | 1 | 89318607 | 6 | 6 | 5 | 0 |
 | 2026-11-26 | claude/project-thread-qs71yt | 2 | 78137945 | 8 | 8 | 6 | 1 |
+| 2026-11-27 | claude/project-thread-pu2nrz | 1 | 53457716 | 4 | 4 | 4 | 1 |
