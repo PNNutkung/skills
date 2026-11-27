@@ -117,7 +117,7 @@ if (!isMainThread && workerData?.runWorker) parentPort.postMessage(await runWith
 async function runIn(lang, env, tweak) {
   const L = LANGS[lang], G = L.groups;
   const plan = {
-    cmd: L.cmd, ...(L.ro ? { ro: L.ro } : {}), mutation: { max: 10, budget: 60 }, integration: { file: L.integ, goal: 'title and slugify together, through the module boundary' },
+    cmd: L.cmd, ...(L.ro ? { ro: L.ro } : {}), mutation: { max: 10, budget: 60, ...(lang === 'sh' ? { accept: { [G.a.src]: 'A4', [G.b.src]: 'A4' } } : {}) }, integration: { file: L.integ, goal: 'title and slugify together, through the module boundary' },
     dod: [{ id: 'AC1', text: 'slugify lowercases and hyphenates words, throws TypeError for a non-string', source: 'assumed' }, { id: 'AC2', text: 'slugify cuts to maxLength, default 40', source: 'assumed', kinds: ['happy', 'edge'] },
       { id: 'AC3', text: 'title turns a slug into Title Case', source: 'assumed' }],
     groups: [{ id: 'a', goal: 'slugify', tests: [G.a.tests], src: [G.a.src], dod: ['AC1', 'AC2'], after: [] }, { id: 'b', goal: 'title, built on slugify', tests: [G.b.tests], src: [G.b.src], dod: ['AC3'], after: ['a'] }],

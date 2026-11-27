@@ -32,7 +32,7 @@ put('tests/test_base.sh', "true # the base still passes\n"); // plan's preflight
 git('add', '-A'); git('commit', '-qm', 'base');
 
 writeFileSync(join(dir, 'plan.json'), JSON.stringify({
-  repo, cmd: 'sh {file}', mutation: { off: true }, maxRepairs: 0,
+  repo, cmd: 'sh {file}', mutation: { off: 'A9' }, maxRepairs: 0, // ADR 0011 A3: off needs a user answer id
   dod: [{ id: 'AC1', text: 'double(n) returns n * 2 and throws TypeError for a non-number', source: 'assumed' }],
   groups: [{ id: 'a', goal: 'double', tests: ['tests/test_double.sh'], src: ['src/double.sh'], dod: ['AC1'], after: [] }],
 }));
