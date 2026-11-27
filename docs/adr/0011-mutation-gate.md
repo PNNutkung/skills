@@ -427,6 +427,7 @@ flowchart LR
 
 - Flags: `WORKFLOW_MUTATION_CHECK_ENABLED` (`true|false`, default `true`), `WORKFLOW_MUTATION_SCORE_MIN` (0-100, default 100).
 - `next` from `tdd`: runs `runMutation` on the branch's changed source files against the merge base, with the A21 test set, with the test command given once by `next --test-cmd '...'` and kept in the run; writes `RUN/mutation.json`; refuses with the survivor list when `pass` is false. It reads ptdd's equivalent file when present, else `RUN/mutation-equivalent.json`.
+- Clarified in TDD (phase 3): `next --ptdd-run RUN` (kept in the run, like `--test-cmd`) names the ptdd run whose `mutation-equivalent.json` is read. The merge base is taken against `origin/HEAD`, else `origin/main`, `main` or `master`; only committed changes count. A branch with no changed source file passes. Survivors always fail; `WORKFLOW_MUTATION_SCORE_MIN` only limits skipped, inconclusive and unverifiable mutants, as in ptdd. NoMutants is a ptdd green rule only: dev-workflow ignores files with 0 mutants. A refusal exits 1; a `--test-cmd` without `{file}` exits 2. `main` may be async.
 - Step 3 (lock) tells the agent to write `## Interface` with a diagram into the ADR; `dod.mjs adr` writes an empty `## Interface` heading for it.
 
 ### All flags off

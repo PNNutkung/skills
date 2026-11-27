@@ -55,7 +55,9 @@ test('should document the flag in SKILL.md, the README Flags table and rules/REA
   const readme = root('README.md');
   for (const name of Object.values(FLAG)) {
     assert.ok(skill.includes(name), `${name} in SKILL.md`);
-    assert.match(readme, new RegExp(`\\| \`${name}\` \\| \`true\` \\\\\\| \`false\` \\| \`true\` \\|`), `${name} README row`);
+    // a true|false flag defaults on; a number flag (WORKFLOW_MUTATION_SCORE_MIN) needs only its row
+    if (name.endsWith('_ENABLED')) assert.match(readme, new RegExp(`\\| \`${name}\` \\| \`true\` \\\\\\| \`false\` \\| \`true\` \\|`), `${name} README row`);
+    else assert.ok(readme.includes(`| \`${name}\` |`), `${name} README row`);
     assert.ok(root('rules/README.md').includes(name), `${name} in rules/README.md`);
   }
 });
@@ -90,4 +92,33 @@ test('should list a test tagged with the item when docs/verify/dev-workflow.md h
     const tagged = body.split('\n').filter(l => /^ok - should /.test(l) && new RegExp(`\\((?:[^()]*, )?${id}(?:, [^()]*)?\\)$`).test(l));
     assert.ok(tagged.length > 0, `${id}: no ok - should ... (${id}) line`);
   }
+});
+
+// ---------------------------------------------------------------- ADR 0011 phase 3
+const section = (from, to) => skill.slice(skill.indexOf(from), skill.indexOf(to));
+
+test('should tell the agent to write an Interface section with a diagram into the ADR when SKILL.md describes step 3 (Interface happy)', () => {
+  const lock = section('## 3. Lock', '## 4. TDD');
+  assert.ok(lock.length > 0);
+  assert.match(lock, /`## Interface`/);
+  assert.match(lock, /diagram/);
+  assert.match(lock, /names, inputs, outputs(,)? (and )?errors/);
+  assert.match(skill, /^- \[ \] 3 lock:.*Interface/m, 'the progress checklist line of step 3 names the Interface section');
+});
+
+test('should document next --test-cmd and the mutation gate when SKILL.md describes step 4 (WorkflowGate happy, WorkflowRuns happy)', () => {
+  const tdd = section('## 4. TDD', '## 5. Verify and review');
+  assert.match(tdd, /--test-cmd/);
+  assert.match(tdd, /\{file\}/);
+  assert.match(tdd, /mutation\.json/);
+  assert.match(tdd, /mutation-equivalent\.json/);
+  assert.match(tdd, /--ptdd-run/);
+  assert.match(skill, /^- \[ \] 4 .*--test-cmd/m, 'the progress checklist line of step 4 gives the test command');
+});
+
+test('should document both mutation flags with their defaults in SKILL.md and the README Flags table when the flags exist (Flags happy)', () => {
+  const readme = root('README.md');
+  for (const name of ['WORKFLOW_MUTATION_CHECK_ENABLED', 'WORKFLOW_MUTATION_SCORE_MIN']) assert.ok(skill.includes(name), `${name} in SKILL.md`);
+  assert.match(readme, /\| `WORKFLOW_MUTATION_CHECK_ENABLED` \| `true` \\\| `false` \| `true` \|/);
+  assert.match(readme, /\| `WORKFLOW_MUTATION_SCORE_MIN` \| [^|]*0[^|]*100[^|]* \| `100` \|/);
 });

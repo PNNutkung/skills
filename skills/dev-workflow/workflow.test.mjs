@@ -1,4 +1,4 @@
-// Integration: workflow.mjs main() in-process on a temp git repo, with the real definition-of-done dod.mjs for the DoD gate.
+// Integration: workflow.mjs main() in-process (awaited: it may return a promise) on a temp git repo, with the real definition-of-done dod.mjs for the DoD gate.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -20,7 +20,7 @@ export function fixture() {
   git(repo, 'config', 'user.email', 't@example.com'); git(repo, 'config', 'user.name', 't');
   writeFileSync(join(repo, 'a.js'), 'export const a = 1;\n');
   git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'init');
-  const env = { PATH: process.env.PATH, HOME: base, XDG_CACHE_HOME: join(base, 'cache'), DOD_MARKER_DIR: join(base, 'dodm'), DOD_RUN_BASE: join(base, 'dodr'), CLAUDE_CODE_SESSION_ID: 'sess-1' };
+  const env = { PATH: process.env.PATH, HOME: base, XDG_CACHE_HOME: join(base, 'cache'), DOD_MARKER_DIR: join(base, 'dodm'), DOD_RUN_BASE: join(base, 'dodr'), CLAUDE_CODE_SESSION_ID: 'sess-1', WORKFLOW_MUTATION_CHECK_ENABLED: 'false' };
   return { base, repo, env, done: () => rmSync(base, { recursive: true, force: true }) };
 }
 
@@ -31,57 +31,57 @@ export const VERIFY = '## Skill\nenv: local\nrun: node --test\nresult: pass\n```
 const noGh = () => { throw new Error('no gh'); };
 export const PR_BODY = '## Why\n\nx\n\n## Expected outcome\n\nnot measurable: demo\n\n## If we do nothing\n\ny\n\n## How we know\n\nz\n';
 
-test('should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)', () => {
+test('should walk every step to done when each gate gets its evidence (Order, Gate, Board, Verify, RetroFirst)', async () => {
   const f = fixture();
   try {
     const call = argv => main(argv, { env: f.env, cwd: f.repo, gh: noGh, dodMjs: '/nonexistent/dod.mjs' });
-    const opened = call(['open', '--slug', 'demo']);
+    const opened = await call(['open', '--slug', 'demo']);
     assert.equal(opened.code, 0, JSON.stringify(opened.out));
     const run = opened.out.run;
     assert.ok(run.startsWith(cacheBase(f.env)), 'run folder under the cache, not the repo (RunDir, RunCache)');
 
-    const step = () => call(['status']).out.step;
-    assert.equal(call(['next']).code, 1);
+    const step = async () => (await call(['status'])).out.step;
+    assert.equal((await call(['next'])).code, 1);
     writeFileSync(join(run, 'facts.md'), '- export const a: a.js:1\n');
-    assert.equal(call(['next']).out.step, 'dod');
+    assert.equal((await call(['next'])).out.step, 'dod');
 
     const dodFile = join(f.base, 'dod.json');
     writeFileSync(dodFile, JSON.stringify({ slug: 'demo', items: [{ id: 'Skill' }], unconfirmed: [] }));
-    assert.equal(call(['next', '--dod', dodFile]).out.step, 'board');
+    assert.equal((await call(['next', '--dod', dodFile])).out.step, 'board');
 
     writeFileSync(join(run, 'board.json'), JSON.stringify(BOARD));
-    assert.match(call(['next']).out.errors.join(), /user's choice/);
+    assert.match((await call(['next'])).out.errors.join(), /user's choice/);
     writeFileSync(join(f.base, 'answers.md'), 'A2: A\ntime: t\n\nA3: accept Gate, needs prod\ntime: t\n');
-    assert.equal(call(['next']).out.step, 'lock', 'the choice is read from the answers.md next to the DoD JSON');
+    assert.equal((await call(['next'])).out.step, 'lock', 'the choice is read from the answers.md next to the DoD JSON');
 
     mkdirSync(join(f.repo, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'adr', '0001-demo.md'), ADR('demo'));
-    assert.equal(call(['next']).out.step, 'tdd');
-    assert.match(call(['next']).out.errors.join(), /pull request/);
-    assert.match(call(['next', '--pr', 'https://github.com/o/r/pull/9']).out.errors.join(), /cannot read the body/, 'gh is down and no --pr-body (WorkflowPr)');
+    assert.equal((await call(['next'])).out.step, 'tdd');
+    assert.match((await call(['next'])).out.errors.join(), /pull request/);
+    assert.match((await call(['next', '--pr', 'https://github.com/o/r/pull/9'])).out.errors.join(), /cannot read the body/, 'gh is down and no --pr-body (WorkflowPr)');
     writeFileSync(join(f.base, 'pr.md'), PR_BODY);
-    assert.equal(call(['next', '--pr', 'https://github.com/o/r/pull/9', '--pr-body', join(f.base, 'pr.md')]).out.step, 'verify');
+    assert.equal((await call(['next', '--pr', 'https://github.com/o/r/pull/9', '--pr-body', join(f.base, 'pr.md')])).out.step, 'verify');
 
     mkdirSync(join(f.repo, 'docs', 'verify'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'verify', 'demo.md'), VERIFY);
-    assert.deepEqual(call(['tick']).out.tick, ['Skill']);
-    assert.equal(call(['next']).out.step, 'retro');
+    assert.deepEqual((await call(['tick'])).out.tick, ['Skill']);
+    assert.equal((await call(['next'])).out.step, 'retro');
 
-    assert.equal(call(['next']).code, 1);
+    assert.equal((await call(['next'])).code, 1);
     mkdirSync(join(f.repo, 'docs', 'retro'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'retro', 'log.md'), '| date | work | sessions |\n|---|---|---|\n| 2026-11-23 | feat/x | 1 |\n');
-    assert.equal(call(['next']).out.step, 'done');
-    assert.equal(step(), 'done');
+    assert.equal((await call(['next'])).out.step, 'done');
+    assert.equal(await step(), 'done');
     assert.equal(openRuns(f.env, f.repo).length, 0, 'a done run guards nothing');
   } finally { f.done(); }
 });
 
-test('should resume at the step the repo shows when the run folder is gone (Resume)', () => {
+test('should resume at the step the repo shows when the run folder is gone (Resume)', async () => {
   const f = fixture();
   try {
     mkdirSync(join(f.repo, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'adr', '0002-demo.md'), ADR('demo'));
-    const r = main(['status', '--slug', 'demo'], { env: f.env, cwd: f.repo, gh: () => 'https://github.com/o/r/pull/3\n', dodMjs: '/none' });
+    const r = await main(['status', '--slug', 'demo'], { env: f.env, cwd: f.repo, gh: () => 'https://github.com/o/r/pull/3\n', dodMjs: '/none' });
     assert.equal(r.code, 0);
     assert.equal(r.out.step, 'verify');
     assert.equal(r.out.resumed, true);
@@ -89,42 +89,42 @@ test('should resume at the step the repo shows when the run folder is gone (Resu
   } finally { f.done(); }
 });
 
-test('should skip the board and refuse to skip the DoD when a saved answer gives a reason (ShortPath)', () => {
+test('should skip the board and refuse to skip the DoD when a saved answer gives a reason (ShortPath)', async () => {
   const f = fixture();
   try {
     const call = argv => main(argv, { env: f.env, cwd: f.repo, gh: noGh, dodMjs: '/none' });
-    const run = call(['open', '--slug', 'small']).out.run;
+    const run = (await call(['open', '--slug', 'small'])).out.run;
     writeFileSync(join(run, 'facts.md'), 'a.js:1\n');
     writeFileSync(join(run, 'answers.md'), 'A1: skip the DoD please\ntime: t\n\nA2: skip the board, typo fix only\ntime: t\n');
-    call(['next']);
-    assert.match(call(['skip', '--answer', 'A1']).out.errors.join(), /never skipped/);
+    await call(['next']);
+    assert.match((await call(['skip', '--answer', 'A1'])).out.errors.join(), /never skipped/);
     const dodFile = join(f.base, 'd.json');
     writeFileSync(dodFile, JSON.stringify({ items: [{ id: 'X' }] }));
-    call(['next', '--dod', dodFile]);
-    const s = call(['skip', '--answer', 'A2']);
+    await call(['next', '--dod', dodFile]);
+    const s = await call(['skip', '--answer', 'A2']);
     assert.equal(s.out.step, 'lock', JSON.stringify(s.out));
   } finally { f.done(); }
 });
 
-test('should exit 2 or 1 when given a bad slug, an unknown command, a second open or a bad flag', () => {
+test('should exit 2 or 1 when given a bad slug, an unknown command, a second open or a bad flag', async () => {
   const f = fixture();
   try {
     const call = (argv, env = f.env) => main(argv, { env, cwd: f.repo, gh: noGh, dodMjs: '/none' });
-    assert.equal(call(['open', '--slug', 'Bad Slug']).code, 2);
-    assert.equal(call(['frobnicate']).code, 2);
-    assert.equal(call(['status']).code, 2, 'no open run');
-    assert.equal(call(['open', '--slug', 'one']).code, 0);
-    assert.equal(call(['open', '--slug', 'one']).code, 1);
-    assert.equal(call(['open', '--slug', 'two']).code, 0);
-    assert.match(call(['status']).out.errors.join(), /several runs/);
-    assert.equal(call(['status', '--slug', 'one'], { ...f.env, WORKFLOW_GUARD_ENABLED: 'yes' }).code, 2);
-    assert.equal(main(['status'], { env: f.env, cwd: f.base }).code, 2, 'outside a repo');
-    assert.equal(call(['close', '--slug', 'one']).code, 0);
-    assert.equal(call(['next', '--slug', 'one']).code, 1, 'closed');
+    assert.equal((await call(['open', '--slug', 'Bad Slug'])).code, 2);
+    assert.equal((await call(['frobnicate'])).code, 2);
+    assert.equal((await call(['status'])).code, 2, 'no open run');
+    assert.equal((await call(['open', '--slug', 'one'])).code, 0);
+    assert.equal((await call(['open', '--slug', 'one'])).code, 1);
+    assert.equal((await call(['open', '--slug', 'two'])).code, 0);
+    assert.match((await call(['status'])).out.errors.join(), /several runs/);
+    assert.equal((await call(['status', '--slug', 'one'], { ...f.env, WORKFLOW_GUARD_ENABLED: 'yes' })).code, 2);
+    assert.equal((await main(['status'], { env: f.env, cwd: f.base })).code, 2, 'outside a repo');
+    assert.equal((await call(['close', '--slug', 'one'])).code, 0);
+    assert.equal((await call(['next', '--slug', 'one'])).code, 1, 'closed');
   } finally { f.done(); }
 });
 
-test('should pass the DoD gate only when the real dod.mjs check passes in an open DoD session (Gate, integration)', () => {
+test('should pass the DoD gate only when the real dod.mjs check passes in an open DoD session (Gate, integration)', async () => {
   const f = fixture();
   try {
     const dod = (...a) => JSON.parse(execFileSync(process.execPath, [SIBLING_DOD, ...a], { env: f.env, cwd: f.repo, encoding: 'utf8' }).trim().split('\n').pop());
@@ -137,21 +137,21 @@ test('should pass the DoD gate only when the real dod.mjs check passes in an ope
     const dodFile = join(dodRun, 'dod.json');
     writeFileSync(dodFile, JSON.stringify({ ...good, items: [{ id: 'Skill', text: 'a skill', source: { kind: 'assumed' } }] }));
     const call = argv => main(argv, { env: f.env, cwd: f.repo, gh: noGh });
-    const run = call(['open', '--slug', 'demo']).out.run;
+    const run = (await call(['open', '--slug', 'demo'])).out.run;
     writeFileSync(join(run, 'facts.md'), 'a.js:1\n');
-    call(['next']);
-    const bad = call(['next', '--dod', dodFile]);
+    await call(['next']);
+    const bad = await call(['next', '--dod', dodFile]);
     assert.equal(bad.code, 1, JSON.stringify(bad.out));
     writeFileSync(dodFile, JSON.stringify(good));
-    const ok = call(['next']);
+    const ok = await call(['next']);
     assert.equal(ok.out.step, 'board', JSON.stringify(ok.out));
   } finally { f.done(); }
 });
 
-test('should keep the run folder under the cache and write nothing in the repo when a run opens (RunDir, RunCache)', () => {
+test('should keep the run folder under the cache and write nothing in the repo when a run opens (RunDir, RunCache)', async () => {
   const f = fixture();
   try {
-    const r = main(['open', '--slug', 'demo'], { env: f.env, cwd: f.repo, gh: noGh, dodMjs: '/none' });
+    const r = await main(['open', '--slug', 'demo'], { env: f.env, cwd: f.repo, gh: noGh, dodMjs: '/none' });
     assert.ok(r.out.run.startsWith(join(f.base, 'cache', 'dev-workflow')), r.out.run);
     assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: f.repo, encoding: 'utf8' }), '', 'nothing written in the repo');
     assert.ok(cacheBase({}).endsWith(join('.cache', 'dev-workflow')), cacheBase({}));
@@ -160,7 +160,7 @@ test('should keep the run folder under the cache and write nothing in the repo w
   } finally { f.done(); }
 });
 
-test('should read the same evidence from any folder when --dod was given as a relative path (Gate, Board)', () => {
+test('should read the same evidence from any folder when --dod was given as a relative path (Gate, Board)', async () => {
   const f = fixture();
   try {
     const sub = join(f.repo, 'sub');
@@ -168,13 +168,13 @@ test('should read the same evidence from any folder when --dod was given as a re
     writeFileSync(join(f.repo, 'docs', 'dod', 'demo.json'), JSON.stringify({ items: [{ id: 'X' }] }));
     writeFileSync(join(f.repo, 'docs', 'dod', 'answers.md'), 'A2: A because simple\ntime: t\n');
     const call = (argv, cwd) => main(argv, { env: f.env, cwd, gh: noGh, dodMjs: '/none' });
-    const run = call(['open', '--slug', 'demo'], f.repo).out.run;
+    const run = (await call(['open', '--slug', 'demo'], f.repo)).out.run;
     writeFileSync(join(run, 'facts.md'), 'a.js:1\n');
-    call(['next'], f.repo);
-    assert.equal(call(['next', '--dod', '../docs/dod/demo.json'], sub).out.step, 'board');
+    await call(['next'], f.repo);
+    assert.equal((await call(['next', '--dod', '../docs/dod/demo.json'], sub)).out.step, 'board');
     writeFileSync(join(run, 'board.json'), JSON.stringify(BOARD));
-    assert.equal(call(['status'], f.repo).out.evidence.choice, 'A');
-    assert.equal(call(['status'], sub).out.evidence.choice, 'A');
+    assert.equal((await call(['status'], f.repo)).out.evidence.choice, 'A');
+    assert.equal((await call(['status'], sub)).out.evidence.choice, 'A');
   } finally { f.done(); }
 });
 
@@ -186,51 +186,51 @@ test('should keep run folders apart per repo and slug when two repos share a nam
 });
 
 // cwd: linked (rules/checks/inproc-cwd.mjs, rules/paths.md): a started process sees its cwd as a real path, so main must too
-test('should give the same run folder and dod path spawned and in-process when the cwd is a linked folder', () => {
+test('should give the same run folder and dod path spawned and in-process when the cwd is a linked folder', async () => {
   const f = fixture();
   try {
     const linked = join(f.base, 'linked');
     symlinkSync(f.repo, linked);
-    const opened = main(['open', '--slug', 'lnk'], { env: f.env, cwd: linked });
+    const opened = await main(['open', '--slug', 'lnk'], { env: f.env, cwd: linked });
     assert.equal(opened.code, 0, JSON.stringify(opened.out));
     const r = spawnSync(process.execPath, [join(HERE, 'workflow.mjs'), 'status', '--slug', 'lnk'], { cwd: linked, env: f.env, encoding: 'utf8' });
     assert.equal(JSON.parse(r.stdout).run, opened.out.run);
     writeFileSync(join(opened.out.run, 'facts.md'), 'a.js:1 exports a\n');
-    main(['next', '--slug', 'lnk'], { env: f.env, cwd: linked });
-    main(['next', '--slug', 'lnk', '--dod', 'dod.json'], { env: f.env, cwd: linked });
+    await main(['next', '--slug', 'lnk'], { env: f.env, cwd: linked });
+    await main(['next', '--slug', 'lnk', '--dod', 'dod.json'], { env: f.env, cwd: linked });
     const state = JSON.parse(readFileSync(join(opened.out.run, 'state.json'), 'utf8'));
     assert.equal(state.dod, join(realpathSync(f.repo), 'dod.json'));
   } finally { f.done(); }
 });
 
-test('should refuse tdd -> verify and name the sections when the PR body lacks them, read through gh (WorkflowPr)', () => {
+test('should refuse tdd -> verify and name the sections when the PR body lacks them, read through gh (WorkflowPr)', async () => {
   const f = fixture();
   try {
     const call = (argv, gh, env = f.env) => main(argv, { env, cwd: f.repo, gh, dodMjs: '/none' });
-    const run = call(['open', '--slug', 'demo'], noGh).out.run;
+    const run = (await call(['open', '--slug', 'demo'], noGh)).out.run;
     writeState(run, { ...readState(run), step: 'tdd' });
     mkdirSync(join(f.repo, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'adr', '0001-demo.md'), ADR('demo'));
     const seen = [];
     const ghBody = body => args => { seen.push(args.join(' ')); return body; };
-    const bad = call(['next', '--pr', 'https://github.com/o/r/pull/7'], ghBody('## Summary\nchange'));
+    const bad = await call(['next', '--pr', 'https://github.com/o/r/pull/7'], ghBody('## Summary\nchange'));
     assert.equal(bad.code, 1);
     assert.match(bad.out.errors.join(), /PR body: missing section "Why"/);
     assert.ok(seen.some(a => a.startsWith('api repos/o/r/pulls/7')), seen.join('; '));
-    assert.equal(call(['next'], ghBody(PR_BODY)).out.step, 'verify');
+    assert.equal((await call(['next'], ghBody(PR_BODY))).out.step, 'verify');
   } finally { f.done(); }
 });
 
-test('should move on without reading the body when WORKFLOW_PR_WHY_CHECK_ENABLED is false (WorkflowPr)', () => {
+test('should move on without reading the body when WORKFLOW_PR_WHY_CHECK_ENABLED is false (WorkflowPr)', async () => {
   const f = fixture();
   try {
     const env = { ...f.env, WORKFLOW_PR_WHY_CHECK_ENABLED: 'false' };
-    const run = main(['open', '--slug', 'demo'], { env, cwd: f.repo, gh: noGh, dodMjs: '/none' }).out.run;
+    const run = (await main(['open', '--slug', 'demo'], { env, cwd: f.repo, gh: noGh, dodMjs: '/none' })).out.run;
     writeState(run, { ...readState(run), step: 'tdd' });
     mkdirSync(join(f.repo, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(f.repo, 'docs', 'adr', '0001-demo.md'), ADR('demo'));
-    assert.equal(main(['next', '--pr', 'https://github.com/o/r/pull/7'], { env, cwd: f.repo, gh: noGh, dodMjs: '/none' }).out.step, 'verify');
-    const bad = main(['status'], { env: { ...f.env, WORKFLOW_PR_WHY_CHECK_ENABLED: 'on' }, cwd: f.repo, gh: noGh, dodMjs: '/none' });
+    assert.equal((await main(['next', '--pr', 'https://github.com/o/r/pull/7'], { env, cwd: f.repo, gh: noGh, dodMjs: '/none' })).out.step, 'verify');
+    const bad = await main(['status'], { env: { ...f.env, WORKFLOW_PR_WHY_CHECK_ENABLED: 'on' }, cwd: f.repo, gh: noGh, dodMjs: '/none' });
     assert.equal(bad.code, 2);
     assert.match(bad.out.errors.join(), /WORKFLOW_PR_WHY_CHECK_ENABLED=on is not valid: use true or false/);
   } finally { f.done(); }
