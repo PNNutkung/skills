@@ -75,3 +75,58 @@ test('should drop nothing when the listed pattern names an op other than the one
 test('should equal the default output when skip is an empty list (EquivSkip edge)', () => {
   for (const text of [JS, 'const re = /^[a-z0-9]+$/;\n']) assert.deepEqual(generateMutants('a.mjs', text, all(text), { skip: [] }), gen('a.mjs', text));
 });
+
+// ---------------------------------------------------------------- masking, line filters, the per-line cap and --files ranges
+const ops = (path, text, line) => gen(path, text).filter(m => line === undefined || m.line === line).map(m => [m.op, m.after]);
+
+test('should emit at most six mutants for a line in operator priority order when the line offers more (Generator edge)', () => {
+  const line = 'return a === b && c < d || e > f + 1;';
+  assert.deepEqual(ops('a.js', `${line}\n`).map(([op]) => op), ['return-none', 'eq-ne', 'lt-le', 'gt-ge', 'and-or', 'or-and']);
+  assert.equal(generateMutants('a.js', `${line}\n`, [1], { perLine: 8 }).length, 8, 'the line offers eight');
+});
+
+test('should not mutate the slash of a trailing line comment when code ends right before it (Generator edge)', () => {
+  assert.deepEqual(ops('a.js', 'x = a // half\n'), []);
+  assert.deepEqual(ops('a.go', 'x = a / b // ratio\n'), [['div-mul', 'x = a * b // ratio']]);
+});
+
+test('should keep an operator inside a string untouched and still mutate the code after it when the string holds escapes (Generator happy)', () => {
+  assert.deepEqual(ops('a.js', 'const s = "a < b"; if (x < y) f();\n'), [['lt-le', 'const s = "a < b"; if (x <= y) f();']]);
+  assert.deepEqual(ops('a.js', 'const s = "q\\" < "; if (x < y) f();\n'), [['lt-le', 'const s = "q\\" < "; if (x <= y) f();']]);
+});
+
+test('should not emit return-none for a line that already returns null when a comment or spacing follows (Generator edge)', () => {
+  assert.deepEqual(ops('a.js', 'function f() {\n  return null; // nothing\n}\n', 2), []);
+  assert.deepEqual(ops('a.py', 'def f():\n    return None  # nothing\n', 2), []);
+});
+
+test('should not split a longer symbolic operator that holds <= or >= when the line is Scala (Generator edge)', () => {
+  assert.deepEqual(ops('a.scala', 'val r = a =<= b\nval s = a =>= b\n').filter(([op]) => op === 'le-lt' || op === 'ge-gt'), []);
+  assert.deepEqual(ops('a.scala', 'val r = a <= b\nval s = a >= b\n').filter(([op]) => op === 'le-lt' || op === 'ge-gt'), [['le-lt', 'val r = a < b'], ['ge-gt', 'val s = a > b']]);
+});
+
+test('should mutate code on a line holding a whole one-line triple-quoted string and on the lines after it (Generator edge)', () => {
+  const py = 'x = """s""" if a < b else c\ny = a < b\nz = """s""" + """t""" if a < b else c\nw = a < b\n';
+  assert.deepEqual(gen('a.py', py).filter(m => m.op === 'lt-le').map(m => m.line), [1, 2, 3, 4]);
+  assert.deepEqual(gen('a.py', 'def f():\n    """doc\n    a < b\n    """\n    return a < b\n').filter(m => m.op === 'lt-le').map(m => m.line), [5], 'a multi-line docstring is still skipped');
+});
+
+test('should mutate the last line when the text has no trailing newline (Generator edge)', () => {
+  assert.deepEqual(ops('a.js', 'x = a < b'), [['lt-le', 'x = a <= b']]);
+});
+
+test('should emit nothing for a decorator line when the file is Python (Generator edge)', () => {
+  assert.deepEqual(ops('a.py', '@lru_cache(maxsize=128)\ndef f(a):\n    return a\n'), [['return-none', 'return None']]);
+});
+
+test('should accept a range starting at line 1 and refuse one starting at 0 or with no numbers when --files is parsed (Generator edge)', () => {
+  assert.deepEqual([...fileRanges('a.py:1-1')], [['a.py', [[1, 1]]]]);
+  for (const spec of ['a.py:0-5', 'a.py:x', 'a.py:5-4', 'a.py:']) assert.throws(() => fileRanges(spec), /^Error: bad range in --files/, spec);
+});
+
+test('should order sampled mutants by file and then by line as a number when lines pass 999999 or one path extends another (Generator edge)', () => {
+  const m = (file, line, op = 'eq-ne') => ({ file, line, op });
+  const order = ms => sample(ms, 10).map(x => `${x.file}:${x.line}:${x.op}`);
+  assert.deepEqual(order([m('a.js', 1000000), m('a.js', 999999), m('a.js', 2)]), ['a.js:2:eq-ne', 'a.js:999999:eq-ne', 'a.js:1000000:eq-ne']);
+  assert.deepEqual(order([m('a.c01/x.js', 1), m('a.c', 12345), m('a.c', 3, 'lt-le'), m('a.c', 3, 'eq-ne')]), ['a.c:3:eq-ne', 'a.c:3:lt-le', 'a.c:12345:eq-ne', 'a.c01/x.js:1:eq-ne']);
+});

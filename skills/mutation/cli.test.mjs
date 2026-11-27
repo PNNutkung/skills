@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { UsageError } from './engine.mjs';
+import { optionsOf } from './cli.mjs';
 import { DIRECT_RUNNER, KILLED_LINE, MUTATION_DIR, NODE_CMD, SURVIVOR_LINE, calcRepo } from './fixtures/repo.mjs';
 
 const CLI = join(MUTATION_DIR, 'cli.mjs');
@@ -67,4 +69,36 @@ test('should print a Result with a reason and exit 0 when the change has nothing
   assert.equal(typeof out.reason, 'string');
   assert.equal(out.pass, false);
   assert.deepEqual(out.mutants, []);
+});
+
+test('should map every flag to its runMutation option when optionsOf reads a full argv (Module happy)', () => {
+  const cwd = '/work';
+  const o = optionsOf(['--repo', 'r', '--base', 'B', '--head', 'H', '--cmd', 'node {file}', '--runner', 'run.mjs', '--tests', 'a.test.mjs,,b.test.mjs', '--files', 'a.mjs:1-2',
+    '--max', '5', '--budget', '2.5', '--jobs', '3', '--timeout', '7', '--score-min', '90', '--select', 'all', '--equivalent', 'eq.json', '--reuse', 'one.json', '--reuse', 'two.json',
+    '--kill-exits', '1,2', '--link', 'venv', '--link', 'node_modules', '--ro', 'ro1', '--ro', 'ro2', '--env', 'A=1', '--env', 'B=2', '--scratch', 'tmp'], cwd);
+  assert.deepEqual(o, { repo: resolve(cwd, 'r'), base: 'B', head: 'H', cmd: 'node {file}', runner: resolve(cwd, 'run.mjs'), files: 'a.mjs:1-2', tests: ['a.test.mjs', 'b.test.mjs'],
+    max: 5, budget: 2.5, jobs: 3, timeout: 7, scoreMin: 90, select: 'all', equivalent: resolve(cwd, 'eq.json'), reuse: [resolve(cwd, 'one.json'), resolve(cwd, 'two.json')],
+    killExits: [1, 2], link: ['venv', 'node_modules'], ro: [resolve(cwd, 'ro1'), resolve(cwd, 'ro2')], env: ['A=1', 'B=2'], scratch: resolve(cwd, 'tmp') });
+  const words = optionsOf(['--repo', 'r', '--cmd', 'c {file}', '--runner', 'x', '--max', 'unlimited', '--budget', 'none', '--jobs', '1e3'], cwd);
+  assert.deepEqual([words.max, words.budget, words.jobs, words.timeout, words.equivalent, words.reuse, words.link], ['unlimited', 'none', '1e3', undefined, undefined, [], []]);
+});
+
+test('should throw a UsageError when optionsOf gets a positional, an unknown flag or no --repo, --cmd or --runner (Module fail)', () => {
+  const need = ['--repo', 'r', '--cmd', 'c {file}', '--runner', 'x'];
+  for (const argv of [[...need, 'stray'], [...need, '--bogus', '1'], [...need, '--bogus'], need.slice(2), [...need.slice(0, 2), ...need.slice(4)], need.slice(0, 4)]) {
+    assert.throws(() => optionsOf(argv), UsageError, JSON.stringify(argv));
+  }
+  assert.throws(() => optionsOf(need.slice(2)), /^UsageError: --repo is required$/);
+});
+
+test('should run nothing and print nothing when cli.mjs is imported instead of run (Module edge)', async () => {
+  const r = await new Promise((done, fail) => {
+    const p = spawn(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(CLI)}); console.log('imported');`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    p.stdout.setEncoding('utf8').on('data', d => { stdout += d; });
+    p.stderr.setEncoding('utf8').on('data', d => { stderr += d; });
+    p.on('error', fail);
+    p.on('close', code => done({ code, stdout, stderr }));
+  });
+  assert.deepEqual([r.code, r.stdout, r.stderr], [0, 'imported\n', '']);
 });

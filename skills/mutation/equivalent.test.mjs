@@ -101,3 +101,16 @@ test('should return exactly the marks of a valid document and throw on any other
   }
   assert.ok(valid > 100 && valid < 1400, `both branches exercised (${valid} valid)`);
 });
+
+test('should return every mark in the file when marks are added (EquivJudge happy)', async t => {
+  const path = fileOf(t);
+  assert.deepEqual(await addMarks(path, [mark('X-aaaaaaaa', 3)], RESULT), [mark('X-aaaaaaaa', 3)]);
+  assert.deepEqual(await addMarks(path, [mark('X-cccccccc', 5), mark('X-aaaaaaaa', 3)], RESULT), [mark('X-aaaaaaaa', 3), mark('X-cccccccc', 5)]);
+});
+
+test('should name the expected shape when the document or a mark is null (EquivJudge fail)', async t => {
+  assert.throws(() => parseMarks('null'), /^Error: equivalent file: want \{"schema": 1, "marks": \[\.\.\.\]\}$/);
+  assert.throws(() => parseMarks('{"schema":1,"marks":[null]}'), /^Error: equivalent file: mark 0 needs id, file, line/);
+  const r = await attempt(() => addMarks(fileOf(t), [null], RESULT));
+  assert.match(r.error.message, /^addMarks: a mark needs id, file, line, reason and judge: null$/);
+});

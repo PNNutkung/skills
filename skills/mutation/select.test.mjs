@@ -3,10 +3,10 @@
 // or HEAD gives the same answer. The order of the result is not fixed (compared sorted); it may be sync or async.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { commit, git, tempDir } from './fixtures/repo.mjs';
+import { commit, git, put, tempDir } from './fixtures/repo.mjs';
 import { testsFor } from './select.mjs';
 
 const TESTS = ['test/a.test.mjs', 'test/b.test.cjs', 'test/helper-user.test.mjs', 'test/none.test.mjs', 'test/cycle.test.mjs'];
@@ -112,4 +112,41 @@ test('should keep the zero-trust-review tests that reach skills/mutation through
   const zt = ['skills/zero-trust-review/probelib.test.mjs', 'skills/zero-trust-review/mutants.test.mjs'];
   assert.deepEqual(await sel('skills/mutation/proc.mjs', root, zt), [...zt].sort());
   assert.deepEqual(await sel('skills/mutation/mutants.mjs', root, ['skills/zero-trust-review/mutants.test.mjs']), ['skills/zero-trust-review/mutants.test.mjs']);
+});
+
+// ---------------------------------------------------------------- what is read: never a symlink, a file over 4 MiB, a non-JS file or a file out of the tree
+const MAX = 1 << 22;
+// a plain directory tree (the walk reads the work tree only)
+function plainRepo(t, files) {
+  const { dir, repo } = tempDir(t, 'mutation-select-');
+  put(repo, files);
+  return { dir, repo };
+}
+const IMPORT_A = "import { a } from '../src/a.mjs';\n";
+const padded = size => `${IMPORT_A}//${'x'.repeat(size - IMPORT_A.length - 3)}\n`;
+
+test('should read a test file of exactly 4 MiB and skip one byte more when the graph is walked (TestSelect edge)', async t => {
+  const { repo } = plainRepo(t, { 'src/a.mjs': 'export const a = 1;\n', 'test/max.test.mjs': padded(MAX), 'test/over.test.mjs': padded(MAX + 1) });
+  assert.equal(statSync(join(repo, 'test/max.test.mjs')).size, MAX);
+  assert.deepEqual(await sel('src/a.mjs', repo, ['test/max.test.mjs', 'test/over.test.mjs']), ['test/max.test.mjs']);
+});
+
+test('should not follow a test file that is a symlink when the graph is walked (TestSelect edge)', async t => {
+  const { repo } = plainRepo(t, { 'src/a.mjs': 'export const a = 1;\n', 'test/real.mjs': IMPORT_A });
+  symlinkSync('real.mjs', join(repo, 'test/link.test.mjs'));
+  assert.deepEqual(await sel('src/a.mjs', repo, ['test/link.test.mjs', 'test/real.mjs']), ['test/real.mjs']);
+});
+
+test('should not read an imported file that is not JavaScript when the graph is walked (TestSelect edge)', async t => {
+  const { repo } = plainRepo(t, {
+    'src/a.mjs': 'export const a = 1;\n', 'src/data.json': `{"note": "import './a.mjs'"}\n`,
+    'test/j.test.mjs': "import data from '../src/data.json' with { type: 'json' };\n",
+  });
+  assert.deepEqual(await sel('src/a.mjs', repo, ['test/j.test.mjs']), []);
+});
+
+test('should not follow an import that leaves the repo when the file out of the tree holds a computed import() (TestSelect edge)', async t => {
+  const { dir, repo } = plainRepo(t, { 'src/a.mjs': 'export const a = 1;\n', 'test/out.test.mjs': "import '../../evil.mjs';\n" });
+  writeFileSync(join(dir, 'evil.mjs'), 'const name = process.argv[2];\nawait import(name);\n');
+  assert.deepEqual(await sel('src/a.mjs', repo, ['test/out.test.mjs']), []);
 });
