@@ -5,7 +5,7 @@
 import { matchGlob } from './patterns.mjs';
 import { VERIFY } from './evidence.mjs';
 
-export const ALWAYS_ALLOWED = ['docs/retro/log.md'];
+export const ALWAYS_ALLOWED = ['docs/retro/log.md', 'docs/retro/rule-hits.json'];
 export const OPTION = Object.freeze({ apply: 'apply', skip: 'skip' });
 export const DEFAULT_OPTIONS = Object.freeze({ A: OPTION.apply, B: OPTION.skip });
 // A word may touch the id ("P1ok", as before); a letter needs a space or a separator so "P1A" is not read as an answer.

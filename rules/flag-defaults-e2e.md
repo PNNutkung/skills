@@ -12,9 +12,9 @@ A paired-agent-tdd bug passed every test because each e2e test set its flags exp
 
 In one `skills/<skill>/*.test.mjs` file (for a flag that only a plugin hook reads, such as `REPLY_`, one `hooks/*.test.mjs` file):
 
-- Put the comment `// flags: defaults` in it.
-- Start a process: `spawnSync`, `spawn`, `execFile`, `execFileSync` or `fork`. This is the proxy for "end to end".
-- Keep at least one top-level `test(...)` or `it(...)` block that sets none of the skill's ON flags. The code before the first test (imports, helpers, a shared env) sets none of them either.
+- Put the comment `// flags: defaults` in it. <!-- rule: flag-defaults-e2e/marker -->
+- Start a process: `spawnSync`, `spawn`, `execFile`, `execFileSync` or `fork`. This is the proxy for "end to end". <!-- rule: flag-defaults-e2e/spawn -->
+- Keep at least one top-level `test(...)` or `it(...)` block that sets none of the skill's ON flags. The code before the first test (imports, helpers, a shared env) sets none of them either. <!-- rule: flag-defaults-e2e/unset-test -->
 
 "Sets" means the name used as an object key (`NAME:`, `'NAME':`, `"NAME":`), as `NAME=` (shell or env string), or as a property set (`env.NAME = ...`). The name as a value, in a filter list, in a comment or in a test name is fine. Inheriting `process.env` counts as unset: CI sets no flag.
 
@@ -24,8 +24,8 @@ A new flag prefix needs an owner in `OWNERS` in `rules/checks/flag-defaults-e2e.
 
 ## What the check cannot see
 
-- Whether the marked test reaches the code the flag controls. A spawn and an unset flag are necessary, not sufficient.
-- A flag set indirectly: a spread of a shared object (`...SPEED_ENV`), a helper in another file, a name built from a string, or a wrapper script that sets it.
-- Tests nested inside `describe(...)` or another block: only top-level `test(` and `it(` count.
-- A test that is skipped where CI runs (for example, a missing `python3`).
-- A CI job or a developer shell that does set a flag.
+- Whether the marked test reaches the code the flag controls. A spawn and an unset flag are necessary, not sufficient. <!-- rule: flag-defaults-e2e/limit-reach -->
+- A flag set indirectly: a spread of a shared object (`...SPEED_ENV`), a helper in another file, a name built from a string, or a wrapper script that sets it. <!-- rule: flag-defaults-e2e/limit-indirect -->
+- Tests nested inside `describe(...)` or another block: only top-level `test(` and `it(` count. <!-- rule: flag-defaults-e2e/limit-nested -->
+- A test that is skipped where CI runs (for example, a missing `python3`). <!-- rule: flag-defaults-e2e/limit-skipped -->
+- A CI job or a developer shell that does set a flag. <!-- rule: flag-defaults-e2e/limit-ci-env -->

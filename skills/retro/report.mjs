@@ -21,6 +21,16 @@ export function renderReport({ work, findings, proposals, lang = 'en' }) {
     if (f.verify !== 'passed') for (const r of f.reasons ?? []) out.push(`- ${t.why}: ${r}`);
     out.push('');
   }
+  const repeats = findings.filter(f => f.repeat === true && f.unenforced === true);
+  if (repeats.length) {
+    out.push('## Repeats of unenforced rules', '');
+    for (const f of repeats) {
+      const earlier = (f.earlierHits ?? []).map(h => `${h.date} ${h.branch}`).join(', ') || `${(f.evidence ?? []).length} evidence items here`;
+      const levels = (proposals ?? []).filter(p => p.finding === f.id).map(p => (p.level ? `level ${p.level}` : p.noLevel ? `noLevel "${p.noLevel}"` : '')).filter(Boolean);
+      out.push(`- ${f.id} ${f.rule}: earlier ${earlier}; ${levels.join(', ') || `${t.none} level`}`);
+    }
+    out.push('');
+  }
   out.push(`## ${t.proposals}`, '');
   if (!proposals?.length) out.push(t.none);
   for (const p of proposals ?? []) {

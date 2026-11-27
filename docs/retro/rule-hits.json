@@ -1,0 +1,11 @@
+[
+ {"rule": "paths/realpath-compare", "date": "2026-11-22", "branch": "seed: retro of the retro skill", "finding": "seed (rules/paths.md: sessions in temp folders)"},
+ {"rule": "paths/inproc-cwd", "date": "2026-11-23", "branch": "seed: retro of issue #19", "finding": "seed (rules/paths.md: in-process mutate.mjs main)"},
+ {"rule": "performance/spawn-timeout", "date": "2026-11-23", "branch": "seed: retro of issue #19", "finding": "seed (rules/performance.md: probelib.test spawn timeout)"},
+ {"rule": "performance/time-floor", "date": "2026-11-23", "branch": "seed: retro of issue #19", "finding": "seed (rules/performance.md: 60 s target before the CPU floor)"},
+ {"rule": "paths/realpath-compare", "date": "2026-11-25", "branch": "seed: retro of the verify skill", "finding": "seed (rules/paths.md: verify.mjs repo root vs VERIFY_CACHE_DIR)"},
+ {"rule": "performance/measure-method", "date": "2026-11-26", "branch": "seed: retro of issue #33", "finding": "seed (rules/performance.md: launch count without a method)"},
+ {"rule": "flaky-tests/pipe-order", "date": "2026-11-26", "branch": "seed: retro of issue #33", "finding": "seed (rules/flaky-tests.md: runner parity test)"},
+ {"rule": "flaky-tests/poll-start", "date": "2026-11-26", "branch": "seed: retro of issue #33", "finding": "seed (rules/flaky-tests.md: probelib slot test fixed wait)"},
+ {"rule": "paths/realpath-compare", "date": "2026-11-26", "branch": "seed: retro of the reply-style rule", "finding": "seed (rules/paths.md: reply-style.mjs main guard)"}
+]

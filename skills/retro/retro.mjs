@@ -15,6 +15,7 @@ import { verifyAll } from './evidence.mjs';
 import { FlagError, readFlags } from './flags.mjs';
 import { readBaseline, topLevel } from './ratchet-io.mjs';
 import { LOG_FILE, appendLog, renderReport } from './report.mjs';
+import { HITS_FILE, addHits, isUnenforced, levelErrors, markRepeats, readEnforcers, readHits } from './rules.mjs';
 
 const COMMANDS = ['collect', 'check', 'applied-check', 'log'];
 const SELF = realpathSync(fileURLToPath(import.meta.url));
@@ -64,8 +65,15 @@ function check(opts) {
     runFile: name => readText(join(run, name)),
     metric: key => metricAt(collected, key),
   };
-  const { findings: verified, counts } = verifyAll(findings, ctx);
-  const errors = checkProposals(proposals, verified);
+  const { findings: checked, counts } = verifyAll(findings, ctx);
+  const errors = checkProposals(proposals, checked);
+  let verified = checked;
+  if (opts.flags.unenforcedRule) {
+    const { entries } = readEnforcers(repo);
+    verified = markRepeats(checked, readHits(repo), { branch: collected.work?.label ?? '' })
+      .map(f => (f.repeat === true ? { ...f, unenforced: isUnenforced(entries, f.rule) } : f));
+    errors.push(...levelErrors(verified, proposals, entries));
+  }
   writeFileSync(join(run, 'verified.json'), `${JSON.stringify(verified, null, 1)}\n`);
   writeFileSync(join(run, 'report.md'), renderReport({ work: collected.work?.label ?? '', findings: verified, proposals: errors.length ? [] : proposals, lang: collected.lang }));
   return { code: errors.length ? 1 : 0, out: { ok: !errors.length, counts, errors, report: join(run, 'report.md') } };
@@ -101,7 +109,10 @@ function logCmd(opts) {
   const file = join(collected.repo, LOG_FILE);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, appendLog(readText(file), row));
-  return { code: 0, out: { ok: true, log: LOG_FILE, row } };
+  const oldHits = readHits(collected.repo);
+  const hits = addHits(oldHits, verified, { date: row.date, branch: row.work });
+  if (hits.length !== oldHits.length) writeFileSync(join(collected.repo, HITS_FILE), `${JSON.stringify(hits, null, 1)}\n`);
+  return { code: 0, out: { ok: true, log: LOG_FILE, row, hits: hits.length - oldHits.length } };
 }
 
 /** -> { code, out } */
@@ -119,7 +130,7 @@ export function run(argv, env = process.env, cwd = process.cwd()) {
       const { run: dir, collect: c } = collect({ repo, base: opts.base, pr: opts.pr, since: opts.since, sessions: opts.session, lang: opts.lang, flags, env });
       return { code: 0, out: { ok: true, run: dir, work: c.work.label, sessions: c.totals.sessions, tokens: c.totals.tokens, guardrail: !c.guardrail.finding, notes: c.notes } };
     }
-    if (cmd === 'check') return check(opts);
+    if (cmd === 'check') return check({ ...opts, flags });
     if (cmd === 'applied-check') return appliedCheckCmd(opts);
     return logCmd(opts);
   } catch (e) {

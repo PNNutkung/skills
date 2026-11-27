@@ -66,6 +66,8 @@ Write `<run>/findings.json` with the Write tool. Every finding cites evidence; k
                {"kind": "metric", "ref": "guardrail.finding", "quote": "true"}]}]
 ```
 
+When a finding breaks a rule, add `"rule": "<id>"`: the id at the end of the bullet in `rules/*.md` (`paths/realpath-compare`), or the file path when the repo has no ids. `rules/enforcers.json` says which rules are `partial` or `judgment` (a missing entry counts as unenforced). A finding is a **repeat** when `docs/retro/rule-hits.json` holds its rule from another branch or it cites 2+ evidence items; a repeat of an unenforced rule needs a proposal with `"level"` (`check`, `ratchet`, `hook`, `type`, `test`) or `"noLevel": "<why none works>"`, or `check` fails. `log` appends each finding's rule to `rule-hits.json`. `RETRO_UNENFORCED_RULE_CHECK_ENABLED=false` turns the repeat gate off (ADR 0013).
+
 Write `<run>/proposals.json`: `[{"id": "P1", "finding": "F1", "text": "ratchet retro:ts-as-cast", "files": [".ratchet.json"]}]`. `files` lists every path (globs allowed) the proposal may change. Offer more than apply/skip with `"options": {"A": "apply", "B": "skip", "C": "apply"}` (one capital letter each, apply or skip); without it A = apply, B = skip. Then `node "$SK/retro.mjs" check --run <run>`: each finding gets `verify` = `passed`, `not-passed` (what it cites does not match) or `no-evidence`. A proposal for a finding that did not pass fails the check. It writes `<run>/report.md`.
 
 ## 4. Ask
