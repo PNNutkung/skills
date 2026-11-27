@@ -10,7 +10,8 @@ export const NO_SANDBOX = 86, TIMEOUT = 124;
 const TAIL = 200, KILL_GRACE_SEC = 10;
 export const TEST = /(^|\/)(tests?|__tests__|specs?|e2e|cypress|playwright)\/|(^|\/)(test_|conftest)[^/]*$|[_.](test|spec)\.\w+$/i; // same as triage.py
 export const DOC = /\.(md|json|ya?ml|toml|ini|cfg)$/i;
-export const isSource = p => !TEST.test(p) && !DOC.test(p) && !basename(p).toLowerCase().includes('config');
+const FIXTURES = /(^|\/)fixtures\//; // test-support data and helpers (ADR 0011), kept out of TEST so it matches triage.py
+export const isSource = p => !TEST.test(p) && !DOC.test(p) && !FIXTURES.test(p) && !basename(p).toLowerCase().includes('config');
 export const shq = s => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`); // file names come from the branch under review
 
 // A repo-relative path, normalized; throws on anything that could leave the repo.

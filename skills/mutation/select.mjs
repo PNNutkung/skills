@@ -3,7 +3,7 @@
 // language has no graph here, so it gets every test, and so does a test file that is not JavaScript (what it runs cannot be seen), or one whose graph holds an import() with a computed path. Files are read from `repo`
 // (a work tree at the revision under test) and never followed out of it: the tree is the branch's, so its contents are data.
 import { lstatSync, readFileSync } from 'node:fs';
-import { dirname, extname, join, normalize } from 'node:path';
+import { basename, dirname, extname, join, normalize } from 'node:path';
 
 const JS = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.mts', '.cts', '.tsx']);
 const TRY = ['', '.mjs', '.js', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.jsx', ...[...JS].map(e => `/index${e}`)];
@@ -12,6 +12,8 @@ const SPEC = /\b(?:import|export)\s[^'"`;]*?\bfrom\s*(['"])([^'"\n]+)\1|\bimport
 const CALL = /\b(?:import|require)\s*\(\s*([^)\s][^)]*)\)/g;
 const QUOTED = /^(['"])([^'"\n]+)\1\s*$/, PLAIN_TEMPLATE = /^`([^`$\n]+)`\s*$/;
 const UNKNOWN = Symbol('unknown import'); // an import() whose path is computed: it may reach any file, so the test is kept (ADR 0011 A21)
+// a comment (skipped) or a string literal: a test that spawns a file names it in a string, not in an import
+const TOKEN = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|(['"`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
 const MAX_BYTES = 1 << 22;
 const isJs = p => JS.has(extname(p).toLowerCase());
 
@@ -52,12 +54,22 @@ function importsOf(repo, path, cache) {
   cache.set(path, out);
   return out;
 }
+/** the base names `path` names in its string literals (a literal 'cli.mjs' or 'x/cli.mjs' names cli.mjs) */
+function namesOf(repo, path, cache) {
+  const k = `names:${path}`;
+  if (cache.has(k)) return cache.get(k);
+  const out = new Set();
+  for (const m of (read(repo, path) ?? '').matchAll(TOKEN)) if (m[1]) out.add(basename(m[2]));
+  cache.set(k, out);
+  return out;
+}
 const reaches = (repo, test, file, cache) => {
   const seen = new Set([test]), todo = [test];
   while (todo.length) {
     const cur = todo.pop();
     if (cur === file || cur === UNKNOWN) return true;
     if (typeof cur !== 'string' || !isJs(cur)) continue;
+    if (namesOf(repo, cur, cache).has(basename(file))) return true;
     for (const next of importsOf(repo, cur, cache)) if (!seen.has(next)) { seen.add(next); todo.push(next); }
   }
   return false;
