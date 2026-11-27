@@ -34,6 +34,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ZT = resolve(process.env.ZT_DIR ?? join(HERE, '..', 'zero-trust-review'));
 // ZT is fixed when the module loads (ZT_DIR of this process): without it there is nothing to import, so this one check still exits here
 if (!existsSync(join(ZT, 'probelib.mjs'))) { process.stderr.write(`tdd: the zero-trust-review skill is not at ${ZT} (set ZT_DIR): its sandbox runner and probes are required\n`); process.exit(2); }
+// probelib.mjs re-exports skills/mutation (ADR 0011): a copy of zero-trust-review elsewhere (ZT_DIR) has no mutation skill beside it, so it is pointed at the one beside
+// this skill through MUTATION_DIR, set once here when the module loads (like ZT_DIR, before the import reads it) and passed on to the probes this file starts
+const MUTATION_ENV = process.env.MUTATION_DIR || existsSync(join(ZT, '..', 'mutation', 'proc.mjs')) ? {} : { MUTATION_DIR: join(HERE, '..', 'mutation') };
+Object.assign(process.env, MUTATION_ENV);
 // Every command runs inside main(argv, { env, cwd }) with ONE call context `cx`: the injected env and cwd, the output in write order, and per-call state (the snapshot counter).
 // Nothing in a call reads or writes process.env, process.cwd() or process.exitCode, or exits: fail() throws an ExitError that main turns into the exit code and `tdd: <msg>`.
 export class ExitError extends Error { constructor(code, message) { super(message); this.code = code; } }
@@ -209,7 +213,7 @@ function child(ctx, script, base, head, tests, tag, extra = [], max = null) { //
   const argv = [join(ZT, script), '--repo', plan.repo, '--base', base, '--head', head, '--scratch', scratch, '--cmd', plan.cmd, '--tests', tests.join(','), '--runner', ctx.probe.runner,
     '--jobs', String(ctx.jobs), '--timeout', String(ctx.probe.timeout), ...(plan.link ?? []).flatMap(n => ['--link', n]), ...(plan.ro ?? []).flatMap(p => ['--ro', p]), ...ctx.probe.env.flatMap(e => ['--env', e]), ...(ctx.probe.inproc && PROBES_INPROC ? ['--runner-inprocess'] : []), ...extra];
   return new Promise(done => {
-    const p = spawn(process.execPath, argv, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: max === null ? ctx.env : { ...ctx.env, ZT_TEST_PROCESS_MAX: String(max) } });
+    const p = spawn(process.execPath, argv, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...ctx.env, ...MUTATION_ENV, ...(max === null ? {} : { ZT_TEST_PROCESS_MAX: String(max) }) } });
     let out = '', err = '';
     p.stdout.on('data', d => (out += d));
     p.stderr.on('data', d => (err += d));
@@ -552,7 +556,7 @@ async function verify(ctx, retPath) {
   const unfixed = open.filter(stillThere).map(cl => `${cl.id} ${cl.severity} ${cl.file}:${cl.startLine} ${cl.title}`);
   let proof = null;
   if ((ret.clusters ?? []).length && existsSync(join(ZT, 'proofcheck.mjs'))) {
-    const text = await new Promise(done => { const p = spawn(process.execPath, [join(ZT, 'proofcheck.mjs'), '--ret', abs(ctx, retPath), '--repo', plan.repo, '--head', reviewed ?? snap, '--run', ctx.run], { cwd: ctx.cwd, env: ctx.env, stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; p.stdout.on('data', d => (out += d)); p.stderr.on('data', d => (err += d)); p.on('close', code => done({ out, err, code })); });
+    const text = await new Promise(done => { const p = spawn(process.execPath, [join(ZT, 'proofcheck.mjs'), '--ret', abs(ctx, retPath), '--repo', plan.repo, '--head', reviewed ?? snap, '--run', ctx.run], { cwd: ctx.cwd, env: { ...ctx.env, ...MUTATION_ENV }, stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; p.stdout.on('data', d => (out += d)); p.stderr.on('data', d => (err += d)); p.on('close', code => done({ out, err, code })); });
     try { const parsed = JSON.parse(text.out); proof = (parsed.clusters ?? parsed).reduce((m, x) => ({ ...m, [x.status]: (m[x.status] ?? 0) + 1 }), {}); } catch { proof = `proofcheck exited ${text.code}: ${text.err.trim().split('\n')[0]}`; }
   }
   const integration = plan.integration?.file ? (ret.integration ? (ret.integration.exit === 0 ? 'ok' : `${plan.integration.file} exited ${ret.integration.exit}`) : 'not run') : undefined;
