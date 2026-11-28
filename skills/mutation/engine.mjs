@@ -55,6 +55,7 @@ function options(opts) {
   if (!isInt(o.timeout, 1)) usage(`timeout must be a whole number of seconds from 1, got ${String(o.timeout)}`);
   o.scoreMin ??= 100;
   if (typeof o.scoreMin !== 'number' || Number.isNaN(o.scoreMin) || o.scoreMin < 0 || o.scoreMin > 100) usage(`scoreMin must be a number from 0 to 100, got ${String(o.scoreMin)}`);
+  if (o.onProgress !== undefined && typeof o.onProgress !== 'function') usage('onProgress must be a function');
   o.select ??= 'imports';
   if (!SELECT.includes(o.select)) usage(`select must be one of ${SELECT.join(', ')}, got ${String(o.select)}`);
   if (o.killExits !== undefined && (!Array.isArray(o.killExits) || !o.killExits.every(n => isInt(n, 1) && n <= 255))) usage('killExits must be a list of integers 1-255');
@@ -217,9 +218,11 @@ export async function runMutation(opts = {}) {
     const timer = o.budgetStrict && deadline !== Infinity ? setTimeout(() => stop.abort(), Math.max(0, deadline - performance.now())) : null;
     const run = { ...o, signal: stop.signal };
     const results = new Array(picked.length);
+    let done = 0; // onProgress({done, total, mutant}): once per mutant, in the order verdicts arrive
+    const report = i => o.onProgress?.({ done: ++done, total: picked.length, mutant: results[i] });
     picked.forEach((m, i) => {
       const was = earlier.get(m.id);
-      if (was) results[i] = { ...strip(m), result: 'killed', ...(was.by !== undefined && { by: was.by }), ...(was.run !== undefined && { run: was.run }), ...(was.quote !== undefined && { quote: was.quote }), reused: true };
+      if (was) { results[i] = { ...strip(m), result: 'killed', ...(was.by !== undefined && { by: was.by }), ...(was.run !== undefined && { run: was.run }), ...(was.quote !== undefined && { quote: was.quote }), reused: true }; report(i); }
     });
     let next = 0;
     try {
@@ -228,10 +231,11 @@ export async function runMutation(opts = {}) {
           const i = next++;
           if (results[i]) continue;
           const mutant = strip(picked[i]);
-          if (performance.now() > deadline || stop.signal.aborted) { results[i] = { ...mutant, result: 'skipped' }; continue; }
+          if (performance.now() > deadline || stop.signal.aborted) { results[i] = { ...mutant, result: 'skipped' }; report(i); continue; }
           const { dirty, ...v } = await tryMutant(run, w.tree, picked[i], killerFirst(selected[mutant.file], killers.get(mutant.file))).catch(e => ({ result: 'inconclusive', reason: e.message, dirty: true }));
           if (v.result === 'killed' && v.by) killers.set(mutant.file, v.by);
           results[i] = { ...mutant, ...v };
+          report(i);
           if (dirty) { discard(w.tree); w.tree = stop.signal.aborted ? null : await newTree(o, scratch, linked); }
         }
       }));

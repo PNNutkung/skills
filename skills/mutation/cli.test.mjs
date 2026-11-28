@@ -34,6 +34,10 @@ test('should print the Result as JSON and exit 0 when survivors fail the score (
   assert.equal(out.pass, false);
   assert.equal(typeof out.score.value, 'number');
   assert.deepEqual(out.tests.run, ['test/calc.test.mjs']);
+  // progress goes to stderr, one line per mutant, so stdout stays one JSON document
+  const lines = r.stderr.trim().split('\n');
+  assert.equal(lines.length, out.mutants.length, r.stderr);
+  assert.match(lines.at(-1), new RegExp(`^mutation: ${out.mutants.length}/${out.mutants.length} (killed|survived) src/calc\\.mjs:\\d+$`));
 
   // --score-min, --equivalent, --reuse and --max reach the engine
   const eq = join(fx.dir, 'eq.json'), prev = join(fx.dir, 'prev.json');

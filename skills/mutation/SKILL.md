@@ -41,7 +41,7 @@ From code: `runMutation(opts)` in `engine.mjs` (it reads no environment variable
 | `equivalent` | none | path of a `mutation-equivalent.json` |
 | `scratch` | a temp folder | where the trees are extracted |
 
-Also: `timeout`, `killExits`, `link`, `ro`, `env`, `baselineFrom`, `budgetStrict`, `slots`, `signal`.
+Also: `timeout`, `killExits`, `link`, `ro`, `env`, `baselineFrom`, `budgetStrict`, `slots`, `signal`, `onProgress({done, total, mutant})` (once per decided mutant; `cli.mjs` prints `mutation: DONE/TOTAL RESULT FILE:LINE` on stderr).
 
 Result: `{available, mutants[], score: {value, pass, counted, equivalent}, pass, reason?, tests: {run, notUsable}, blobs}`. `score.value = 100 * (killed + timeout) / (total - equivalent)`; nothing counted is `value: null`, `pass: false`.
 

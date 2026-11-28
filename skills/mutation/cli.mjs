@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The mutation engine from a shell (ADR 0011): prints the Result of runMutation as one JSON document and exits 0, even when the score fails (a result is data).
-// A usage error exits 2 with the message on stderr and nothing on stdout; any other error exits 1. Without --scratch the engine uses a temp folder of its own.
+// A usage error exits 2 with the message on stderr and nothing on stdout; any other error exits 1. Progress goes to stderr: `mutation: DONE/TOTAL RESULT FILE:LINE`. Without --scratch the engine uses a temp folder of its own.
 //   node cli.mjs --repo . --base REV --head REV --cmd 'node --test {file}' --runner PATH [--tests a,b] [--files a.py:10-40,b.py] [--max N|unlimited]
 //     [--budget SEC|none] [--jobs N] [--timeout SEC] [--score-min N] [--select imports|all] [--equivalent FILE] [--reuse FILE]... [--kill-exits 1,2]
 //     [--link NAME]... [--ro DIR]... [--env K=V]... [--scratch DIR]
@@ -31,7 +31,9 @@ export function optionsOf(argv, cwd = process.cwd()) {
 // -> { code, stdout, stderr }
 async function main(argv) {
   try {
-    const r = await runMutation(optionsOf(argv));
+    // progress on stderr, one line per mutant, as each verdict arrives: stdout stays one JSON document
+    const onProgress = ({ done, total, mutant: m }) => process.stderr.write(`mutation: ${done}/${total} ${m.result} ${m.file}:${m.line}\n`);
+    const r = await runMutation({ ...optionsOf(argv), onProgress });
     return { code: 0, stdout: `${JSON.stringify(r)}\n`, stderr: '' };
   } catch (e) {
     return { code: e instanceof UsageError ? 2 : 1, stdout: '', stderr: `mutation: ${e.message}\n` };

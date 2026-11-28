@@ -124,3 +124,30 @@ test('should ignore an earlier Result whose mutants are not a list when reuse na
   assert.ok(r.mutants.length > 0 && r.mutants.every(m => !m.reused));
   assert.equal(calls.length, r.mutants.length);
 });
+
+test('should report each mutant once with a count that ends at the total when onProgress is a function', async t => {
+  const fx = abcRepo(t);
+  const seen = [];
+  const r = await runMutation(calcOpts(fx, { inproc: fakeRunner().inproc, jobs: 2, onProgress: p => seen.push(p) }));
+  assert.equal(seen.length, r.mutants.length);
+  assert.deepEqual(seen.map(p => p.done), seen.map((_, i) => i + 1), 'done counts up by one');
+  assert.ok(seen.every(p => p.total === r.mutants.length));
+  assert.deepEqual(seen.map(p => p.mutant.id).sort(), r.mutants.map(m => m.id).sort(), 'each mutant once');
+  assert.ok(seen.every(p => r.mutants.find(m => m.id === p.mutant.id).result === p.mutant.result));
+});
+
+test('should report reused mutants too when reuse gives every verdict', async t => {
+  const fx = calcRepo(t);
+  const first = await runMutation(calcOpts(fx, { inproc: fakeRunner().inproc }));
+  const saved = join(fx.dir, 'first.json');
+  writeFileSync(saved, JSON.stringify(first));
+  const seen = [];
+  await runMutation(calcOpts(fx, { inproc: fakeRunner().inproc, reuse: [saved], onProgress: p => seen.push(p) }));
+  assert.equal(seen.length, first.mutants.length);
+  assert.ok(seen.every(p => p.mutant.reused === true));
+});
+
+test('should refuse onProgress when it is not a function', async t => {
+  const fx = calcRepo(t);
+  await assert.rejects(runMutation(calcOpts(fx, { inproc: fakeRunner().inproc, onProgress: 'yes' })), /onProgress must be a function/);
+});
