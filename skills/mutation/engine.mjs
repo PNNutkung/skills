@@ -144,6 +144,14 @@ function reusable(paths, blobs) {
 
 const NO_TESTS = { run: [], notUsable: [] };
 
+// FinalSpeed: the order only says which test file runs first. A killed mutant stops at the first failing file, so a good first guess saves runs;
+// a survivor still runs every file, so nothing is skipped. Shortest baseline time first (a reused baseline has no times: the given order stands).
+function byTime(list, tests, base) {
+  const sec = new Map(tests.map((t, i) => [t, base[i].sec ?? 0]));
+  return list.map((t, i) => [t, i]).sort((a, b) => sec.get(a[0]) - sec.get(b[0]) || a[1] - b[1]).map(([t]) => t);
+}
+const killerFirst = (list, killer) => (killer && list.includes(killer) ? [killer, ...list.filter(t => t !== killer)] : list);
+
 /** -> Promise<Result> {available, mutants[], score, pass, reason?, tests: {run, notUsable}, blobs, baseline?}; a usage error throws UsageError */
 export async function runMutation(opts = {}) {
   const o = options(opts);
@@ -198,7 +206,8 @@ export async function runMutation(opts = {}) {
 
     // which usable tests each mutated file is run against: its importers (select imports), or all of them
     const cache = new Map();
-    const selected = Object.fromEntries(Object.keys(blobs).map(f => [f, o.select === 'all' ? usable : testsFor(f, usable, workers[0].tree, cache)]));
+    const selected = Object.fromEntries(Object.keys(blobs).map(f => [f, byTime(o.select === 'all' ? usable : testsFor(f, usable, workers[0].tree, cache), tests, base)]));
+    const killers = new Map(); // mutated file -> the test file that killed its last mutant: it runs first for the next mutant of that file
 
     const deadline = o.budget === 'none' ? Infinity : performance.now() + o.budget * 1000;
     const stop = new AbortController(); // the caller's signal, and with a strict budget the deadline, stop the mutants still running
@@ -220,7 +229,8 @@ export async function runMutation(opts = {}) {
           if (results[i]) continue;
           const mutant = strip(picked[i]);
           if (performance.now() > deadline || stop.signal.aborted) { results[i] = { ...mutant, result: 'skipped' }; continue; }
-          const { dirty, ...v } = await tryMutant(run, w.tree, picked[i], selected[mutant.file]).catch(e => ({ result: 'inconclusive', reason: e.message, dirty: true }));
+          const { dirty, ...v } = await tryMutant(run, w.tree, picked[i], killerFirst(selected[mutant.file], killers.get(mutant.file))).catch(e => ({ result: 'inconclusive', reason: e.message, dirty: true }));
+          if (v.result === 'killed' && v.by) killers.set(mutant.file, v.by);
           results[i] = { ...mutant, ...v };
           if (dirty) { discard(w.tree); w.tree = stop.signal.aborted ? null : await newTree(o, scratch, linked); }
         }
