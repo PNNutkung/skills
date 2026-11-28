@@ -3,12 +3,16 @@
 //   node tdd.mjs plan   --plan plan.json [--skip-preflight]  validate, snapshot the base tree, create the run folder RUN, prove the sandbox runs the repo's tests (preflight), print the Workflow args (JSON)
 //                       plan.dodFile (an ADR of the definition-of-done skill) or, with neither dod[] nor dodFile, the ADR whose touches match the src files: see dodfile.mjs
 //   node tdd.mjs preflight --run RUN                       a test that already passes at the base must pass in the sandbox: the environment works before an agent is paid
-//   node tdd.mjs red    --run RUN --group G               the group's NEW tests must FAIL now (class: assertion | load error | passes already)
-//   node tdd.mjs green  --run RUN --group G [--retest] [--quick] [--reuse]   the group's tests pass, exercise the change, did not change since RED, stay in scope; mutants; coverage
+//   node tdd.mjs red    --run RUN --group G [--rewrite]   the group's NEW tests must FAIL now (class: assertion | load error | passes already); --rewrite: the test writer changed
+//                       the tests after RED, this run is the new RED reference (ADR 0011 A8)
+//   node tdd.mjs green  --run RUN --group G [--retest] [--quick] [--reuse]   the group's tests pass, exercise the change, did not change since RED, stay in scope; mutants
+//                       (survivors fail; score >= PTDD_MUTATION_SCORE_MIN; a changed code file no mutator covers needs plan.mutation.accept); coverage. --retest is refused with the test writer on
 //                       --quick: no mutants (a driver's middle run); --reuse: the stored result of the last full run on byte-identical files (gatecache.mjs), flake check re-run
 //   node tdd.mjs dod    --run RUN --group G --stage red|green --row ID:kind:test:file ...   the group's DoD pairs from its gate file and the working tree (instant, no run)
 //   node tdd.mjs resume --run RUN [--ret return.json] [--group G] [--max-repairs N] [--retry G] [--hint G=text] [--escalate G]   where each group stands, from the gate files; writes RUN/continue.json (args.resume of the Workflow)
-//   node tdd.mjs final  --run RUN [--again]               every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch (--again: a re-run after fixes)
+//   node tdd.mjs final  --run RUN [--again]               every group's tests together, existing tests that mention the changed modules, scope, whole-diff patch (--again: a re-run after fixes);
+//                       beside them every changed line mutated once (PTDD_MUTATION_MAX, no budget, green kills reused, RUN/mutation-equivalent.json applied)
+//   node tdd.mjs equivalent --run RUN --add ID --reason TEXT   the judge marks a survivor of the last final (else green) run equivalent; refused: exit 1, nothing written
 //   node tdd.mjs verify --run RUN --ret return.json       DoD closure from the gate files, fixes still present, reviewer proofs (proofcheck.mjs); final.json reused when unchanged (PTDD_GATE_REUSE_ENABLED)
 //   node tdd.mjs snap   --run RUN --on REV [--files a,b]  print the sha of REV + those working-tree files (no --files: the whole working tree)
 // Fast mode (PTDD_PIPELINE_MODE=fast, the default, unless plan.mode is set; plan.mode "fast" selects it, any other value the default pipeline; `plan` writes the effective
@@ -34,6 +38,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ZT = resolve(process.env.ZT_DIR ?? join(HERE, '..', 'zero-trust-review'));
 // ZT is fixed when the module loads (ZT_DIR of this process): without it there is nothing to import, so this one check still exits here
 if (!existsSync(join(ZT, 'probelib.mjs'))) { process.stderr.write(`tdd: the zero-trust-review skill is not at ${ZT} (set ZT_DIR): its sandbox runner and probes are required\n`); process.exit(2); }
+// probelib.mjs re-exports skills/mutation (ADR 0011): a copy of zero-trust-review elsewhere (ZT_DIR) has no mutation skill beside it, so it is pointed at the one beside
+// this skill through MUTATION_DIR, set once here when the module loads (like ZT_DIR, before the import reads it) and passed on to the probes this file starts
+const MUTATION_ENV = process.env.MUTATION_DIR || existsSync(join(ZT, '..', 'mutation', 'proc.mjs')) ? {} : { MUTATION_DIR: join(HERE, '..', 'mutation') };
+Object.assign(process.env, MUTATION_ENV);
 // Every command runs inside main(argv, { env, cwd }) with ONE call context `cx`: the injected env and cwd, the output in write order, and per-call state (the snapshot counter).
 // Nothing in a call reads or writes process.env, process.cwd() or process.exitCode, or exits: fail() throws an ExitError that main turns into the exit code and `tdd: <msg>`.
 export class ExitError extends Error { constructor(code, message) { super(message); this.code = code; } }
@@ -45,13 +53,17 @@ const imp = f => import(pathToFileURL(join(ZT, f)).href);
 const lib = await imp('probelib.mjs');
 const { createRunDir, markerDir, readMarker, resolveRun, writeSafe } = await imp('runctx.mjs');
 const { FENCE_ENV, OLD_FENCE_ENV, clearFence, writeFence } = await import('./fence.mjs');
-const { FlagError, enabled, inprocessRunner, positiveInt } = await import('./flags.mjs');
+const { FlagError, enabled, inprocessRunner, mutationFlags, positiveInt } = await import('./flags.mjs');
 const { runDirect } = await import('./direct-run.mjs');
 const { resolveDod } = await import('./dodfile.mjs');
 const { cacheName, gateKey, readEntry, writeEntry } = await import('./gatecache.mjs');
 const { mayStore, pipelineOf, processShares, readSpeed, speedForArgs, speedOf, untrustedByFinal, verifyReuses } = await import('./speed.mjs');
 const ztFlags = await imp('flags.mjs');
-const { changedLines } = await imp('mutants.mjs');
+const { LANG, changedLines } = await imp('mutants.mjs');
+// the mutation skill (ADR 0011 A18): the engine, the score, the equivalent file and the test selection, from the folder probelib.mjs uses too (MUTATION_DIR, set above when needed)
+const MUT_DIR = resolve(process.env.MUTATION_DIR || join(ZT, '..', 'mutation'));
+const mimp = f => import(pathToFileURL(join(MUT_DIR, f)).href);
+const [{ runMutation }, { scoreOf }, { addMarks }, { testsFor }] = await Promise.all(['engine.mjs', 'score.mjs', 'equivalent.mjs', 'select.mjs'].map(mimp));
 
 const COMMIT_ENV = { GIT_AUTHOR_NAME: 'pat', GIT_AUTHOR_EMAIL: 'pat@localhost', GIT_COMMITTER_NAME: 'pat', GIT_COMMITTER_EMAIL: 'pat@localhost' };
 const MUTATION = { max: 12, budget: 60 }; // per group, inside the navigator's own turn: small enough to stay well under the harness's ~180 s silence limit
@@ -62,6 +74,9 @@ const short = sha => String(sha).slice(0, 8);
 // zero-trust-review's probe flags (its own reader: each skill owns its flags), resolved where a gate starts: a value that is not valid stops the tool with the fix, never a GREEN
 const readZt = cx => { try { return ztFlags.probeFlags(cx.env); } catch (e) { if (e instanceof ztFlags.FlagError) fail(2, e.message); throw e; } };
 // every flag off (no plan.speed, both zero-trust-review switches false, no process cap): the v2.0.0 gate, which read no mutation probe error
+// PTDD_MUTATION_SCORE_MIN, PTDD_MUTATION_MAX, PTDD_TEST_WRITER_ENABLED (ADR 0011): read by every command from its own env; a value that is not valid stops it with the fix
+const readMut = cx => { try { return mutationFlags(cx.env); } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; } };
+const writerMode = ctx => ctx.plan.mode === 'fast' && ctx.mut.testWriter; // fast mode with the test writer: only it changes a test after RED
 const legacyGate = ctx => !ctx.plan.speed && ctx.zt.budgetStrict === false && ctx.zt.baselineReuse === false && ctx.zt.testProcessMax === null;
 
 function git(cx, repo, args, env = {}, input) {
@@ -170,12 +185,12 @@ function load(cx, o, testing = false) {
   const linked = (plan.link ?? []).map(n => realpathSync(join(plan.repo, n)));
   const env = [...(plan.env ?? []), ...(plan.env ?? []).some(e => e.startsWith('PYTHONDONTWRITEBYTECODE=')) ? [] : ['PYTHONDONTWRITEBYTECODE=1']];
   const ro = [...linked, ...lib.editableRoots(linked, plan.repo), ...(plan.ro ?? []).map(p => abs(cx, p))];
-  const runner = runnerOf(cx, plan, o), zt = testing ? readZt(cx) : null, inproc = testing && inprocOf(cx, runner) ? { inproc: runDirect } : {};
+  const runner = runnerOf(cx, plan, o), zt = testing ? readZt(cx) : null, mut = testing ? readMut(cx) : null, inproc = testing && inprocOf(cx, runner) ? { inproc: runDirect } : {};
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   mkdirSync(join(run, 'diff'), { recursive: true, mode: 0o700 });
   // ZT_TEST_PROCESS_MAX caps the whole gate: this process's own test commands share one limiter, and `green` splits the cap with the probes it starts (processShares)
   const slots = zt?.testProcessMax ? { slots: lib.limiter(zt.testProcessMax) } : {};
-  return Object.assign(cx, { run, plan, linked, zt, jobs: plan.jobs ?? 4, probe: { runner, env, ro, timeout: plan.timeout ?? 120, tail: TAIL_KEPT, ...slots, ...inproc, procEnv: cx.env, procCwd: cx.cwd } });
+  return Object.assign(cx, { run, plan, linked, zt, mut, jobs: plan.jobs ?? 4, probe: { runner, env, ro, timeout: plan.timeout ?? 120, tail: TAIL_KEPT, ...slots, ...inproc, procEnv: cx.env, procCwd: cx.cwd } });
 }
 const gatePath = (ctx, name) => join(ctx.run, 'gates', name);
 const writeGate = (ctx, name, obj) => writeSafe(ctx.run, gatePath(ctx, name), `${JSON.stringify(obj)}\n`);
@@ -209,7 +224,7 @@ function child(ctx, script, base, head, tests, tag, extra = [], max = null) { //
   const argv = [join(ZT, script), '--repo', plan.repo, '--base', base, '--head', head, '--scratch', scratch, '--cmd', plan.cmd, '--tests', tests.join(','), '--runner', ctx.probe.runner,
     '--jobs', String(ctx.jobs), '--timeout', String(ctx.probe.timeout), ...(plan.link ?? []).flatMap(n => ['--link', n]), ...(plan.ro ?? []).flatMap(p => ['--ro', p]), ...ctx.probe.env.flatMap(e => ['--env', e]), ...(ctx.probe.inproc && PROBES_INPROC ? ['--runner-inprocess'] : []), ...extra];
   return new Promise(done => {
-    const p = spawn(process.execPath, argv, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: max === null ? ctx.env : { ...ctx.env, ZT_TEST_PROCESS_MAX: String(max) } });
+    const p = spawn(process.execPath, argv, { cwd: ctx.cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...ctx.env, ...MUTATION_ENV, ...(max === null ? {} : { ZT_TEST_PROCESS_MAX: String(max) }) } });
     let out = '', err = '';
     p.stdout.on('data', d => (out += d));
     p.stderr.on('data', d => (err += d));
@@ -257,7 +272,7 @@ async function preflight(ctx) {
 }
 
 // ---------------------------------------------------------------- gates
-async function red(ctx, gid) {
+async function red(ctx, gid, rewrite = false) { // rewrite: the test writer changed the tests after RED (ADR 0011 A8): this run is the new reference
   const { plan } = ctx, g = group(plan, gid);
   const ready = needs(plan, g).filter(d => readGate(ctx, `${d.id}.green.json`)?.ok); // a group still in flight is not part of this one's world
   const snap = snapOf(ctx, [...g.tests, ...filesOf(ready)]), dir = await tree(ctx, snap, 'red');
@@ -273,10 +288,60 @@ async function red(ctx, gid) {
   // holds no source and the weakened test still fails there; `green` compares against firstSnapshot. Before the first source the reference moves with every run (the RED loop).
   const prev = plan.mode === 'fast' ? readGate(ctx, `${gid}.red.json`) : null;
   const built = prev && (readGate(ctx, `${gid}.green.json`) || parseNumstat(git(ctx, plan.repo, ['diff', '--numstat', plan.base, snapOf(ctx, g.src), '--', ...g.src])).changed.length > 0);
-  const out = { kind: 'red', group: gid, base: plan.base, snapshot: snap, ...(plan.mode === 'fast' ? { firstSnapshot: built ? prev.firstSnapshot ?? prev.snapshot : snap } : {}), ok: redOk(tests), tests };
+  const out = { kind: 'red', group: gid, base: plan.base, snapshot: snap, ...(plan.mode === 'fast' ? { firstSnapshot: built && !rewrite ? prev.firstSnapshot ?? prev.snapshot : snap } : {}), ok: redOk(tests), tests, ...(rewrite ? { rewrite } : {}) };
   writeGate(ctx, `${gid}.red.json`, out);
-  say(ctx, [`RED ${gid} ok=${out.ok} snapshot ${short(snap)} patch ${patch}`, '  (a new test must FAIL now; a load error is only right when the code under test does not exist yet)',
+  say(ctx, [`RED ${gid} ok=${out.ok}${rewrite ? ' (--rewrite: the new RED reference)' : ''} snapshot ${short(snap)} patch ${patch}`, '  (a new test must FAIL now; a load error is only right when the code under test does not exist yet)',
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.exit === undefined ? '' : ` exit ${t.exit}, ${t.sec}s, run ${t.run}`}${t.tail ? `\n    ...${t.tail}` : ''}`)]);
+}
+
+// ---------------------------------------------------------------- the mutation gate (ADR 0011)
+// a code file: a source the 0-mutant check applies to; data and config files in src stay exempt (A4)
+const DATA_EXT = new Set(['.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.txt', '.md', '.csv', '.lock', '.env', '.xml', '.html', '.css', '.svg']);
+const isCode = f => lib.isSource(f) && !DATA_EXT.has(extname(f).toLowerCase());
+const mutable = f => lib.isSource(f) && Object.hasOwn(LANG, extname(f).slice(1).toLowerCase());
+const JS_EXT = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.mts', '.cts', '.tsx']);
+const isJs = f => JS_EXT.has(extname(f).toLowerCase());
+const answerId = id => typeof id === 'string' && /^A\d+$/.test(id);
+
+/**
+ * The A21 test set beyond the changed tests: the existing test files at `rev` (the kind of file the plan's tests are, no plan test) whose import graph reaches a changed
+ * source that gets mutants (select.mjs), and, for a language with no graph there, the ones that name its module (pickAffected, as final does).
+ */
+function extraTests(ctx, rev, srcs) {
+  const { plan } = ctx, sources = srcs.filter(mutable);
+  if (!sources.length) return [];
+  const own = new Set([...plan.groups.flatMap(g => g.tests), ...(plan.integration?.file ? [plan.integration.file] : [])]), exts = new Set([...own].map(f => extname(f)));
+  const listed = names(git(ctx, plan.repo, ['ls-tree', '-r', '--name-only', '-z', rev])).filter(f => lib.TEST.test(f) && !lib.DOC.test(f) && !NOT_A_TEST.test(f) && exts.has(extname(f)) && !own.has(f));
+  const js = sources.filter(isJs), other = sources.filter(f => !isJs(f)), cache = new Map();
+  const byGraph = js.length ? listed.filter(t => isJs(t) && js.some(f => testsFor(f, [t], plan.repo, cache).length)) : [];
+  const byName = other.length ? pickAffected(listed, f => showText(ctx, plan.repo, rev, f), other, own).run : [];
+  return [...new Set([...byGraph, ...byName])].sort();
+}
+
+/**
+ * The changed code files (from -> to) that get 0 mutants because no mutator covers their language (A4: .sh and other languages), and that no user answer accepts.
+ * Only while the score min is above 0. A file in a mutated language whose changed lines hold nothing to mutate is not one: the mutator covers it.
+ */
+function zeroMutantFiles(ctx, from, to, srcs) {
+  const accept = ctx.plan.mutation?.accept ?? {};
+  return names(git(ctx, ctx.plan.repo, ['diff', '--name-only', '--diff-filter=AM', '-z', from, to, '--', ...srcs])).filter(f => isCode(f) && !mutable(f) && !answerId(accept[f]));
+}
+
+const survivorOf = m => ({ id: m.id, file: m.file, line: m.line, op: m.op, before: m.before, after: m.after, run: m.run, quote: m.quote });
+const pct = v => (v === null ? 'n/a' : `${Math.round(v * 10) / 10}%`);
+/** survivors always fail (as on main); the score min decides how many skipped, inconclusive and unverifiable mutants pass (A1). Nothing counted: no score to miss. */
+function mutationReasons(mutants, min, where) {
+  const survivors = mutants.filter(m => m.result === 'survived'), score = scoreOf(mutants, { min });
+  const reasons = survivors.length ? [`${survivors.length} mutant(s) survived${where}: the tests do not pin that code`]
+    : score.counted && !score.pass ? [`mutation score ${pct(score.value)} < ${min}%${where}: ${score.counted - mutants.filter(m => m.result === 'killed' || m.result === 'timeout').length} mutant(s) not killed (skipped, inconclusive or unverifiable count as not killed)`] : [];
+  return { survivors: survivors.map(survivorOf), score, reasons };
+}
+const mutationFile = (ctx, name) => gatePath(ctx, `${name}.mutation.json`);
+/** the mutation Result a gate keeps for later runs: final reuses its kills on the same bytes, `equivalent --add` checks a mark against its survivors */
+function keepMutation(ctx, name, rev, mutants) {
+  const files = [...new Set(mutants.map(m => m.file))].sort();
+  const blobs = Object.fromEntries(files.map(f => { try { return [f, git(ctx, ctx.plan.repo, ['rev-parse', '--verify', `${rev}:${f}`]).trim()]; } catch { return [f, '']; } }).filter(([, b]) => b));
+  writeSafe(ctx.run, mutationFile(ctx, name), `${JSON.stringify({ kind: name, snapshot: rev, mutants, blobs })}\n`);
 }
 
 /** A stored GREEN result on the same tree: only the flake sample is new (mutant sampling is deterministic), so each test file runs FLAKE_RUNS more times against its head exit. */
@@ -294,6 +359,7 @@ async function reflake(ctx, snap, probe) {
 
 async function green(ctx, gid, retest, { quick = false, reuse = false } = {}) {
   const { plan } = ctx, g = group(plan, gid), deps = needs(plan, g);
+  if (retest && writerMode(ctx)) fail(2, 'green --retest is refused while the test writer is on (fast mode, PTDD_TEST_WRITER_ENABLED=true): only the test writer changes a test after RED; it runs `tdd.mjs red --rewrite` to make the new tests the RED reference, then green runs without --retest');
   const baseDeps = deps.length ? snapOf(ctx, filesOf(deps)) : plan.base; // the tests must need THIS group's code, with the groups it waits for already in place
   const snap = snapOf(ctx, [...g.tests, ...g.src], baseDeps); // a CHILD of baseDeps: the probes diff `base...head` (merge base), so it must hold exactly this group's files
   const redGate = readGate(ctx, `${gid}.red.json`);
@@ -308,17 +374,20 @@ async function green(ctx, gid, retest, { quick = false, reuse = false } = {}) {
   // with reuse on, the test probe leaves its HEAD run for the next run and the mutation probe reads the one the last run left: on the same tree it skips its baseline run.
   // Read, not awaited: the two probes still start together, so the gate never waits longer than before (zero-trust-review checks that the file is from this exact tree).
   const headRun = speedOf(plan.speed).gateReuse ? gatePath(ctx, `${gate}.head.json`) : null;
+  const mutTests = !mut.off && !quick && !hit ? [...g.tests, ...extraTests(ctx, snap, g.src)] : g.tests; // A21: the changed tests and the existing tests that reach a changed source
   const mutates = !mut.off && !quick, share = processShares(ctx.zt.testProcessMax, { mutate: mutates, cover: !!plan.cover });
   const parts = [
     () => child(ctx, 'testprobe.mjs', baseDeps, snap, g.tests, 'gp', ['--flake', String(FLAKE_RUNS), ...(g.src.some(f => !lib.isSource(f)) ? ['--src', g.src.join(',')] : []), ...(headRun ? ['--head-out', headRun] : [])], share.probe), // a config file the tests need is reverted too
-    () => (mut.off ? { reason: 'switched off in the plan' } : quick ? { reason: QUICK_REASON } : child(ctx, 'mutate.mjs', baseDeps, snap, g.tests, 'gm', ['--max', String(mut.max ?? MUTATION.max), '--budget', String(mut.budget ?? MUTATION.budget), ...kill, ...(headRun ? ['--baseline-from', headRun] : [])], share.mutate)),
+    () => (mut.off ? { reason: 'switched off in the plan' } : quick ? { reason: QUICK_REASON } : child(ctx, 'mutate.mjs', baseDeps, snap, mutTests, 'gm', ['--max', String(mut.max ?? MUTATION.max), '--budget', String(mut.budget ?? MUTATION.budget), ...kill, ...(headRun ? ['--baseline-from', headRun] : [])], share.mutate)),
     () => coverage(ctx, g, snap, baseDeps),
   ];
   const inTurn = async () => { const r = []; for (const p of parts) r.push(await p()); return r; }; // a cap too small to split: one part after the other, each within it
   const [probe, mutants, cover] = hit ? [await reflake(ctx, snap, hit.probe), hit.mutants, hit.cover] : share.together ? await Promise.all(parts.map(p => p())) : await inTurn();
   if (store && !hit && !probe.error && !mutants.error) storeGate(ctx, gate, key, { probe, mutants, cover });
   const tests = (probe.tests ?? []).map(t => { const cannotStart = t.verdict === 'fails-on-head' && t.head?.exit === 127; return { file: t.file, verdict: cannotStart ? 'unverifiable' : t.verdict, reason: cannotStart ? 'the test command cannot start (exit 127)' : t.reason, head: t.head?.exit, base: t.base?.exit, nondeterministic: t.flake?.nondeterministic }; }); // 127 is the environment, as at RED
-  const survivors = (mutants.mutants ?? []).filter(m => m.result === 'survived').map(m => ({ id: m.id, file: m.file, line: m.line, op: m.op, before: m.before, after: m.after, run: m.run, quote: m.quote }));
+  const judged = mutationReasons(mutants.mutants ?? [], ctx.mut.scoreMin, ''), survivors = judged.survivors;
+  const noMutants = mutates && ctx.mut.scoreMin > 0 ? zeroMutantFiles(ctx, baseDeps, snap, g.src) : [];
+  if (mutants.mutants) keepMutation(ctx, gate, snap, mutants.mutants);
   const reasons = [];
   if (probe.error) reasons.push(`test probe: ${probe.error}`);
   if (mutates && !hit && mutants.error && !legacyGate(ctx)) reasons.push(`mutation probe: ${mutants.error}`); // the mutants were due and never judged: no GREEN on an unrun probe
@@ -326,16 +395,17 @@ async function green(ctx, gid, retest, { quick = false, reuse = false } = {}) {
   if (tests.some(t => t.nondeterministic)) reasons.push('flaky');
   if (!frozen) reasons.push('no RED gate on record for this group');
   else if (frozen.changed.length && !retest) reasons.push(`tests changed since RED: ${frozen.changed.join(', ')}`);
-  if (survivors.length) reasons.push(`${survivors.length} mutant(s) survived: the tests do not pin that code`);
+  reasons.push(...judged.reasons);
+  if (noMutants.length) reasons.push(`changed code file(s) with no mutant: ${noMutants.join(', ')} (no mutator covers their language; only the user can accept one, by answer id: plan.mutation.accept {"${noMutants[0]}": "A<n>"})`);
   if (cover?.pct != null && cover.pct < cover.min) reasons.push(`changed-line coverage ${cover.pct}% < ${cover.min}%`);
-  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, retest: !!retest, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors, ...(mutants.baseline ? { baseline: mutants.baseline } : {}) }, coverage: cover, ...(quick ? { quick } : {}), ...(hit ? { reused: true } : {}) };
+  const out = { kind: 'green', group: gid, base: baseDeps, snapshot: snap, retest: !!retest, ok: reasons.length === 0, reasons, tests, frozen, outOfScope: stray.files, strayScan: stray.error, mutation: { reason: mutants.reason ?? mutants.error, summary: mutants.summary, score: mutants.score, survivors, ...(mutants.mutants ? { scoreValue: judged.score.value, scoreMin: ctx.mut.scoreMin } : {}), ...(noMutants.length ? { noMutants } : {}), ...(mutants.baseline ? { baseline: mutants.baseline } : {}) }, coverage: cover, ...(quick ? { quick } : {}), ...(hit ? { reused: true } : {}) };
   writeGate(ctx, `${gid}.green.json`, out);
   say(ctx, [`GREEN ${gid} ok=${out.ok}${quick ? ' (quick: no mutants; the last run and the navigator\'s run mutate)' : ''} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
     ...(hit ? [`  reused: test probe, mutants and coverage of the last full run on these exact files; flake check re-run (${FLAKE_RUNS} run(s) per test file)`] : []),
     ...tests.map(t => `  ${t.file}: ${t.verdict}${t.reason ? ` (${t.reason})` : ''}, exit on HEAD ${t.head}, with the group's code reverted ${t.base}${t.nondeterministic ? ', FLAKY' : ''}`),
     stray.files.length ? `  note: files outside the plan exist in the shared tree: ${stray.files.slice(0, 5).join(', ')} (judge from the patch whether this group made them; \`final\` blocks on them)` : '',
     `  tests since RED: ${frozen ? (frozen.changed.length ? `CHANGED ${frozen.changed.join(', ')} (${frozen.removed} line(s) removed)${retest ? ' [--retest: sanctioned]' : ''}` : 'unchanged') : 'unknown'}`,
-    `  ${mutants.summary ?? `mutation: ${mutants.reason ?? mutants.error ?? 'not run'}`}`,
+    `  ${mutants.summary ?? `mutation: ${mutants.reason ?? mutants.error ?? 'not run'}`}${mutants.mutants?.length ? ` (score ${pct(judged.score.value)}, min ${ctx.mut.scoreMin}%; tests ${mutTests.length})` : ''}`,
     ...survivors.slice(0, 3).map(s => `  survivor ${s.id} ${s.file}:${s.line} ${s.op}: ${s.before.slice(0, 50)} -> ${s.after.slice(0, 50)} (run ${s.run}; quote "${s.quote}")`),
     cover ? `  coverage: ${cover.error ?? `${cover.pct ?? 'n/a'}% of ${cover.total} changed line(s), min ${cover.min}%${cover.noData.length ? `, no data for ${cover.noData.join(', ')}` : ''}${Object.keys(cover.uncovered).length ? `; uncovered ${spread(Object.entries(cover.uncovered))}` : ''}`}` : '  coverage: not configured']);
 }
@@ -475,21 +545,54 @@ async function final(ctx, quiet, again, reuse = false) {
   // the gate cache (PTDD_GATE_REUSE_ENABLED): every final run stores what its tests said; verify takes it back when the snapshot and the plan's bytes are unchanged since
   const key = speedOf(plan.speed).gateReuse ? gateKey({ snapshot: treeOf(ctx, snap), files: bytesOf(ctx, planFiles(plan)), args: ['final', runArgs(ctx)] }) : null;
   const hit = reuse && key ? readEntry(gatePath(ctx, cacheName('final')), key) : null;
-  const { together, existing } = hit ?? await finalTests(ctx, snap, own);
+  // the full mutation run starts beside the tests (ADR 0011 A6): never cached, its kills are reused from the gates on the same bytes
+  const [{ together, existing }, mutation] = await Promise.all([hit ?? finalTests(ctx, snap, own), finalMutation(ctx, snap)]);
   if (key && !hit) storeGate(ctx, 'final', key, { together, existing });
   const { regressions } = existing;
   const stray = strayFiles(ctx), patch = writeDiff(ctx, 'final.patch', ['diff', '-U15', plan.base, snap]), reasons = []; // the scope scan reads the whole working tree: never reused
   if (together.some(r => r.exit !== 0)) reasons.push(`group tests fail together: ${together.filter(r => r.exit !== 0).map(r => r.file).join(', ')}`);
   if (regressions.length) reasons.push(`existing tests broken by the change: ${regressions.map(r => r.file).join(', ')}`);
   if (stray.files.length) reasons.push(`files outside the plan changed: ${stray.files.slice(0, 5).join(', ')}`);
-  const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing, outOfScope: stray.files, strayScan: stray.error };
+  const mut = mutationOf(ctx, mutation);
+  reasons.push(...mut.reasons);
+  const out = { kind: 'final', base: plan.base, snapshot: snap, ok: !reasons.length, reasons, together, existing, outOfScope: stray.files, strayScan: stray.error, ...(mut.gate ? { mutation: mut.gate } : {}) };
   writeGate(ctx, 'final.json', out);
   if (!quiet && !again && !readGate(ctx, 'reviewed.json')) writeGate(ctx, 'reviewed.json', out); // the FIRST final run is the reviewer's view: its proofs are checked against that tree, not the post-fix one (--again: a re-run after fixes never is)
   if (!quiet) say(ctx, [`FINAL ok=${out.ok} snapshot ${short(snap)} patch ${patch}${reasons.length ? `\n  not ok: ${reasons.join('; ')}` : ''}`,
     `  group tests together: ${together.filter(r => r.exit === 0).length}/${together.length} pass`,
     `  existing tests that mention the changed modules: ${existing.ran.length} run${existing.more ? ` (+${existing.more} not run)` : ''}, ${regressions.length} broken by this change, ${existing.preexisting.length} already failing before`,
-    ...regressions.slice(0, 3).map(r => `    ${r.file} exit ${r.exit} run ${r.run}: ...${r.tail}`)]);
+    ...regressions.slice(0, 3).map(r => `    ${r.file} exit ${r.exit} run ${r.run}: ...${r.tail}`), ...mut.rows]);
   return { snap, reused: !!hit };
+}
+
+/** every changed line mutated once (A6, A10): PTDD_MUTATION_MAX caps the count, no time budget, the gates' kills reused, the judge's marks applied. null: off by the user's answer */
+async function finalMutation(ctx, snap) {
+  const { plan } = ctx;
+  if (plan.mutation?.off) return null;
+  const tests = plan.groups.flatMap(g => g.tests), src = plan.groups.flatMap(g => g.src), scratch = mkdtempSync(join(plan.scratch, 'fm-'));
+  const reuse = [...plan.groups.map(g => mutationFile(ctx, `${g.id}.green`)), mutationFile(ctx, 'final')].filter(f => existsSync(f));
+  try {
+    const r = await runMutation({ repo: plan.repo, base: plan.base, head: snap, tests: [...tests, ...extraTests(ctx, snap, src)], cmd: plan.cmd, runner: ctx.probe.runner, scratch,
+      max: ctx.mut.max ?? 'unlimited', budget: 'none', timeout: ctx.probe.timeout, ...(plan.killExits ? { killExits: plan.killExits } : {}), link: plan.link ?? [], ro: (plan.ro ?? []).map(p => abs(ctx, p)),
+      env: ctx.probe.env, slots: ctx.probe.slots ?? null, scoreMin: ctx.mut.scoreMin, reuse, equivalent: join(ctx.run, EQUIV_FILE), procEnv: ctx.env, procCwd: ctx.cwd, ...(ctx.probe.inproc ? { inproc: runDirect } : {}) });
+    keepMutation(ctx, 'final', snap, r.mutants);
+    return r;
+  } catch (e) { return { error: e.message.slice(0, 300) }; } finally { discard(scratch); }
+}
+const EQUIV_FILE = 'mutation-equivalent.json';
+/** the final gate's mutation verdict: { reasons, rows (the report lines), gate (what final.json keeps) } */
+function mutationOf(ctx, r) {
+  if (!r) return { reasons: [], rows: ['  mutation: off (plan.mutation.off, by the user\'s answer)'], gate: null };
+  if (r.error) return { reasons: [`mutation run: ${r.error}`], rows: [], gate: { error: r.error } };
+  const { survivors, score, reasons } = mutationReasons(r.mutants, ctx.mut.scoreMin, ' at the final gate (every changed line)');
+  const count = Object.entries(r.mutants.reduce((m, x) => ({ ...m, [x.result]: (m[x.result] ?? 0) + 1 }), {})).map(([k, n]) => `${n} ${k}`).join(', ');
+  const marks = (() => { try { return JSON.parse(readFileSync(join(ctx.run, EQUIV_FILE), 'utf8')).marks ?? []; } catch { return []; } })();
+  const equivalent = r.mutants.filter(m => m.result === 'equivalent').map(m => ({ id: m.id, file: m.file, line: m.line, reason: marks.find(k => k.id === m.id)?.reason ?? '' }));
+  const reused = r.mutants.filter(m => m.reused).length;
+  return { reasons, gate: { score: score.value, scoreMin: ctx.mut.scoreMin, counted: score.counted, total: r.mutants.length, available: r.available, reused, reason: r.reason, survivors, equivalent },
+    rows: [`  mutation (every changed line${ctx.mut.max ? `, at most ${ctx.mut.max}` : ''}): ${r.mutants.length ? `${r.mutants.length} mutant(s): ${count}; ${reused} kill(s) reused from the gates; score ${pct(score.value)}, min ${ctx.mut.scoreMin}%` : r.reason ?? 'no mutant'}`,
+      ...survivors.slice(0, 5).map(m => `    survivor ${m.id} ${m.file}:${m.line} ${m.op}: ${String(m.before).trim().slice(0, 50)} -> ${String(m.after).trim().slice(0, 50)} (run ${m.run})`),
+      ...equivalent.map(m => `    equivalent ${m.id} ${m.file}:${m.line} (judge: ${clipTail(m.reason).slice(0, 160)})`)] };
 }
 
 async function finalTests(ctx, snap, own) {
@@ -552,7 +655,7 @@ async function verify(ctx, retPath) {
   const unfixed = open.filter(stillThere).map(cl => `${cl.id} ${cl.severity} ${cl.file}:${cl.startLine} ${cl.title}`);
   let proof = null;
   if ((ret.clusters ?? []).length && existsSync(join(ZT, 'proofcheck.mjs'))) {
-    const text = await new Promise(done => { const p = spawn(process.execPath, [join(ZT, 'proofcheck.mjs'), '--ret', abs(ctx, retPath), '--repo', plan.repo, '--head', reviewed ?? snap, '--run', ctx.run], { cwd: ctx.cwd, env: ctx.env, stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; p.stdout.on('data', d => (out += d)); p.stderr.on('data', d => (err += d)); p.on('close', code => done({ out, err, code })); });
+    const text = await new Promise(done => { const p = spawn(process.execPath, [join(ZT, 'proofcheck.mjs'), '--ret', abs(ctx, retPath), '--repo', plan.repo, '--head', reviewed ?? snap, '--run', ctx.run], { cwd: ctx.cwd, env: { ...ctx.env, ...MUTATION_ENV }, stdio: ['ignore', 'pipe', 'pipe'] }); let out = '', err = ''; p.stdout.on('data', d => (out += d)); p.stderr.on('data', d => (err += d)); p.on('close', code => done({ out, err, code })); });
     try { const parsed = JSON.parse(text.out); proof = (parsed.clusters ?? parsed).reduce((m, x) => ({ ...m, [x.status]: (m[x.status] ?? 0) + 1 }), {}); } catch { proof = `proofcheck exited ${text.code}: ${text.err.trim().split('\n')[0]}`; }
   }
   const integration = plan.integration?.file ? (ret.integration ? (ret.integration.exit === 0 ? 'ok' : `${plan.integration.file} exited ${ret.integration.exit}`) : 'not run') : undefined;
@@ -565,14 +668,37 @@ async function verify(ctx, retPath) {
   emit(ctx, 1, `${JSON.stringify(res)}\n`);
 }
 
+/**
+ * `equivalent --add ID --reason TEXT`: the judge marks a survivor equivalent (ADR 0011 A16), checked by equivalent.mjs against the last final result (else the green results);
+ * a refusal exits 1 and writes nothing. The mark applies only while the mutant id (file, line and edit) stays the same.
+ */
+function equivalent(ctx, id, reason, judge) {
+  if (!id || reason === undefined) fail(2, 'equivalent needs --add <mutant id> --reason <text>');
+  const read = f => { try { return JSON.parse(readFileSync(f, 'utf8')).mutants ?? []; } catch { return null; } };
+  const fin = read(mutationFile(ctx, 'final'));
+  const mutants = fin ?? ctx.plan.groups.flatMap(g => read(mutationFile(ctx, `${g.id}.green`)) ?? []);
+  const m = mutants.find(x => x.id === id && x.result === 'survived') ?? mutants.find(x => x.id === id) ?? { file: '-', line: 1 };
+  try { addMarks(join(ctx.run, EQUIV_FILE), [{ id, file: m.file, line: m.line, reason, judge }], { mutants }); } catch (e) { fail(1, e.message); }
+  say(ctx, [`EQUIVALENT ${id} ${m.file}:${m.line} marked (checked against the ${fin ? 'final' : 'green'} result); run \`tdd.mjs final --run ${ctx.run} --again\` to apply it`]);
+}
+
+/** ADR 0011 A13: a fast plan with the test writer on needs the ADR (dodFile) with a non-empty `## Interface` section, which the test writer reads */
+function interfaceOf(cx, repo, plan, fromAdr) { // -> { error } | { text }
+  const off = 'or set PTDD_TEST_WRITER_ENABLED=false to run the one tdd-driver without a test writer';
+  if (!fromAdr || !plan.dodFile) return { error: `fast mode with the test writer needs the API from an ADR: set dodFile to the ADR whose \`## Interface\` section (names, inputs, outputs, errors) the test writer reads, instead of an inline dod[]; ${off}` };
+  const text = showText(cx, repo, 'HEAD', plan.dodFile), m = /^## Interface[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(text);
+  return m && m[1].trim() ? { text: m[1].trim() } : { error: `${plan.dodFile} has no \`## Interface\` section with text under it: the test writer writes the tests against that API (names, inputs, outputs, errors, a diagram). Write it in the ADR and commit it, ${off}` };
+}
+
 // ---------------------------------------------------------------- plan command
 async function cmdPlan(cx, o) {
   // flags first: a value that is not valid, or an old name, stops the plan before any work
-  let fence, cap, speed;
+  let fence, cap, speed, mutFlags;
   try {
     speed = readSpeed(cx.env); // ADR 0001: PTDD_PIPELINE_MODE and the four speed switches, read once here and carried in the args and plan.json
     fence = enabled(cx.env, FENCE_ENV, false, { renamedFrom: OLD_FENCE_ENV }); // opt-in: hooks/ptdd-guard.mjs fences the subagents to their group's files
     cap = positiveInt(cx.env, 'PTDD_AGENT_MAX', { renamedFrom: 'PTDD_AGENT_CAP' }); // opt-in hard ceiling, enforced by workflow.js
+    mutFlags = mutationFlags(cx.env); // ADR 0011: read again by every gate from its own env
     inprocessRunner(cx.env); // read again where each command runs its tests: it changes how a command starts, never a result
   } catch (e) { if (e instanceof FlagError) fail(2, e.message); throw e; }
   readZt(cx); // and zero-trust-review's probe flags, which every gate passes on to its probes
@@ -592,6 +718,9 @@ async function cmdPlan(cx, o) {
   if (git(cx, repo, ['rev-parse', '--show-prefix']).trim()) fail(2, `repo must be the top level of its work tree, not a subdirectory (${plan.repo}): snapshots are tree-relative`);
   const testLike = plan.groups.flatMap(g => g.src.filter(f => lib.TEST.test(f)).map(f => `${g.id}: ${f}`)); // config and data files are fine as src (green passes them to the probe); a test-like path would be counted as a test
   if (testLike.length) fail(2, `src files with a test-like path: ${testLike.join(', ')}; the probes would count them as tests and the group could never be judged green. Move them out of src.`);
+  const mode = pipelineOf(speed.pipeline, plan.mode), testWriter = mode === 'fast' && mutFlags.testWriter;
+  const iface = testWriter ? interfaceOf(cx, repo, plan, fromDod.fromAdr) : {};
+  if (iface.error) fail(2, iface.error);
   const marker = readMarker({ env: cx.env });
   if (marker) fail(3, `a zero-trust-review run is still active (${marker}): its guard hook would deny the test commands of the agents that write code. Finish it or run: node ${join(ZT, 'note.mjs')} deactivate`);
   const runner = runnerOf(cx, plan, o), backend = lib.backendOf(runner, cx.env, { inprocess: inprocOf(cx, runner) });
@@ -606,7 +735,7 @@ async function cmdPlan(cx, o) {
   if (o.run) { run = trustedRun(cx, o.run); if (!run) fail(3, '--run must be a run folder under the per-user zt-review base; omit it and plan creates one'); }
   else { try { run = createRunDir(`pat-${short(base)}-${Date.now().toString(36)}`, { tmp: tmpOf(cx.env) }); } catch (e) { fail(3, `cannot create the run folder: ${e.message}`); } }
   const { speed: _userSpeed, ...userPlan } = plan; // only the flags set the speed policy, never a key of the user's plan.json
-  const mode = pipelineOf(speed.pipeline, plan.mode), spArgs = speedForArgs(speed);
+  const spArgs = speedForArgs(speed);
   const full = { ...userPlan, ...(mode === 'fast' ? { mode } : {}), repo, scratch: real, base, run, ...(spArgs ? { speed: spArgs } : {}) };
   mkdirSync(join(run, 'gates'), { recursive: true, mode: 0o700 });
   writeSafe(run, join(run, 'plan.json'), `${JSON.stringify(full)}\n`);
@@ -616,7 +745,7 @@ async function cmdPlan(cx, o) {
   // `fast` is set here and nowhere else, and only for mode "fast" (it survives the Workflow's own mode: "plan", a dry run, replaces args.mode). A `fast` key of the user's plan.json is
   // dropped from the args: it would switch the one-driver pipeline on while the gates stay standard (no firstSnapshot). Without mode "fast" the args are what they always were.
   const { fast: _userFast, ...fullArgs } = full;
-  const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(mode === 'fast' ? { fast: true } : {}), ...(cap ? { agentCap: cap } : {}), ...(spArgs ? { speed: spArgs } : {}) };
+  const args = { ...fullArgs, skillDir: HERE, ztDir: ZT, runDir: run, sandbox: backend, preflight: pre.verdict, ...(mode === 'fast' ? { fast: true } : {}), ...(testWriter ? { testWriter: true, interface: iface.text.slice(0, 4000) } : {}), ...(cap ? { agentCap: cap } : {}), ...(spArgs ? { speed: spArgs } : {}) };
   writeSafe(run, join(run, 'args.json'), `${JSON.stringify(args)}\n`);
   if (fence) writeFence(run, full, markerDir(cx.env));
   emit(cx, 2, `plan ok: ${plan.groups.length} group(s), ${fromDod.note ?? `${plan.dod.length} DoD item(s)`}, base ${short(base)}, sandbox ${backend}, preflight ${pre.verdict}, mode ${mode === 'fast' ? 'fast' : 'standard'};${spArgs ? ` speed flags ${Object.entries(spArgs).map(([k, v]) => `${k}=${v}`).join(' ')};` : ''} Workflow args in ${join(run, 'args.json')}\n`); // only the exact string "fast" selects fast: a typo ("Fast") is visibly standard
@@ -632,14 +761,14 @@ function resumeFlags(v) {
 }
 
 // ---------------------------------------------------------------- main
-const OPTIONS = { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, quick: { type: 'boolean' }, reuse: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true },
+const OPTIONS = { plan: { type: 'string' }, run: { type: 'string' }, group: { type: 'string' }, ret: { type: 'string' }, on: { type: 'string' }, files: { type: 'string' }, runner: { type: 'string' }, retest: { type: 'boolean' }, rewrite: { type: 'boolean' }, add: { type: 'string' }, reason: { type: 'string' }, judge: { type: 'string' }, quick: { type: 'boolean' }, reuse: { type: 'boolean' }, again: { type: 'boolean' }, stage: { type: 'string' }, row: { type: 'string', multiple: true },
   'skip-preflight': { type: 'boolean' }, 'max-repairs': { type: 'string' }, retry: { type: 'string', multiple: true }, escalate: { type: 'string', multiple: true }, hint: { type: 'string', multiple: true } };
 
 async function command(cx, argv) {
   const { values: v } = parseArgs({ options: OPTIONS, args: argv.slice(1), strict: true });
   const cmd = argv[0];
   if (cmd === 'plan') await cmdPlan(cx, v);
-  else if (['red', 'green', 'final', 'verify', 'snap', 'dod', 'resume', 'preflight'].includes(cmd)) {
+  else if (['red', 'green', 'final', 'verify', 'snap', 'dod', 'resume', 'preflight', 'equivalent'].includes(cmd)) {
     const ctx = load(cx, v, ['red', 'green', 'final', 'verify', 'preflight'].includes(cmd)); // the commands that run tests read zero-trust-review's probe flags
     if (cmd === 'snap') emit(ctx, 1, `${snapOf(ctx, v.files === undefined ? undefined : v.files.split(',').filter(Boolean), v.on ?? ctx.plan.base)}\n`);
     else if (cmd === 'preflight') say(ctx, (await preflight(ctx)).rows);
@@ -647,7 +776,8 @@ async function command(cx, argv) {
     else if (cmd === 'dod') dod(ctx, v.group ?? fail(2, 'dod needs --group'), v.stage, v.row ?? []);
     else if (cmd === 'final') await final(ctx, false, v.again);
     else if (cmd === 'verify') await verify(ctx, v.ret ?? fail(2, 'verify needs --ret'));
-    else if (cmd === 'red') await red(ctx, v.group ?? fail(2, 'red needs --group'));
+    else if (cmd === 'red') await red(ctx, v.group ?? fail(2, 'red needs --group'), !!v.rewrite);
+    else if (cmd === 'equivalent') equivalent(ctx, v.add, v.reason, v.judge ?? 'judge');
     else await green(ctx, v.group ?? fail(2, 'green needs --group'), v.retest, { quick: !!v.quick, reuse: !!v.reuse });
   } else fail(2, 'usage: tdd.mjs plan|preflight|red|green|dod|final|verify|resume|snap (see the header of tdd.mjs)');
 }

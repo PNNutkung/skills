@@ -722,6 +722,20 @@ test('should give the same mutants and verdicts with --runner-inprocess as with 
   assert.deepEqual([JSON.parse(inproc.stdout).backend, slim(inproc).mutants.length > 0], ['direct', true]);
 });
 
+// Not skipped without python: the command is sh only. The direct runner starts `sh -c <command>` itself, so $PPID is the process the runner runs in: this one with
+// --runner-inprocess, a node process of its own without it. A command that passes only under this process tells the two apart.
+test('should run the direct runner in this process when --runner-inprocess is given (RunnerFlag)', async t => {
+  const fx = fixture(t);
+  const cmd = `test "$PPID" = ${process.pid} && test -f {file}`;
+  const r = await inProc(mutateArgs(fx, stubDir(fx, {}), cmd, DIRECT_RUN, ['--max', '2', '--runner-inprocess']));
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.reason, undefined, 'the baseline passed: the command ran under this process');
+  assert.deepEqual(out.mutants.map(m => m.result), ['survived', 'survived']);
+  const spawned = JSON.parse((await inProc(mutateArgs(fx, stubDir(fx, {}), cmd, DIRECT_RUN, ['--max', '2']))).stdout);
+  assert.equal(spawned.reason, 'unverifiable: no changed test file passes on HEAD', 'without the flag the runner is a process of its own');
+});
+
 test('should exit 2 naming the fix when --runner-inprocess is given with a runner that is not direct-run.mjs (RunnerFlag)', async t => {
   const fx = fixture(t);
   const r = await inProc(mutateArgs(fx, stubDir(fx, {}), 'python3 {file}', undefined, ['--runner-inprocess']));

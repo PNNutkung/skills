@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ExitError, main } from './tdd.mjs';
 import { BETA_ROW, RET, TDD, TEST_ALPHA, TEST_BETA, argvOf, envOf, fixture, put, spawnTdd } from './test-fixture.mjs';
@@ -63,6 +63,26 @@ test('cli: should exit 3 when --run is not a run folder plan created', t => {
 test('cli: should run nothing when tdd.mjs is imported instead of run', t => {
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(TDD)}); console.log('imported');`], { encoding: 'utf8', env: { ...process.env, ZT_MARKER_DIR: '/nonexistent' } });
   assert.deepEqual([r.status, r.stdout, r.stderr], [0, 'imported\n', '']);
+});
+
+test('should leave MUTATION_DIR unchanged when the mutation skill sits beside ZT_DIR or MUTATION_DIR is already set (cli)', t => {
+  const fx = fixture(t);
+  const zt = join(fx.dir, 'zt-copy'); // a zero-trust-review elsewhere, with no mutation skill beside it
+  mkdirSync(zt);
+  const realZt = join(TDD, '..', '..', 'zero-trust-review');
+  for (const f of readdirSync(realZt)) if (f.endsWith('.mjs')) symlinkSync(join(realZt, f), join(zt, f));
+  const own = join(fx.dir, 'own-mutation'); // the caller's own spelling of a mutation skill
+  symlinkSync(join(TDD, '..', '..', 'mutation'), own);
+  const seen = more => {
+    const env = { ...process.env, ZT_MARKER_DIR: '/nonexistent', ...more };
+    for (const k of Object.keys(more)) if (more[k] === undefined) delete env[k];
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(TDD)}); console.log(process.env.MUTATION_DIR ?? 'unset');`], { encoding: 'utf8', env });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  assert.equal(seen({ MUTATION_DIR: undefined, ZT_DIR: undefined }), 'unset', 'the default layout needs no MUTATION_DIR');
+  assert.equal(seen({ MUTATION_DIR: own, ZT_DIR: zt }), own, 'a MUTATION_DIR the caller set is kept');
+  assert.equal(seen({ MUTATION_DIR: undefined, ZT_DIR: zt }), join(TDD, '..', '..', 'mutation'), 'a ZT_DIR elsewhere is pointed at the mutation skill beside tdd.mjs');
 });
 
 test('cli: should run as the CLI when started through a symlink to tdd.mjs', t => {

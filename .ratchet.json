@@ -7,6 +7,8 @@
       "skills/definition-of-done/e2e.test.mjs": 1,
       "skills/definition-of-done/integration.test.mjs": 2,
       "skills/definition-of-done/why.e2e.test.mjs": 1,
+      "skills/mutation/compat.test.mjs": 1,
+      "skills/mutation/module.test.mjs": 1,
       "skills/paired-agent-tdd/dodfile.test.mjs": 1,
       "skills/paired-agent-tdd/e2e.fast.test.mjs": 2,
       "skills/paired-agent-tdd/e2e.test.mjs": 2,
@@ -61,5 +63,22 @@
       "glob": "**/*.test.mjs"
     }
   },
-  "accepted": []
+  "accepted": [
+    {
+      "rule": "cross-skill-import",
+      "file": "skills/mutation/compat.test.mjs",
+      "from": 0,
+      "to": 1,
+      "reason": "ADR 0011 A18: this test proves zero-trust-review mutate.mjs keeps its CLI and output as a thin wrapper over skills/mutation",
+      "time": "2026-11-27T13:04:20.563Z"
+    },
+    {
+      "rule": "cross-skill-import",
+      "file": "skills/mutation/module.test.mjs",
+      "from": 0,
+      "to": 1,
+      "reason": "ADR 0011 A18: this test proves zero-trust-review probelib.mjs re-exports the proc.mjs helpers that moved to skills/mutation",
+      "time": "2026-11-27T13:04:20.607Z"
+    }
+  ]
 }

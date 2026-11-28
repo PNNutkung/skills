@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyzeFile, checkRepo, isOn, parseFlags, scanSource } from './flag-defaults-e2e.mjs';
+import { analyzeFile, checkRepo, isOn, ownerOf, parseFlags, scanSource } from './flag-defaults-e2e.mjs';
+import { readFileSync } from 'node:fs';
 
 const CHECK = join(dirname(fileURLToPath(import.meta.url)), 'flag-defaults-e2e.mjs');
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -102,4 +103,31 @@ test('should keep a defaults e2e test for every skill with an ON flag when the c
   assert.deepEqual(out.violations, []);
   assert.equal(r.status, 0);
   assert.deepEqual(Object.keys(out.skills).sort(), ['branch-summary', 'definition-of-done', 'dev-workflow', 'hooks', 'paired-agent-tdd', 'qa-sweep', 'retro', 'ticket-writer', 'verify', 'zero-trust-review']);
+});
+
+// ADR 0011 phase 3: the two dev-workflow mutation flags
+test('should give the two WORKFLOW_MUTATION flags to dev-workflow when their owner is looked up (Flags happy)', () => {
+  assert.equal(ownerOf('WORKFLOW_MUTATION_CHECK_ENABLED'), 'dev-workflow');
+  assert.equal(ownerOf('WORKFLOW_MUTATION_SCORE_MIN'), 'dev-workflow');
+});
+
+test('should hold dev-workflow to a defaults e2e test for WORKFLOW_MUTATION_CHECK_ENABLED when the README lists the mutation flags (Flags happy, Flags edge)', () => {
+  const rows = parseFlags(readFileSync(join(ROOT, 'README.md'), 'utf8'));
+  const check = rows.find(f => f.name === 'WORKFLOW_MUTATION_CHECK_ENABLED');
+  const min = rows.find(f => f.name === 'WORKFLOW_MUTATION_SCORE_MIN');
+  assert.ok(check && min, `README Flags rows: ${rows.map(f => f.name).filter(n => n.startsWith('WORKFLOW_')).join(', ')}`);
+  assert.equal(check.default, 'true');
+  assert.equal(isOn(check), true, 'on by default, so it needs a flags: defaults e2e test');
+  assert.equal(min.default, '100');
+  assert.equal(isOn(min), false, 'a number flag is not an ON flag');
+  const r = spawnSync(process.execPath, [CHECK, '--root', ROOT], { encoding: 'utf8' });
+  const out = JSON.parse(r.stdout);
+  assert.ok(out.skills['dev-workflow'].flagsOn.includes('WORKFLOW_MUTATION_CHECK_ENABLED'), JSON.stringify(out.skills['dev-workflow']));
+  assert.equal(out.skills['dev-workflow'].ok, true, JSON.stringify(out.skills['dev-workflow']));
+});
+
+test('should refuse a dev-workflow defaults file when its only test sets WORKFLOW_MUTATION_CHECK_ENABLED (Flags fail)', () => {
+  const on = ['WORKFLOW_GUARD_ENABLED', 'WORKFLOW_MUTATION_CHECK_ENABLED'];
+  const src = "// flags: defaults\nimport { test } from 'node:test';\nimport { spawnSync } from 'node:child_process';\ntest('should run when on', () => spawnSync('node', ['workflow.mjs'], { env: { WORKFLOW_MUTATION_CHECK_ENABLED: 'true' } }));\n";
+  assert.match(analyzeFile(src, on).join(), /every top-level test block assigns one of/);
 });

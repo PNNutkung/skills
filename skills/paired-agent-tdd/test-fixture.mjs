@@ -12,6 +12,8 @@ import { main } from './tdd.mjs';
 export const HERE = dirname(fileURLToPath(import.meta.url));
 export const TDD = join(HERE, 'tdd.mjs');
 Object.assign(process.env, SPEED_OFF_ENV); // the tests above the speed section test the v2.0.0 pipeline; the speed section sets its flags per command
+// ADR 0011: these plans hold an inline dod[], which a fast plan with the test writer on refuses; the tdd.mutation*.test.mjs files set the flag per command
+process.env.PTDD_TEST_WRITER_ENABLED = 'false';
 export const hasPython = spawnSync('python3', ['--version']).status === 0;
 
 // Honors the runner flags, then runs the command after `--` in --cwd with the --env pairs. Each command line goes to calls.log next to the script; config.json {"exit": N}

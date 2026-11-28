@@ -182,6 +182,45 @@ test('should fail checkAdrSources when the DoD section no longer matches the DoD
   assert.match(checkAdrSources(render().text, { dod: d, ...SRC, show }).join('\n'), /does not match the DoD.*re-run dod\.mjs adr/);
 });
 
+// ---------- the Interface section (ADR 0011 A13): dod.mjs adr writes the heading, the design step fills it ----------
+const INTERFACE = '## Interface';
+/** the lines between the ## Interface heading and the next ## heading */
+const interfaceBody = text => {
+  const ls = text.split('\n'), at = ls.indexOf(INTERFACE);
+  const end = ls.findIndex((l, i) => i > at && /^## /.test(l));
+  return ls.slice(at + 1, end < 0 ? ls.length : end);
+};
+const filled = text => text.replace(/^## Interface\n[\s\S]*?(?=^## )/m, '## Interface\n\n```mermaid\nflowchart LR\n  ui[export button] --> api[GET /reports.csv]\n```\n\n- `GET /reports.csv?kind=sales|stock` -> 200 text/csv; over 10,000 rows: the first 10,000 and a warning header; errors: 400 on an unknown kind\n\n');
+
+test('should write an empty ## Interface heading after the decisions and before the DoD section when dod.mjs adr renders a draft (Interface happy)', () => {
+  const t = render().text;
+  const ls = t.split('\n');
+  assert.equal(ls.filter(l => l === INTERFACE).length, 1, 'one Interface heading');
+  const at = ls.indexOf(INTERFACE);
+  assert.ok(at > ls.indexOf('## Decision') && at < ls.indexOf(DOD_HEADING), `Interface at line ${at}`);
+  assert.ok(interfaceBody(t).every(l => !l.trim() || /^<!--.*-->$/.test(l.trim())), `nothing but blank lines or a comment under the heading: ${JSON.stringify(interfaceBody(t))}`);
+});
+
+test('should pass checkAdr and checkAdrSources when the draft has the empty Interface heading (Interface happy)', () => {
+  const t = render().text;
+  assert.match(t, /^## Interface$/m);
+  assert.deepEqual(checkAdr(t, { show }), []);
+  assert.deepEqual(checkAdrSources(t, { dod: dod(), ...SRC, show }), []);
+});
+
+test('should still pass checkAdr and checkAdrSources when the design step fills the Interface section with a diagram (Interface edge)', () => {
+  const t = filled(render().text);
+  assert.match(t, /^## Interface\n\n```mermaid\n/m);
+  assert.deepEqual(checkAdr(t, { show }), []);
+  assert.deepEqual(checkAdrSources(t, { dod: dod(), ...SRC, show }), []);
+  assert.deepEqual(parseAdr(t).section.items.map(i => i.id), ['AC1', 'AC2', 'AC3', 'AC4'], 'the DoD items still parse');
+});
+
+test('should keep the Interface heading out of the hashed DoD section when the draft is rendered (Interface edge)', () => {
+  const t = render().text;
+  assert.ok(!parseAdr(t).section.body.includes(INTERFACE), 'filling the Interface section never trips the hand-edit hash');
+});
+
 // ---------- the shapes ptdd and qa-sweep take ----------
 test('should give paired-agent-tdd dod[] items with id, text, kinds and a source naming the ADR', () => {
   const items = toPlanDod(parseAdr(render().text), 'docs/adr/0007-report-export.md');

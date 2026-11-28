@@ -125,7 +125,7 @@ test('green: a mutation probe that errors makes the gate not ok whenever mutatio
   const off = (await plannedWith(t, ALL_OFF_ENV)).fx;
   await redThenCode(off);
   assert.match((await off.cli('green', ['--group', 'a'], { ...ZT_OFF_ENV, ZT_DIR: crashingZt(off) })).out, /^GREEN a ok=true/, 'every flag off: v2.0.0 ignored a mutation probe error');
-  const planOff = (await plannedWith(t, ON_ENV, { plan: { mutation: { off: true } } })).fx;
+  const planOff = (await plannedWith(t, ON_ENV, { plan: { mutation: { off: 'A9' } } })).fx;
   await redThenCode(planOff);
   assert.match((await planOff.cli('green', ['--group', 'a'], { ZT_DIR: crashingZt(planOff) })).out, /^GREEN a ok=true/, 'mutation off in the plan');
 });

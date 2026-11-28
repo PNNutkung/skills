@@ -12,13 +12,13 @@ npx skills add PNNutkung/skills --list
 npx skills add PNNutkung/skills --skill '*' -a claude-code -g
 
 # or pick one
-npx skills add PNNutkung/skills --skill zero-trust-review
-npx skills add PNNutkung/skills --skill dev-workflow --skill definition-of-done --skill paired-agent-tdd --skill zero-trust-review --skill retro   # the whole workflow, step by step with a gate between steps
+npx skills add PNNutkung/skills --skill zero-trust-review --skill mutation
+npx skills add PNNutkung/skills --skill dev-workflow --skill definition-of-done --skill paired-agent-tdd --skill zero-trust-review --skill mutation --skill retro   # the whole workflow, step by step with a gate between steps
 npx skills add PNNutkung/skills --skill definition-of-done   # its ADR (or export) feeds paired-agent-tdd and qa-sweep
 npx skills add PNNutkung/skills --skill retro   # step 6: looks back at finished work, turns mistakes into ratchet rules
-npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review   # paired-agent-tdd borrows the probes (and optionally the sandbox runner) of zero-trust-review
+npx skills add PNNutkung/skills --skill paired-agent-tdd --skill zero-trust-review --skill mutation   # paired-agent-tdd borrows the probes (and optionally the sandbox runner) of zero-trust-review
 npx skills add PNNutkung/skills --skill verify   # runs the DoD items and writes docs/verify/<slug>.md from the real runs; works alone or as dev-workflow step 5
-npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --skill paired-agent-tdd   # qa-sweep borrows the mutation probe of one and the direct runner of the other
+npx skills add PNNutkung/skills --skill qa-sweep --skill zero-trust-review --skill mutation --skill paired-agent-tdd   # qa-sweep borrows the mutation probe of one and the direct runner of the other
 mkdir -p ~/.claude/hooks && curl -fsSL -o ~/.claude/hooks/pr-test-tiers.py https://raw.githubusercontent.com/PNNutkung/skills/main/hooks/pr-test-tiers/pr-test-tiers.py   # qa-sweep reads test tiers through it ($TIERS_PY); registering it as a hook is optional
 ```
 
@@ -96,6 +96,8 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `WORKFLOW_GUARD_ENABLED` | `true` \| `false` | `true` | dev-workflow guard (`hooks/workflow-guard.mjs`): while a run is open on the branch, no product code before the design is locked and no merge before verify and retro |
 | `WORKFLOW_VERIFY_ENV_CHECK_ENABLED` | `true` \| `false` | `true` | dev-workflow verify gate: when the ADR's verify env books names (`[cloud] ...; [ci] ...`), each passing item's `env:` must start with one of them and every name needs a passing item; no names booked passes with a warning (ADR 0005) |
 | `WORKFLOW_PR_WHY_CHECK_ENABLED` | `true` \| `false` | `true` | dev-workflow `next --pr`: the PR body (read through `gh`, or `--pr-body <file>`) must start with Why, Expected outcome, If we do nothing and How we know, each filled in, before the run moves from tdd to verify (ADR 0012) |
+| `WORKFLOW_MUTATION_CHECK_ENABLED` | `true` \| `false` | `true` | dev-workflow `next` out of tdd runs the mutation engine itself on the branch's committed source changes since the merge base, with the test command of `next --test-cmd` (kept in the run), and writes `RUN/mutation.json`; a surviving mutant not marked equivalent keeps the run at tdd (ADR 0011) |
+| `WORKFLOW_MUTATION_SCORE_MIN` | a whole number from `0` to `100` | `100` | the mutation score that dev-workflow gate needs; a surviving mutant fails whatever it says, so it only limits skipped, inconclusive and unverifiable mutants |
 | `TICKET_WHY_GUARD_ENABLED` | `true` \| `false` | `true` | ticket-writer guard (`hooks/ticket-why-guard.mjs`): `gh issue create`, `gh pr create`, `glab issue create`, `glab mr create` and the GitHub/GitLab MCP create tools are denied when the body does not start with Why, Expected outcome, If we do nothing and How we know, or cannot be read (use `--body-file`) |
 | `VERIFY_GUARD_ENABLED` | `true` \| `false` | `true` | verify guard (`hooks/verify-guard.mjs`): while a verify run is open in the session, no edit in the repo outside `docs/verify/`, no hand edit of a section `verify.mjs` wrote, and no Bash write, commit or push in the repo |
 | `VERIFY_RUN_TIMEOUT_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most seconds one planned `verify.mjs run` command may take; a longer one is killed with its process group and written as `result: fail` (`timeout after Ns`) |
@@ -114,6 +116,9 @@ Set flags in the shell or in `~/.claude/settings.json` under `env`. Each skill r
 | `PTDD_COURIER_SKIP_ENABLED` | `true` \| `false` | `true` | no final courier when every fixer reports its gate ok; `tdd.mjs verify` is the check |
 | `PTDD_PARALLEL_REVIEW_ENABLED` | `true` \| `false` | `true` | the integration-tester and the reviewer run at the same time; the integration test is still gated but not read by the reviewer |
 | `PTDD_INPROCESS_RUNNER_ENABLED` | `true` \| `false` | `true` | the built-in `direct-run.mjs` runs each test command inside `tdd.mjs` (and inside the `testprobe.mjs` and `mutate.mjs` it starts: `--runner-inprocess`), not as a node process per command; the same exit codes, ledger lines and `ZT-RUN` line; no effect with `--runner` set to another file or `plan.sandbox`; `false` starts `direct-run.mjs` per command as before |
+| `PTDD_MUTATION_SCORE_MIN` | a whole number from `0` to `100` | `100` | the mutation score (killed + timeout of all mutants not marked equivalent) the GREEN and final gates of paired-agent-tdd need; a surviving mutant fails whatever it says, so `0` is the behavior before ADR 0011; above `0`, a changed code file no mutator covers (`.sh` ...) needs a user answer id in `plan.mutation.accept` |
+| `PTDD_MUTATION_MAX` | a whole number above 0 \| `unlimited` | `unlimited` | most mutants the final gate runs over every changed line (GREEN keeps its sample of 12); no time budget at final |
+| `PTDD_TEST_WRITER_ENABLED` | `true` \| `false` | `true` | fast mode: a test-writer agent writes each group's tests from the DoD and the ADR `## Interface` section, a code-driver writes the code and sends a `testWrong` note instead of editing a test, a judge marks final-gate survivors equivalent; `plan` then needs `dodFile` with an Interface section, and `green --retest` is refused (`red --rewrite` re-baselines RED); `false`: one tdd-driver per group |
 | `QA_ADR_AUTO_FIND_ENABLED` | `true` \| `false` | `true` | with neither `requirements` nor `dodFile` in `findings.json`, use the ADR whose `touches` cover the files the findings name |
 | `RETRO_RATCHET_PRECOMMIT_HOOK_ENABLED` | `true` \| `false` | `true` | `ratchet.mjs install` adds the git pre-commit hook, and the hook refuses a count in `.ratchet.json` that went up |
 | `RETRO_TRANSCRIPTS_ENABLED` | `true` \| `false` | `true` | retro reads Claude Code session transcripts (redacted) |

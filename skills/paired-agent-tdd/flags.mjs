@@ -39,3 +39,16 @@ export function oneOf(env, name, modes, dflt, { renamedFrom } = {}) {
 // ADR 0008 A4: the built-in direct runner (direct-run.mjs) runs in tdd.mjs's own process and in the probes it starts; false starts a node process per command, as before
 export const INPROCESS_RUNNER_FLAG = 'PTDD_INPROCESS_RUNNER_ENABLED';
 export const inprocessRunner = env => enabled(env, INPROCESS_RUNNER_FLAG, true);
+
+/** NAME_MIN: a whole number from 0 to 100; dflt when unset. */
+export function percent(env, name, dflt) {
+  const v = raw(env, name);
+  if (!v) return dflt;
+  if (/^\d+$/.test(v) && Number(v) <= 100) return Number(v);
+  throw new FlagError(`${name}=${env[name]} is not valid: use a whole number from 0 to 100`);
+}
+
+// ADR 0011: the mutation gate. SCORE_MIN: the score green and final need (survivors fail whatever it says); MAX: the final gate's mutant count (null = unlimited);
+// TEST_WRITER: fast mode splits the one driver into a test writer and a code driver
+export const MUTATION_FLAGS = { scoreMin: 'PTDD_MUTATION_SCORE_MIN', max: 'PTDD_MUTATION_MAX', testWriter: 'PTDD_TEST_WRITER_ENABLED' };
+export const mutationFlags = env => ({ scoreMin: percent(env, MUTATION_FLAGS.scoreMin, 100), max: positiveInt(env, MUTATION_FLAGS.max), testWriter: enabled(env, MUTATION_FLAGS.testWriter, true) });

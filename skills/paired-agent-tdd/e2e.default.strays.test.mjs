@@ -8,12 +8,13 @@ import { spawnSync } from 'node:child_process';
 import { SPEED_ENV } from './speed.mjs';
 import { allDone, runDefault } from './test-e2e-default.mjs';
 
-// the env a real run starts with: no PTDD_* speed flag and no ZT_* flag, whatever the shell running the tests has set
-const DEFAULT_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !Object.values(SPEED_ENV).includes(k) && !/^ZT_/.test(k)));
+// the env a real run starts with: no PTDD_* flag and no ZT_* flag, whatever the shell running the tests has set (the test writer is on: ADR 0011)
+const DEFAULT_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !Object.values(SPEED_ENV).includes(k) && !/^(ZT|PTDD)_/.test(k)));
 const spawn = (file, args, fixtureEnv) => spawnSync(file, args, { encoding: 'utf8', env: { ...DEFAULT_ENV, ...fixtureEnv } });
 
 test('default flags, files outside the plan left in the repo: final fails on them alone; verify names them as work left for the run and still proves all 18 pairs', async () => {
   const r = await runDefault(spawn, { strays: { 'args.json': '{"runDir":"x"}\n', '.hook-cache/state.json': '{}\n' } });
+  assert.deepEqual(r.labels.filter(l => /^(test-writer|code-driver|tdd-driver):/.test(l)).map(l => l.split(':')[0]).sort(), ['code-driver', 'code-driver', 'code-driver', 'test-writer', 'test-writer', 'test-writer'], r.labels.join(', '));
   allDone(r);
   assert.equal(r.out.courierSkipped, true);
   assert.equal(r.verify.final, false, JSON.stringify(r.verify));

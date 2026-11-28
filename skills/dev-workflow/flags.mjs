@@ -18,9 +18,23 @@ export function enabled(env, name, dflt, { renamedFrom } = {}) {
   throw new FlagError(`${name}=${env[name]} is not valid: use true or false`);
 }
 
-export const FLAG = { guard: 'WORKFLOW_GUARD_ENABLED', verifyEnv: 'WORKFLOW_VERIFY_ENV_CHECK_ENABLED', prWhy: 'WORKFLOW_PR_WHY_CHECK_ENABLED' };
+/** NAME: a whole number from 0 to 100; dflt when unset. */
+export function percent(env, name, dflt) {
+  const v = raw(env, name);
+  if (!v) return dflt;
+  if (!/^\d{1,3}$/.test(v) || Number(v) > 100) throw new FlagError(`${name}=${env[name]} is not valid: use a whole number from 0 to 100`);
+  return Number(v);
+}
+
+export const FLAG = {
+  guard: 'WORKFLOW_GUARD_ENABLED', verifyEnv: 'WORKFLOW_VERIFY_ENV_CHECK_ENABLED', prWhy: 'WORKFLOW_PR_WHY_CHECK_ENABLED',
+  mutationCheck: 'WORKFLOW_MUTATION_CHECK_ENABLED', mutationScoreMin: 'WORKFLOW_MUTATION_SCORE_MIN',
+};
 
 /** Every dev-workflow flag at once (throws FlagError on a bad value). */
 export function readFlags(env = process.env) {
-  return { guard: enabled(env, FLAG.guard, true), verifyEnv: enabled(env, FLAG.verifyEnv, true), prWhy: enabled(env, FLAG.prWhy, true) };
+  return {
+    guard: enabled(env, FLAG.guard, true), verifyEnv: enabled(env, FLAG.verifyEnv, true), prWhy: enabled(env, FLAG.prWhy, true),
+    mutationCheck: enabled(env, FLAG.mutationCheck, true), mutationScoreMin: percent(env, FLAG.mutationScoreMin, 100),
+  };
 }

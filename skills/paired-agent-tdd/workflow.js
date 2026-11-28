@@ -14,18 +14,21 @@ export const meta = {
 
 const NODE = {
   'red-driver': {"model":"sonnet","effort":"medium","ponytail":"ultra","agentType":"tdd-guide","cap":40},
+  'test-writer': {"model":"sonnet","effort":"medium","ponytail":"ultra","agentType":"tdd-guide","cap":40},
   'red-navigator': {"model":"sonnet","effort":"high","ponytail":"full","agentType":"code-reviewer","cap":25},
   'green-driver': {"model":"sonnet","effort":"medium","ponytail":"ultra","agentType":"tdd-guide","cap":45},
   'tdd-driver': {"model":"sonnet","effort":"medium","ponytail":"ultra","agentType":"tdd-guide","cap":75},
+  'code-driver': {"model":"sonnet","effort":"medium","ponytail":"ultra","agentType":"tdd-guide","cap":45},
   'green-navigator': {"model":"sonnet","effort":"high","ponytail":"full","agentType":"code-reviewer","cap":25},
   'integration-tester': {"model":"sonnet","effort":"high","ponytail":"lite","agentType":"tdd-guide","cap":35},
   'reviewer': {"model":"opus","effort":"high","ponytail":"off","agentType":"code-reviewer","cap":40},
+  'judge': {"model":"sonnet","effort":"high","ponytail":"full","agentType":"code-reviewer","cap":20},
   'fixer': {"model":"sonnet","effort":"medium","ponytail":"full","agentType":"tdd-guide","cap":35},
   'final-verifier': {"model":"haiku","effort":"low","ponytail":"off","agentType":"code-reviewer","cap":6},
 }
 const LIM = {"pool":6,"retry":1,"rounds":3,"repairs":2}
-function plan(g, integration, findingGroups, solo = 0) {
-  const rest = g - solo, counts = { 'red-driver': rest, 'red-navigator': rest, 'green-driver': rest, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0, ...(solo ? { 'tdd-driver': solo } : {}) };
+function plan(g, integration, findingGroups, solo = 0, writer = false) {
+  const rest = g - solo, counts = { 'red-driver': rest, 'red-navigator': rest, 'green-driver': rest, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0, ...(solo ? (writer ? { 'test-writer': solo, 'code-driver': solo } : { 'tdd-driver': solo }) : {}) };
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
 }
 
@@ -87,6 +90,9 @@ const dry = A.mode === 'plan'
 const FAST = A.mode === 'fast' || (A.mode === 'plan' && A.fast === true) // a `fast` key alone means nothing: only the dry run of a fast plan (mode "plan" replaces mode "fast") carries it
 // args.speed (tdd.mjs plan, from the PTDD_* speed flags; ADR 0001): missing is every flag off, and then every prompt and step below is the one v2.0.0 had: the resume cache keys on those bytes
 const SP = speedOf(A.speed)
+// ADR 0011: fast mode with the test writer (PTDD_TEST_WRITER_ENABLED, set by tdd.mjs plan as args.testWriter): a test writer writes a group's tests, a code driver its code, a judge
+// marks final-gate survivors equivalent. Everything for it is behind TW, so a plan without it produces the prompts and schemas it always did.
+const TW = FAST && A.testWriter === true
 for (const k of ['repo', 'base', 'cmd', 'skillDir', 'runDir']) if (!A[k]) return { error: 'args must be the JSON that `tdd.mjs plan` prints; missing ' + k }
 const G = Array.isArray(A.groups) ? A.groups : [], DOD = Array.isArray(A.dod) ? A.dod : []
 if (A.sandbox === 'none') return { error: 'no usable runner for the test commands: every gate would say unverifiable and no agent could judge anything. Fix it (or drop plan.sandbox), then run `tdd.mjs plan` again' }
@@ -164,6 +170,14 @@ const FINDING = {
 }
 const REVIEW = { type: 'object', properties: { findings: { type: 'array', items: FINDING }, notes: STR }, required: ['findings'] }
 const FIX = { type: 'object', properties: { fixed: { type: 'array', items: STR }, notFixed: { type: 'array', items: { type: 'object', properties: { id: STR, why: STR }, required: ['id', 'why'] } }, outOfScope: OOS, ...GATE }, required: ['fixed', 'notFixed'] }
+// ADR 0011 returns: the test writer {done, rejected}, the code driver {done, testWrong}, the judge {done, marked, unmarked}
+const NOTE = { type: 'array', items: { type: 'object', properties: { test: STR, reason: STR }, required: ['test', 'reason'] } }
+const BOOL = { type: 'boolean' }
+const TEST_WRITER = { type: 'object', properties: { done: BOOL, rejected: NOTE, matrix: { type: 'array', items: ROW }, files: { type: 'array', items: STR }, outOfScope: OOS, reuse: REUSE, notes: STR, ...GATE }, required: ['done', 'rejected', 'matrix', 'files'] }
+const CODE_DRIVER = { type: 'object', properties: { done: BOOL, testWrong: NOTE, files: { type: 'array', items: STR }, srcFiles: { type: 'array', items: STR }, cleanup: STR, reuse: REUSE, testGaps: OOS, outOfScope: OOS, notes: STR, ...GATE }, required: ['done', 'testWrong', 'files'] }
+const JUDGE = { type: 'object', properties: { done: BOOL, marked: { type: 'array', items: STR }, unmarked: { type: 'array', items: STR }, finalOk: BOOL, notes: STR }, required: ['done', 'marked', 'unmarked'] }
+const SURVIVOR = { type: 'object', properties: { id: STR, file: STR, line: INT, op: STR, before: STR, after: STR, run: STR }, required: ['id'] }
+const REVIEW_TW = { type: 'object', properties: { ...REVIEW.properties, final: { type: 'object', properties: { ok: BOOL, survivors: { type: 'array', items: SURVIVOR } }, required: ['ok', 'survivors'] }, survivors: { type: 'array', items: SURVIVOR } }, required: ['findings', 'final'] }
 const VERIFIED = { type: 'object', properties: { ok: { type: 'boolean' }, problems: { type: 'array', items: { type: 'object', properties: { file: STR, group: STR, what: STR }, required: ['what'] } }, notes: STR }, required: ['ok', 'problems'] }
 
 // ---------------------------------------------------------------- prompts (rules are stated once, tersely; the long form is briefs.md)
@@ -246,6 +260,47 @@ function greenPrompt(g, o) {
     'RETURN: files = source files touched; cleanup; reuse; testDefects; testGaps; outOfScope; gateOk; gateRuns; remaining; notes (<= 400 chars). ' + cap('green-driver'),
   ].filter(Boolean).join('\n\n')
 }
+// ---- ADR 0011, fast mode with the test writer: the test writer sees the DoD, the plan's file list, the base code and the ADR Interface, never the code driver's source or notes
+const base8 = String(A.base).slice(0, 8)
+const IFACE = 'INTERFACE (the API: names, inputs, outputs, errors), from the `## Interface` section of ' + (A.dodFile || 'the ADR') + ' (the user approved it; `git show ' + base8 + ':' + (A.dodFile || '<adr>') + '`):\n' + clip(A.interface, 2400)
+const noteLines = ns => ns.map(n => '- ' + clip(n.test, 120) + ': ' + clip(n.reason, 400)).join('\n')
+const survivorLines = ss => ss.map(m => '- ' + m.id + (m.file ? ' ' + m.file + (m.line ? ':' + m.line : '') : '') + (m.op ? ' ' + m.op : '') + (m.before !== undefined && m.after !== undefined ? ': ' + clip(String(m.before).trim(), 80) + ' -> ' + clip(String(m.after).trim(), 80) : '')).join('\n')
+const rewriteLoop = (g, alone) => alone ? ALONE : KEEP + ' After your test edits re-baseline RED with red --rewrite: `' + gateCmd('red', g, ' --rewrite') + '` (the tests as they are now become the RED reference; each edited test must still fail without the group code) and `' + dodCmd(g, 'red') + '`, then `' + gateCmd('green', g) + '` (it must pass on the current code; never --retest).' + ADMIT
+function testWriterPrompt(g, o) {
+  const notes = o.notes || [], surv = o.survivors || [], defects = o.defects || []
+  const later = notes.length || surv.length || defects.length
+  return [
+    head(g, 'test writer: ' + (later ? 'you own the tests of this group; the code exists now and was written by a separate code driver against your tests' : 'write the FAILING tests (RED) for this group; a separate code driver writes the code after you, against your tests'), 'test-writer'),
+    'DEFINITION OF DONE (one test per item and kind; every test name MUST contain its item id set apart by non-alphanumerics, e.g. test_ac1_happy_...; one test serves one item and kind only):\n' + dodLines(g),
+    'PLAN FILES: tests ' + g.tests.join(', ') + '; code ' + g.src.join(', ') + '. Read existing code only as it is at BASE ' + base8 + ' (`git show ' + base8 + ':<file>`); never read the group\'s source files in the working tree: your tests come from the DoD and the Interface, not from the code.',
+    IFACE, FENCE(g.tests), TOOLS, RESEARCH, PRECEDENT,
+    notes.length ? 'TEST-IS-WRONG NOTES from the code driver (it may not edit a test). For each: when the DoD text or the Interface agrees with the note, correct that test in place (keep its name); otherwise keep the test and return the note under rejected with your reason (the code driver gets it).\n' + noteLines(notes) : '',
+    surv.length ? 'These mutants SURVIVED the final gate (every changed line) and the judge did not mark them equivalent: no test fails with them. Add or sharpen tests so each would fail; every new test must PASS on the current code; never weaken, skip or delete a test. Then also run `' + TDD + ' final --run ' + RUN + ' --again`.\n' + survivorLines(surv) : '',
+    defects.length ? 'FIX EXACTLY THESE TEST DEFECTS FROM THE CHECK (a gap: add or sharpen a test; a changed frozen test: put it back; a wrong test: correct it in place):\n' + defectLines(defects) : '',
+    leadNote(g), later ? rewriteLoop(g, o.solo === false) : 'Each new test must fail for the RIGHT reason: an assertion about behavior that does not exist yet, not a typo. Write no source file. ' + redLoop(g),
+    'RETURN: done; rejected = [{test, reason}] for each note you did not accept (else empty); matrix = one row per test {dod, kind, test, file} (test = the exact function name); files = test files touched; outOfScope; reuse; gateOk; gateRuns; remaining; notes (<= 400 chars). ' + cap('test-writer'),
+  ].filter(Boolean).join('\n\n')
+}
+function codeDriverPrompt(g, o) {
+  const rejected = o.rejected || []
+  return [
+    head(g, 'code driver: GREEN, the minimum code that makes the test writer\'s RED tests pass', 'code-driver'),
+    'DEFINITION OF DONE:\n' + dodLines(g), IFACE,
+    'THE TESTS BELONG TO THE TEST WRITER: ' + g.tests.join(', ') + '. Never edit, skip, loosen or delete a test, and never re-baseline one. A test you believe is WRONG (it asserts what the DoD text and the Interface do not ask for): return it under testWrong [{test, reason}] and stop; the test writer fixes it or rejects it with a reason.',
+    FENCE(g.src), TOOLS, RESEARCH,
+    rejected.length ? 'THE TEST WRITER REJECTED your testWrong notes; those tests stand, make the code pass them:\n' + noteLines(rejected) : '',
+    o.defects ? 'FIX EXACTLY THESE DEFECTS FROM THE CHECK (and nothing else):\n' + defectLines(o.defects) : 'After GREEN, at most ONE cleanup pass, only for a duplicated block (3+ copies) or dead code you added; otherwise cleanup = "none". Run the gate again after it.',
+    leadNote(g), o.solo === false ? ALONE : greenLoop(g, false),
+    'RETURN: done; testWrong = [{test, reason}] (empty when every test is right); files = source files touched; srcFiles; cleanup; reuse; testGaps; outOfScope; gateOk; gateRuns; remaining; notes (<= 400 chars). ' + cap('code-driver'),
+  ].filter(Boolean).join('\n\n')
+}
+const judgePrompt = surv => [
+  'ROLE: judge of surviving mutants. You wrote neither the tests nor the code, and you edit no file.' + pony(NODE.judge.ponytail) + '\n' + WHERE,
+  'The final gate mutated every changed line; with each mutant below every test still passed:\n' + survivorLines(surv),
+  'For each, read the file at that line and decide. EQUIVALENT only when no input can tell the mutant apart from the original (the same observable behavior for every input). Mark it: `' + TDD + ' equivalent --run ' + RUN + ' --add <id> --reason \'<why no input can tell them apart, at least 20 characters>\'` (refused unless the id survived the last final run). Anything a test COULD catch is a test gap: leave it unmarked, the test writer gets it. When in doubt, unmarked: the list goes to the user in the PR.',
+  'Then run once: `' + TDD + ' final --run ' + RUN + ' --again` and read its mutation lines.',
+  'RETURN: done; marked = the ids you marked; unmarked = the other survivor ids; finalOk = the ok= value of that final run; notes (<= 400 chars). ' + cap('judge'),
+].join('\n\n')
 const knownGaps = chk => chk.missing.map(m => m.dod + '/' + m.kind + ' has no test').concat(chk.bad.map(b => b.row.dod + ': ' + b.why)).join('; ')
 const NAV_TAIL = 'RETURN: verdict PASS|FAIL; defects = only what MUST be fixed, each {cls test|impl|gap|scope|env, file, line, what, fix}, at most 6 (anything softer goes in notes); a gate verdict `unverifiable` (not `unverifiable (timeout)`, which is a hanging test or code: cls impl or test) is the environment, not the code: report that ONE defect as cls env and nothing else; gateOk = true only if every command printed ok=true; notes <= 400 chars. A claim you did not see in command output or in a file you read is not a fact. '
 function redNavPrompt(g, rows, chk, recheck, n) {
@@ -291,14 +346,15 @@ const reviewPrompt = alongside => [
   ...(alongside ? ['The integration test ' + alongside + ' is being written now by another agent, at the same time as your review: leave it out (it is gated on its own: its agent runs it for real and verify reads the exit code); its lines in final.patch, whole or half-written, are not findings.'] : []),
   'DEFINITION OF DONE:\n' + DOD.map(d => d.id + ' [' + (d.kinds || ['happy', 'fail', 'edge']).join(',') + '] ' + clip(d.text, 200)).join('\n'),
   'LOOK FOR: every `not ok:` reason of the final gate (one high finding per root cause); a DoD item the code does not meet; a weak, tautological or over-mocked test; a branch no test pins; input validation missing at a trust boundary; a reinvented helper (grep for the existing one); a comment, docstring or example the change made stale or wrong (check every number in an example). One finding per root cause.',
-  SEVERITY, PROOF_RULE, 'RETURN: findings (empty when none) and notes <= 400 chars. ' + cap('reviewer'),
+  SEVERITY, PROOF_RULE, (TW ? 'RETURN: findings (empty when none); final = {ok, survivors} copied from that first final run: ok = its ok= value, survivors = one {id, file, line, op, before, after} per `survivor` line (a surviving mutant goes to the judge, not into findings); notes <= 400 chars. ' : 'RETURN: findings (empty when none) and notes <= 400 chars. ') + cap('reviewer'),
 ].join('\n\n')
 const fixLoop = gid => gid === '_extra' ? 'Run the tests that cover the files you changed.'
+  : TW ? KEEP + ' After the fixes run `' + gateCmd('green', { id: gid }) + '` (never --retest: the test writer owns the tests) and read every reason after "not ok:": caused by your change, fix it and run again; not caused by it, say so in notFixed.'
   : KEEP + ' After the fixes run `' + gateCmd('green', { id: gid }, ' --retest') + '` (tests may have been sharpened on purpose) and read every reason after "not ok:": caused by your change, fix it and run again; not caused by it, say so in notFixed.'
 const fixPrompt = (gid, files, fs) => [
   'ROLE: fixer for group ' + gid + '. Fix exactly these findings and nothing else.' + pony(NODE.fixer.ponytail) + '\n' + WHERE,
   'FINDINGS:\n' + fs.map(c => c.id + ' [' + c.severity + '] ' + c.file + (c.startLine ? ':' + c.startLine + '-' + c.endLine : '') + ' ' + clip(c.title, 120) + ' | ' + clip(c.hazard, 300) + (c.replacement ? ' | replacement for those lines:\n' + c.replacement : c.suggestedFix ? ' | fix: ' + clip(c.suggestedFix, 300) : '')).join('\n'),
-  FENCE(files), TOOLS, 'Tests may be added or sharpened, never weakened, skipped or deleted. A finding you cannot fix inside the fence: notFixed with why.', fixLoop(gid),
+  FENCE(files), TOOLS, TW ? 'Never edit a test: the test writer owns them. A finding that needs a test change, or one you cannot fix inside the fence: notFixed with why.' : 'Tests may be added or sharpened, never weakened, skipped or deleted. A finding you cannot fix inside the fence: notFixed with why.', fixLoop(gid),
   'RETURN: fixed (ids), notFixed [{id, why}], outOfScope, gateOk, gateRuns. ' + cap('fixer'),
 ].join('\n\n')
 const verifyPrompt = () => [
@@ -315,7 +371,7 @@ if (dry) {
   // per group: 1 driver + 1 matrix rework + (1 + R) checks + R reworks (RED), 1 driver + (1 + R) checks + up to 2 jobs a round (GREEN) = 5 + 5R; not counted: the reviewer, fixers, couriers, retries
   // fast mode: the ceiling below is the default pipeline's, an upper bound (a one-driver group costs at most 2 + 3R); the two extra prompts are the one driver and the navigator that judges both gates
   const solo = G.filter(x => groupMode(FAST, x, 'red') === 'fast').length
-  return { dryRun: true, plan: plan(G.length, ex.integration, ex.findingGroups, solo), rounds: ROUNDS, repairBudget: BUDGET, worstBuildAgents: Math.min(ACTIVE * (5 + 5 * ROUNDS), 4 * ACTIVE + 3 * BUDGET), prompts: [['red-driver', redPrompt(g, {})], ['red-navigator', redNavPrompt(g, sample, chk)], ['green-driver', greenPrompt(g, {})], ['green-navigator', greenNavPrompt(g, { rows: sample })], ['reviewer', reviewPrompt()], ['fixer', fixPrompt(g.id, g.tests.concat(g.src), [])], ['final-verifier', verifyPrompt()], ...(FAST ? [['tdd-driver', fastDriverPrompt(g)], ['green-navigator-merged', greenNavPrompt(g, { rows: sample, merged: true })]] : [])].map(([node, p]) => ({ node, promptChars: p.length })) }
+  return { dryRun: true, plan: plan(G.length, ex.integration, ex.findingGroups, solo, TW), rounds: ROUNDS, repairBudget: BUDGET, worstBuildAgents: Math.min(ACTIVE * (5 + 5 * ROUNDS), 4 * ACTIVE + 3 * BUDGET), prompts: [['red-driver', redPrompt(g, {})], ['red-navigator', redNavPrompt(g, sample, chk)], ['green-driver', greenPrompt(g, {})], ['green-navigator', greenNavPrompt(g, { rows: sample })], ['reviewer', reviewPrompt()], ['fixer', fixPrompt(g.id, g.tests.concat(g.src), [])], ['final-verifier', verifyPrompt()], ...(FAST ? [['tdd-driver', fastDriverPrompt(g)], ['green-navigator-merged', greenNavPrompt(g, { rows: sample, merged: true })]] : []), ...(TW ? [['test-writer', testWriterPrompt(g, {})], ['code-driver', codeDriverPrompt(g, {})], ['judge', judgePrompt([{ id: 'X-00000000', file: g.src[0], line: 1, op: 'const-inc', before: 'x', after: 'y' }])]] : [])].map(([node, p]) => ({ node, promptChars: p.length })) }
 }
 
 // ---------------------------------------------------------------- build: one pipeline per group, no barrier between groups
@@ -328,6 +384,7 @@ const takeRepair = g => (repairsLeft > 0 && ((spent[g.id] || 0) < SHARE || repai
 const waiting = new Map(G.map(g => { let res; const p = new Promise(r => { res = r }); return [g.id, { p, res }] }))
 const as = (node, prompt, schema, label, model) => runR(node, prompt, { schema, label, phase: 'Build', ...model }, label) // model: {model, effort} of an escalated repair (`tdd.mjs resume --escalate G`)
 const gaps = chk => chk.missing.map(m => ({ cls: 'gap', what: 'DoD ' + m.dod + ' has no ' + m.kind + ' test (a test whose name contains ' + m.dod + ')' })).concat(chk.bad.map(b => ({ cls: 'test', what: 'matrix row ' + b.row.dod + '/' + b.row.kind + ' ' + b.row.test + ' cannot count: ' + b.why })))
+const wrongOf = r => (Array.isArray(r && r.testWrong) ? r.testWrong : []).filter(n => n && typeof n.test === 'string' && n.test).slice(0, 6)
 const needsWork = n => n.verdict !== 'PASS' || (n.defects || []).length > 0 || n.gateOk === false // a PASS that admits a command printed ok=false is not a pass
 
 // A stage is a loop, not a shot: a driver pass, then an independent check on fresh gate facts; the defects go back to the driver until the check passes, the same defects
@@ -354,7 +411,8 @@ async function build(g) {
   // fast mode: a group that waits for no other, starting from scratch, has ONE driver (tests, RED gate, code, GREEN gate) and ONE navigator over both gates. A group that waits keeps
   // the default two-stage path (its RED runs while the other group is built), as does any group a continue file restarts mid-way; a group's own RED navigator is never skipped.
   const oneDriver = groupMode(FAST, g, from) === 'fast'
-  let judgeRed = oneDriver || (FAST && !!(R && R.merged)) // its one navigator also judges RED, and keeps doing so when a continue file restarts the group after the first run (`merged` in the entry)
+  let judgeRed = oneDriver || (FAST && !!(R && R.merged))
+  const TWG = TW && judgeRed // this group's tests belong to the test writer: it, not a red-driver, changes them after RED (ADR 0011 A8) // its one navigator also judges RED, and keeps doing so when a continue file restarts the group after the first run (`merged` in the entry)
   let mergedPending = null, driverWroteCode = false
   const redNotes = [] // what the one navigator said about RED tests: kept in the return (green.redNotes), never dropped with a PASS
 
@@ -404,6 +462,7 @@ async function build(g) {
       })
     },
     repair: async (defects, k) => {
+      if (TWG) return writerRepair(defects, k)
       const wrong = judgeRed ? defects.filter(isWrongTest) : [] // a test the one navigator calls outright wrong: corrected in place, never "restored" to the RED version
       const weak = defects.filter(d => d.cls === 'gap'), changed = defects.filter(d => d.cls === 'test' && !wrong.includes(d)), code = defects.filter(d => d.cls !== 'gap' && d.cls !== 'test')
       const tests = weak.length + changed.length + wrong.length // a gap is strengthened; a frozen test that was changed or a DoD pair that no longer closes is RESTORED, and its gate run stays without --retest
@@ -421,6 +480,51 @@ async function build(g) {
     },
   })
 
+  // fast mode with the test writer: code defects go to a code driver, test defects to the test writer (red --rewrite, never --retest); a testWrong note the code driver
+  // returns instead of a fix goes back to the test writer as a test defect
+  async function writerRepair(defects, k) {
+    const tests = defects.filter(d => d.cls === 'gap' || d.cls === 'test'), code = defects.filter(d => d.cls !== 'gap' && d.cls !== 'test')
+    const solo = !(tests.length && code.length), jobs = []
+    if (code.length) jobs.push(() => as('code-driver', codeDriverPrompt(g, { defects: code, solo }), CODE_DRIVER, lab('code-driver', g.id, 'rework', k), mk))
+    if (tests.length) jobs.push(() => as('test-writer', testWriterPrompt(g, { defects: tests, solo }), TEST_WRITER, lab('test-writer', g.id, 'strengthen', k), mk))
+    const res = await parallel(jobs), cd = code.length ? res[0] : null, tw = res[code.length ? 1 : 0]
+    if (cd) driver = { ...drv(cd), testGaps: (cd.testGaps || []).length ? cd.testGaps : undefined }
+    if (tests.length && tw && (tw.matrix || []).length) { st.matrix = tw.matrix; chk = checkMatrix(items, st.matrix, g.tests) }
+    const notes = cd ? wrongOf(cd) : []
+    if (notes.length) return notes.map(n => ({ cls: 'test', what: WRONG + ' ' + n.test + ': ' + clip(n.reason, 300) + ' (a testWrong note of the code driver)' }))
+    return solo ? admit(res[0]) : null
+  }
+  // the test writer writes the tests and proves RED; a code driver writes the code; its testWrong notes go back to the test writer (fix, or reject with a reason), then on
+  async function writerPath() {
+    let tw = await as('test-writer', testWriterPrompt(g, {}), TEST_WRITER, 'test-writer:' + g.id)
+    if (!tw) return stop('failed', 'test-writer returned nothing')
+    chk = checkMatrix(items, tw.matrix, g.tests)
+    if ((chk.missing.length || chk.bad.length) && takeRepair(g)) { // before any code: one rework closes the matrix, as the default RED stage does
+      const again = await as('test-writer', testWriterPrompt(g, { defects: gaps(chk), solo: true }), TEST_WRITER, 'test-writer:' + g.id + ':matrix', mk)
+      if (again) { tw = again; chk = checkMatrix(items, tw.matrix, g.tests) }
+    }
+    st.matrix = tw.matrix || []
+    st.files = tw.files || []
+    st.red = { reworks: 0, verdict: 'merged', merged: true, writer: true } // no RED navigator: the one navigator after GREEN judges both gates
+    if (chk.missing.length || chk.bad.length) return stop('blocked', 'the test writer left DoD pairs uncovered: ' + clip(knownGaps(chk), 200))
+    let cd = await as('code-driver', codeDriverPrompt(g, {}), CODE_DRIVER, 'code-driver:' + g.id, mk)
+    if (!cd) return stop('failed', 'code-driver returned nothing')
+    for (let k = 1; wrongOf(cd).length; k++) {
+      const notes = wrongOf(cd)
+      if (k > ROUNDS) return stop('blocked', 'testWrong notes still open after ' + ROUNDS + ' round(s): ' + clip(notes[0].test + ': ' + notes[0].reason, 200))
+      if (!takeRepair(g)) return stop('paused', 'the run-wide repair budget (' + BUDGET + ') is spent with testWrong notes open: ' + clip(notes[0].test, 100) + ' | continue with tdd.mjs resume')
+      const fix = await as('test-writer', testWriterPrompt(g, { notes }), TEST_WRITER, lab('test-writer', g.id, 'wrong', k), mk)
+      if (!fix) return stop('failed', 'test-writer returned nothing for a testWrong note')
+      if ((fix.matrix || []).length) { st.matrix = fix.matrix; chk = checkMatrix(items, st.matrix, g.tests) }
+      cd = await as('code-driver', codeDriverPrompt(g, { rejected: (fix.rejected || []).filter(n => n && n.test) }), CODE_DRIVER, lab('code-driver', g.id, 'again', k), mk)
+      if (!cd) return stop('failed', 'code-driver returned nothing after the test writer answered its notes')
+    }
+    driver = { ...drv(cd), testGaps: (cd.testGaps || []).length ? cd.testGaps : undefined }
+    driverWroteCode = true
+    mergedPending = admit(cd)
+    return true
+  }
+
   // what a continue file carries over for RED: a one-driver group of the last run stays marked, since no RED navigator ever saw its tests (its green navigator keeps judging RED: judgeRed)
   const carriedRed = () => (FAST && R && R.merged ? { reworks: 0, verdict: 'merged', merged: true, carried: true } : { reworks: 0, verdict: 'PASS', carried: true })
   if (from === 'done') { // judged PASS last run, gates fresh and ok, DoD pairs closed (all read by tdd.mjs resume): nothing to spend here
@@ -428,6 +532,7 @@ async function build(g) {
     log(g.id + ' carried over as done'); return
   }
   if (/^green/.test(from)) st.red = carriedRed()
+  else if (oneDriver && TW) { if (!(await writerPath())) return }
   else if (oneDriver) {
     const r = await as('tdd-driver', fastDriverPrompt(g), TDD_DRIVER, 'tdd-driver:' + g.id)
     if (!r) return stop('failed', 'tdd-driver returned nothing')
@@ -495,7 +600,7 @@ const integrate = () => runR('integration-tester', integPrompt(), { schema: INTE
 const pausedIds = G.filter(g => state[g.id] && state[g.id].state === 'paused').map(g => g.id)
 if (reviewInParallel(SP, !!(A.integration && A.integration.file) && doneIds.length === G.length)) {
   log('integration-tester and reviewer run at the same time; the reviewer leaves ' + A.integration.file + ' out')
-  const both = await parallel([integrate, () => runR('reviewer', reviewPrompt(A.integration.file), { schema: REVIEW, label: 'reviewer', phase: 'Review' }, 'reviewer')])
+  const both = await parallel([integrate, () => runR('reviewer', reviewPrompt(A.integration.file), { schema: TW ? REVIEW_TW : REVIEW, label: 'reviewer', phase: 'Review' }, 'reviewer')])
   integration = both[0]
   review = both[1]
 } else {
@@ -503,7 +608,7 @@ if (reviewInParallel(SP, !!(A.integration && A.integration.file) && doneIds.leng
     if (doneIds.length === G.length) integration = await integrate()
     else log('integration-tester skipped: it needs every group done')
   }
-  if (doneIds.length && !pausedIds.length) review = await runR('reviewer', reviewPrompt(), { schema: REVIEW, label: 'reviewer', phase: 'Review' }, 'reviewer')
+  if (doneIds.length && !pausedIds.length) review = await runR('reviewer', reviewPrompt(), { schema: TW ? REVIEW_TW : REVIEW, label: 'reviewer', phase: 'Review' }, 'reviewer')
   else log(pausedIds.length ? 'reviewer skipped: group(s) ' + pausedIds.join(', ') + ' paused; the review reads the whole change once, so continue with tdd.mjs resume first' : 'reviewer skipped: no group is done')
 }
 const clusters = ((review && review.findings) || []).map(f => {
@@ -514,9 +619,34 @@ const clusters = ((review && review.findings) || []).map(f => {
     ...(f.replacement && f.replacement.length <= 2400 && f.anchorable ? { replacement: f.replacement } : {}), proof: PROVEN.includes(p.mode) ? { mode: p.mode, ref: clip(p.ref, 200), quote: clip(p.quote, 300), command: clip(p.command, 160), exit: p.exit } : undefined, verdicts: [] }
 }).sort((a, b) => SEV[b.severity] - SEV[a.severity] || a.id.localeCompare(b.id))
 
-// ---------------------------------------------------------------- fix: one fixer per owning group, so no two fixers touch the same file
-phase('Fix')
 const ownerOf = f => (G.find(g => g.tests.includes(f) || g.src.includes(f)) || { id: '_extra' }).id
+// ---------------------------------------------------------------- judge (ADR 0011 A16, fast mode with the test writer): the final gate's survivors, marked equivalent or sent back
+// to the test writer of the group that owns the file. The reviewer ran the final gate first and copied its survivors.
+const survivorsOf = rv => {
+  const list = rv && rv.final && Array.isArray(rv.final.survivors) && rv.final.survivors.length ? rv.final.survivors : (rv && Array.isArray(rv.survivors) ? rv.survivors : [])
+  const seenS = new Set()
+  return list.filter(m => m && typeof m.id === 'string' && m.id && !seenS.has(m.id) && seenS.add(m.id)).slice(0, 20)
+}
+let judged = null
+const survived = TW && review ? survivorsOf(review) : []
+if (survived.length && !(review.final && review.final.ok === true)) {
+  const j = await runR('judge', judgePrompt(survived), { schema: JUDGE, label: 'judge', phase: 'Review' }, 'judge')
+  const ids = survived.map(m => m.id), marked = j ? (j.marked || []).filter(id => ids.includes(id)) : []
+  judged = { marked, unmarked: ids.filter(id => !marked.includes(id)), finalOk: j ? j.finalOk : undefined, writers: {} }
+  log('judge: ' + marked.length + ' survivor(s) marked equivalent, ' + judged.unmarked.length + ' go back to the test writer')
+}
+phase('Fix')
+if (judged && judged.unmarked.length) { // a survivor no group owns by file goes to every group that is done
+  const left = survived.filter(m => judged.unmarked.includes(m.id)), by = {}
+  for (const m of left) { const o = ownerOf(m.file || ''); for (const gid of o !== '_extra' ? [o] : doneIds) (by[gid] = by[gid] || []).push(m) }
+  await parallel(Object.keys(by).map(gid => async () => {
+    const label = 'test-writer:' + gid + ':survivors'
+    const r = await runR('test-writer', testWriterPrompt(byId[gid], { survivors: by[gid] }), { schema: TEST_WRITER, label, phase: 'Fix' }, label)
+    judged.writers[gid] = r ? { done: r.done === true, gateOk: r.gateOk, survivors: by[gid].map(m => m.id) } : { done: false, survivors: by[gid].map(m => m.id) }
+  }))
+}
+
+// ---------------------------------------------------------------- fix: one fixer per owning group, so no two fixers touch the same file
 const work = {}, byHand = []
 const safeFile = f => typeof f === 'string' && f !== '' && !f.startsWith('/') && !f.startsWith('.') && !f.includes('\0') && !f.split('/').includes('..')
 for (const c of clusters.filter(x => x.status !== 'unverified-nit')) {
@@ -579,6 +709,7 @@ else if (ranFixers && doneIds.length) {
 // ---------------------------------------------------------------- compact return
 const total = Object.values(used).reduce((a, b) => a + b, 0)
 const notDone = G.filter(g => state[g.id].state !== 'done').map(g => g.id + ' ' + state[g.id].state + ': ' + state[g.id].reason)
+  .concat(judged ? Object.entries(judged.writers).filter(([, w]) => !w.done || w.gateOk === false).map(([gid, w]) => gid + ': surviving mutants not killed after the judge: ' + w.survivors.join(', ')) : [])
   .concat(verified && !verified.ok ? ['final gate still failing after ' + verified.rounds + ' round(s): ' + verified.problems.slice(0, 3).map(p => (p.file ? p.file + ' ' : '') + clip(p.what, 100)).join('; ')] : [])
 const sha8 = String(A.base).slice(0, 8)
 const boardMd = ['# paired-agent-tdd ' + sha8, 'Run folder: ' + RUN, '', '| group | state | RED | GREEN | reworks | note |', '|---|---|---|---|---|---|',
@@ -594,5 +725,5 @@ return {
   counts: { groups: G.length, done: doneIds.length, findings: clusters.length, fixedGroups: Object.keys(fixes).length },
   stats: { agentsByNode: used, total, pool: LIM.pool, rounds: ROUNDS, repairBudget: BUDGET, repairsLeft, agentCap: CAP, capped },
   groups: Object.fromEntries(G.map(g => { const s = state[g.id]; return [g.id, { state: s.state, reason: s.reason, red: s.red, green: s.green, matrix: s.matrix, files: s.files, retest: s.retest }] })),
-  integration, reviewed: !!review, clusters, fixes, verified, notDone, failed, boardMd, postmortemMd, ...(courierSkipped ? { courierSkipped } : {}),
+  integration, reviewed: !!review, clusters, fixes, verified, notDone, failed, boardMd, postmortemMd, ...(courierSkipped ? { courierSkipped } : {}), ...(judged ? { judge: judged } : {}),
 }

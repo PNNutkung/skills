@@ -21,16 +21,19 @@ export const NODES = [
   { id: 'graph-planner', tier: 'T3', role: 'Partition the planned files into owned groups and their order', needs: [], model: 'opus', effort: 'high', ponytail: 'full', agentType: 'planner', gated: 'only when the import structure is unknown', outside: true, deliverable: 'groups + after edges for plan.json' },
   { id: 'plan', tier: 'T0', role: 'tdd.mjs plan: validate groups, DoD and quotes, snapshot the base tree', needs: ['graph-planner'], model: 'code', deliverable: 'RUN/plan.json + Workflow args' },
   { id: 'red-driver', tier: 'T2', role: 'Driver: failing tests, one per DoD item and kind, in the group test files', needs: ['plan'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 40, fanout: 'group', deliverable: 'Test files + matrix rows (dod, kind, test, file)' },
-  { id: 'red-gate', tier: 'T0', role: 'tdd.mjs red: every new test file fails now, and how (assertion, load error, passes already)', needs: ['red-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.red.json' },
+  { id: 'test-writer', tier: 'T2', role: 'Fast mode with the test writer (ADR 0011): writes the group\'s tests from the DoD, the plan file list, the base code and the ADR Interface; proves RED; the only agent that changes a test after RED (a testWrong note: fix it and run red --rewrite, or reject it with a reason)', needs: ['plan'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 40, fanout: 'group', gated: 'test writer on, group with no after', deliverable: 'Test files, matrix rows, the RED gate file; rejected notes with reasons' },
+  { id: 'red-gate', tier: 'T0', role: 'tdd.mjs red: every new test file fails now, and how (assertion, load error, passes already)', needs: ['red-driver', 'test-writer'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.red.json' },
   { id: 'red-navigator', tier: 'T2', role: 'Navigator: right reason, right invariant, DoD kinds really tested, precedent', needs: ['red-gate'], model: 'sonnet', effort: 'high', ponytail: 'full', agentType: 'code-reviewer', cap: 25, fanout: 'group', deliverable: 'PASS/FAIL + defects' },
   { id: 'green-driver', tier: 'T2', role: 'Driver: minimum code for the RED tests, then one cleanup only for a named duplication', needs: ['red-navigator'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 45, fanout: 'group', deliverable: 'Implementation in the group src files' },
   { id: 'tdd-driver', tier: 'T2', role: 'Fast mode: ONE driver per group writes the failing tests, proves RED with the gate, then writes the code and proves GREEN (tests frozen from the first source edit, against the first RED); green-navigator judges both gates', needs: ['plan'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 75, fanout: 'group', gated: 'fast mode, group with no after', deliverable: 'Test files, code, matrix rows, the RED and GREEN gate files' },
-  { id: 'green-gate', tier: 'T0', role: 'tdd.mjs green: tests pass and exercise the change, frozen since RED, in scope, mutants, coverage', needs: ['green-driver', 'tdd-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.green.json' },
+  { id: 'code-driver', tier: 'T2', role: 'Fast mode with the test writer: the minimum code for the test writer\'s RED tests, proven by the GREEN gate; never edits a test: a wrong test goes back as a testWrong note with a reason', needs: ['test-writer'], model: 'sonnet', effort: 'medium', ponytail: 'ultra', agentType: 'tdd-guide', cap: 45, fanout: 'group', gated: 'test writer on, group with no after', deliverable: 'Implementation in the group src files; testWrong notes' },
+  { id: 'green-gate', tier: 'T0', role: 'tdd.mjs green: tests pass and exercise the change, frozen since RED, in scope, mutants at PTDD_MUTATION_SCORE_MIN, code files with no mutant, coverage', needs: ['green-driver', 'tdd-driver', 'code-driver'], model: 'code', fanout: 'group', deliverable: 'RUN/gates/G.green.json' },
   { id: 'green-navigator', tier: 'T2', role: 'Navigator: minimal, reuses patterns, survivors are test gaps, no weakened tests', needs: ['green-gate'], model: 'sonnet', effort: 'high', ponytail: 'full', agentType: 'code-reviewer', cap: 25, fanout: 'group', deliverable: 'PASS/FAIL + defects' },
   { id: 'integration-tester', tier: 'T2', role: 'One real-dependency test of the full path', needs: ['green-navigator'], model: 'sonnet', effort: 'high', ponytail: 'lite', agentType: 'tdd-guide', cap: 35, gated: 'only when the change crosses a process, DB or network boundary', deliverable: 'Integration test + a real run' },
-  { id: 'final-gate', tier: 'T0', role: 'tdd.mjs final: all group tests together, existing tests that mention the changed modules, scope, whole-diff patch', needs: ['green-navigator', 'integration-tester'], model: 'code', deliverable: 'RUN/gates/final.json + diff/final.patch' },
+  { id: 'final-gate', tier: 'T0', role: 'tdd.mjs final: all group tests together, existing tests that mention the changed modules, scope, whole-diff patch, every changed line mutated (PTDD_MUTATION_MAX)', needs: ['green-navigator', 'integration-tester'], model: 'code', deliverable: 'RUN/gates/final.json + diff/final.patch' },
   { id: 'reviewer', tier: 'T3', role: 'Review the whole diff once: DoD, test integrity, security, reuse, stale text', needs: ['final-gate'], model: 'opus', effort: 'high', ponytail: 'off', agentType: 'code-reviewer', cap: 40, deliverable: 'Findings with a quote and a proof' },
-  { id: 'fixer', tier: 'T2', role: 'Fix every finding of one group, nothing else', needs: ['reviewer'], model: 'sonnet', effort: 'medium', ponytail: 'full', agentType: 'tdd-guide', cap: 35, fanout: 'group', gated: 'only for groups with findings', deliverable: 'Fixes + a real run of the group tests' },
+  { id: 'judge', tier: 'T2', role: 'Fast mode with the test writer: marks a final-gate survivor equivalent with a written reason (tdd.mjs equivalent --add), then runs final --again; neither the code driver nor the test writer; unmarked survivors go back to the test writer', needs: ['reviewer'], model: 'sonnet', effort: 'high', ponytail: 'full', agentType: 'code-reviewer', cap: 20, gated: 'test writer on, final survivors only', deliverable: 'marked and unmarked survivor ids; RUN/mutation-equivalent.json' },
+  { id: 'fixer', tier: 'T2', role: 'Fix every finding of one group, nothing else', needs: ['reviewer', 'judge'], model: 'sonnet', effort: 'medium', ponytail: 'full', agentType: 'tdd-guide', cap: 35, fanout: 'group', gated: 'only for groups with findings', deliverable: 'Fixes + a real run of the group tests' },
   { id: 'final-verifier', tier: 'T1', role: 'Courier: re-run the final gate after the fixers and name each problem with its file', needs: ['fixer'], model: 'haiku', effort: 'low', ponytail: 'off', agentType: 'code-reviewer', cap: 6, gated: 'only after fixers ran', deliverable: 'ok + problems (leads: the gate file is the fact)' },
   { id: 'verify', tier: 'T0', role: 'tdd.mjs verify: DoD closure from the gates, fixes still present, reviewer proofs (proofcheck)', needs: ['final-verifier'], model: 'code', deliverable: 'dod-matrix.md + verify.json' },
 ];
@@ -65,8 +68,8 @@ export function criticalPath() {
  * Agents of one run when every first pass is right: g groups, integration 0|1, findingGroups = groups that end up with review findings. Repair rounds are not counted (see worst()).
  * solo = groups that run with ONE driver (fast mode, a group that waits for no other); the rest run the default red-driver, red-navigator, green-driver.
  */
-export function plan(g, integration, findingGroups, solo = 0) {
-  const rest = g - solo, counts = { 'red-driver': rest, 'red-navigator': rest, 'green-driver': rest, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0, ...(solo ? { 'tdd-driver': solo } : {}) };
+export function plan(g, integration, findingGroups, solo = 0, writer = false) {
+  const rest = g - solo, counts = { 'red-driver': rest, 'red-navigator': rest, 'green-driver': rest, 'green-navigator': g, 'integration-tester': integration ? 1 : 0, reviewer: 1, fixer: findingGroups, 'final-verifier': findingGroups ? 1 : 0, ...(solo ? (writer ? { 'test-writer': solo, 'code-driver': solo } : { 'tdd-driver': solo }) : {}) };
   return { counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
 }
 /**
@@ -121,9 +124,10 @@ function check() {
   assert.deepEqual(byId.get('red-driver').needs, ['plan'], 'every group starts RED at once: nothing but the plan gates it');
   for (const s of ['red', 'green']) {
     assert.deepEqual(byId.get(`${s}-navigator`).needs, [`${s}-gate`], `${s}-navigator starts from the ${s} gate facts`);
-    assert.deepEqual(byId.get(`${s}-gate`).needs, s === 'red' ? ['red-driver'] : ['green-driver', 'tdd-driver'], `the ${s} gate runs right after its driver (fast mode: the green gate also follows the one tdd-driver)`);
+    assert.deepEqual(byId.get(`${s}-gate`).needs, s === 'red' ? ['red-driver', 'test-writer'] : ['green-driver', 'tdd-driver', 'code-driver'], `the ${s} gate runs right after its driver (fast mode: the green gate also follows the one tdd-driver or the code driver; the test writer proves RED)`);
   }
   assert.deepEqual(byId.get('tdd-driver').needs, ['plan'], 'fast mode: the one driver of a group starts at once, like red-driver');
+  assert.deepEqual([byId.get('test-writer').needs, byId.get('code-driver').needs], [['plan'], ['test-writer']], 'ADR 0011: the tests exist before the code driver starts');
   assert.ok(NODES.filter(n => n.fanout).every(n => n.fanout === 'group'), 'work fans out per file group only');
   assert.ok(LIM.pool >= 1 && LIM.pool <= 8, 'pool above 8 risks the gateway stall that once killed 9 reviewers; raise it only from runs.md data');
   assert.ok(Number.isInteger(LIM.rounds) && LIM.rounds >= 1 && LIM.rounds <= 4, 'R4: repair rounds are bounded (1-4); a stuck group is stopped earlier by the stall check, never retried forever');
@@ -139,14 +143,15 @@ function check() {
     assert.ok(n.agentType && (n.cap !== undefined || n.outside), `${n.id}: agentType and cap are required`);
   });
   const atLeast = (c, m) => MODEL[byId.get(c).model] >= MODEL[byId.get(m).model] && EFFORT[byId.get(c).effort] >= EFFORT[byId.get(m).effort];
-  [['red-navigator', 'red-driver'], ['green-navigator', 'green-driver'], ['green-navigator', 'tdd-driver'], ['integration-tester', 'green-driver']].forEach(([c, m]) => assert.ok(atLeast(c, m), `${c} must be >= ${m} in model and effort (checker >= maker)`));
+  [['red-navigator', 'red-driver'], ['green-navigator', 'green-driver'], ['green-navigator', 'tdd-driver'], ['green-navigator', 'code-driver'], ['green-navigator', 'test-writer'], ['integration-tester', 'green-driver']].forEach(([c, m]) => assert.ok(atLeast(c, m), `${c} must be >= ${m} in model and effort (checker >= maker)`));
   // Structural fences: whoever judges cannot edit.
-  assert.ok(['red-navigator', 'green-navigator', 'reviewer', 'final-verifier'].every(id => byId.get(id).agentType === 'code-reviewer'), 'navigators, the reviewer and the final verifier use the read-only agent type');
-  assert.ok(['red-driver', 'green-driver', 'tdd-driver', 'fixer', 'integration-tester'].every(id => byId.get(id).agentType === 'tdd-guide'), 'makers use the TDD agent type');
+  assert.ok(['red-navigator', 'green-navigator', 'reviewer', 'final-verifier', 'judge'].every(id => byId.get(id).agentType === 'code-reviewer'), 'navigators, the reviewer, the final verifier and the judge use the read-only agent type');
+  assert.ok(['red-driver', 'green-driver', 'tdd-driver', 'test-writer', 'code-driver', 'fixer', 'integration-tester'].every(id => byId.get(id).agentType === 'tdd-guide'), 'makers use the TDD agent type');
   assert.equal(plan(3, 0, 1).total, 15, '3 groups: 12 build agents + 1 reviewer + 1 fixer + 1 final verifier');
   assert.equal(plan(3, 0, 0).total, 13, 'no findings: no fixer and no final verifier');
   assert.equal(plan(3, 0, 0, 3).total, 7, 'fast mode, 3 independent groups: 3 drivers + 3 navigators + 1 reviewer');
   assert.equal(plan(3, 0, 1, 3).total, 9, 'fast mode with findings: + 1 fixer + 1 final verifier');
+  assert.equal(plan(3, 0, 0, 3, true).total, 10, 'fast mode with the test writer, 3 independent groups: 3 test writers + 3 code drivers + 3 navigators + 1 reviewer');
   assert.equal(plan(3, 0, 0, 2).total, 9, 'fast mode, 2 independent groups and 1 that waits: 2 tdd-drivers + red-driver, red-navigator, green-driver + 3 green navigators + 1 reviewer');
   assert.deepEqual(Object.keys(plan(3, 0, 1).counts), ['red-driver', 'red-navigator', 'green-driver', 'green-navigator', 'integration-tester', 'reviewer', 'fixer', 'final-verifier'], 'the default plan lists exactly the nodes it always did');
   assert.equal(worst(3, 3, 99), 60, '3 groups, 3 repair rounds, no run-wide limit: at most 60 build agents (20 per group, reached by a script test with a navigator that never passes)');

@@ -109,6 +109,7 @@ test('should take a DoD from the grill to a committed ADR that paired-agent-tdd 
   assert.ok(written.json.hook.installed, JSON.stringify(written.json.hook));
   assert.match(readFileSync(join(repo, 'docs/adr/README.md'), 'utf8'), /0001-report-export\.md/);
   assert.match(adrText(), /^Trade-off accepted: big reports get a partial file$/m);
+  assert.match(adrText(), /^## Interface$/m, 'dod.mjs adr writes the Interface heading for the design step to fill (ADR 0011 A13)');
 
   // the agent reorganizes the draft: allowed on this ADR only, checked by adr-check
   assert.equal(guard('Edit', { file_path: join(repo, ADR), old_string: 'a', new_string: 'b' }), 'allow');
